@@ -1,0 +1,345 @@
+﻿publication_id,keyword_id,keyword,keyword_type
+PUB000001,KW3672088714,blastocystis sp,author
+PUB000001,KW1622597285,heat shock protein 60,author
+PUB000001,KW9800789891,molecular docking,author
+PUB000001,KW6672614899,tumor necrosis factor-α,author
+PUB000001,KW8236953572,apigenin,index
+PUB000001,KW9480651547,caffeic acid,index
+PUB000001,KW0120986382,chaperonin 60,index
+PUB000001,KW3725322252,fisetin,index
+PUB000001,KW3757953657,gallic acid,index
+PUB000001,KW7196380989,hydroxybenzoic acid,index
+PUB000001,KW6887520525,inositol,index
+PUB000001,KW2637029742,jasmonic acid,index
+PUB000001,KW6017138808,luteolin,index
+PUB000001,KW0870349459,metronidazole,index
+PUB000001,KW6723792260,mimosa pudica linnaeus extract,index
+PUB000001,KW2104478496,naringenin,index
+PUB000001,KW7711868400,phytochemical,index
+PUB000001,KW8482996174,plant extract,index
+PUB000001,KW2628450129,quercetin,index
+PUB000001,KW3395067299,silver nanoparticle,index
+PUB000001,KW2584912706,tumor necrosis factor,index
+PUB000001,KW5461933167,unclassified drug,index
+PUB000001,KW4968105858,antibacterial activity,index
+PUB000001,KW2411898014,antiinflammatory activity,index
+PUB000001,KW7949193217,antiparasitic activity,index
+PUB000001,KW6330256342,article,index
+PUB000001,KW4968268180,binding affinity,index
+PUB000001,KW1022037495,biological activity,index
+PUB000001,KW3117622842,blastocystis,index
+PUB000001,KW4061776398,carcinogenicity,index
+PUB000001,KW1210524574,computer model,index
+PUB000001,KW2770351236,cytotoxicity,index
+PUB000001,KW6913245544,gastrointestinal absorption,index
+PUB000001,KW1804444041,hydrogen bond,index
+PUB000001,KW3538017969,mimosa pudica,index
+PUB000001,KW8438099515,mimosa pudica linnaeus,index
+PUB000001,KW9800789891,molecular docking,index
+PUB000001,KW7961871828,molecular weight,index
+PUB000001,KW6006538602,mutagenicity,index
+PUB000001,KW0527755360,pharmacokinetic parameters,index
+PUB000001,KW6005662151,toxicology,index
+PUB000002,KW4764723888,digital communication,author
+PUB000002,KW3089816242,islamic communication ethics,author
+PUB000002,KW4385939871,mubadalah,author
+PUB000002,KW4682864378,muslim families,author
+PUB000003,KW4279014605,anti‐inflammatory properties,author
+PUB000003,KW1297640014,ards,author
+PUB000003,KW4073882163,conditioned medium,author
+PUB000003,KW3653631782,growth factor,author
+PUB000003,KW0277505148,hwjmscs,author
+PUB000004,KW1040231589,benign prostatic hyperplasia,author
+PUB000004,KW9602606101,cosmos caudatus,author
+PUB000004,KW4219836143,inflammation,author
+PUB000004,KW9699120611,oxidative stress,author
+PUB000004,KW8167509800,alcohol,index
+PUB000004,KW0626954170,chlorogenic acid,index
+PUB000004,KW5066498079,cytokine,index
+PUB000004,KW5601111581,eosin,index
+PUB000004,KW8754482600,ethanol extract of cosmos caudatus,index
+PUB000004,KW3652062002,hematoxylin,index
+PUB000004,KW2626833097,interleukin 6,index
+PUB000004,KW0096071087,kaempferol,index
+PUB000004,KW3749674017,malonaldehyde,index
+PUB000004,KW8482996174,plant extract,index
+PUB000004,KW4944207000,testosterone,index
+PUB000004,KW8836653121,testosterone propionate,index
+PUB000004,KW5461933167,unclassified drug,index
+PUB000004,KW3421359341,animal experiment,index
+PUB000004,KW8418315329,animal model,index
+PUB000004,KW4521257744,animal tissue,index
+PUB000004,KW6330256342,article,index
+PUB000004,KW3738666975,controlled study,index
+PUB000004,KW9602606101,cosmos caudatus,index
+PUB000004,KW5047766678,enzyme linked immunosorbent assay,index
+PUB000004,KW2946709462,histology,index
+PUB000004,KW1399157973,histopathology,index
+PUB000004,KW2489083443,immunohistochemistry,index
+PUB000004,KW4219836143,inflammation,index
+PUB000004,KW7621760004,nonhuman,index
+PUB000004,KW9699120611,oxidative stress,index
+PUB000004,KW6378039586,prostate hypertrophy,index
+PUB000004,KW0154495398,prostate index,index
+PUB000004,KW3086125549,prostate weight,index
+PUB000004,KW7699453072,rat,index
+PUB000004,KW6589810495,tumor associated leukocyte,index
+PUB000005,KW3134878714,indonesian benchmark,author
+PUB000005,KW3971127889,indonesian dataset,author
+PUB000005,KW5826569618,kgqa,author
+PUB000005,KW3432963175,kgqa system evaluation,author
+PUB000006,KW9054089397,biolubricant,author
+PUB000006,KW3099704789,cnc milling,author
+PUB000006,KW8750920639,eco-friendly cutting fluid,author
+PUB000006,KW7220108651,minimum quantity lubrication,author
+PUB000006,KW8723752218,nanolubricant,author
+PUB000007,KW8970041376,curriculum-based reward shaping,author
+PUB000007,KW1103479324,deep reinforcement learning,author
+PUB000007,KW5801043354,dueling ddqn,author
+PUB000007,KW0562227781,multi-objective learning,author
+PUB000007,KW3474507508,traffic signal control,author
+PUB000008,KW8333244540,agriculture,author
+PUB000008,KW9764005815,farming,author
+PUB000008,KW7277038700,microorganism,author
+PUB000008,KW6106238042,nutrient cycle,author
+PUB000009,KW4494498432,cyberlearning model,author
+PUB000009,KW6708732995,edutechpreneurship skills,author
+PUB000009,KW8623020968,"microlearning, strategies",author
+PUB000010,KW2123373142,oxygen absorbers,author
+PUB000010,KW0988154682,palembang,author
+PUB000010,KW5083992608,shelf-life,author
+PUB000010,KW3989188128,sterilization,author
+PUB000010,KW6817479958,storage,author
+PUB000010,KW8757027140,vacuum packaging,author
+PUB000010,KW3825275019,oxygen,index
+PUB000010,KW6330256342,article,index
+PUB000010,KW1069062333,fish,index
+PUB000010,KW2811231561,fish cake,index
+PUB000010,KW4382797355,food packaging,index
+PUB000010,KW4483448243,food quality,index
+PUB000010,KW6066666967,instrument sterilization,index
+PUB000010,KW1300894422,microbial activity,index
+PUB000010,KW7621760004,nonhuman,index
+PUB000010,KW2196085338,oxygen absorber,index
+PUB000010,KW5237130266,pastry,index
+PUB000010,KW8147441800,ph,index
+PUB000010,KW9430204609,physical chemistry,index
+PUB000010,KW7664719855,scanning electron microscopy,index
+PUB000010,KW8631774530,shelf life,index
+PUB000010,KW2321346772,texture analysis,index
+PUB000010,KW3032670375,texture profile analysis,index
+PUB000011,KW8502950045,abscisic acid,author
+PUB000011,KW3008338181,acid phosphatase,author
+PUB000011,KW3694647414,oil palm,author
+PUB000011,KW4722493659,pti‐interacting serine/threonine kinase,author
+PUB000011,KW3218606377,p‐limitation,author
+PUB000012,KW5889065180,12,author
+PUB000012,KW8458275289,25-triol,author
+PUB000012,KW6787351334,dammarane-3,author
+PUB000012,KW6152546429,direct pulp capping,author
+PUB000012,KW5913972683,galam leaf,author
+PUB000012,KW4301581355,macrophage cells,author
+PUB000012,KW8025928914,tricalcium silicate cement,author
+PUB000012,KW2970491456,vascular endothelial growth factor,author
+PUB000012,KW6445255110,cement,index
+PUB000012,KW0361551549,ketamine,index
+PUB000012,KW9303531030,melaleuca cajuputi subsp. cumingiana leaf extract,index
+PUB000012,KW8482996174,plant extract,index
+PUB000012,KW8025928914,tricalcium silicate cement,index
+PUB000012,KW5461933167,unclassified drug,index
+PUB000012,KW2871832734,vasculotropin,index
+PUB000012,KW4599324844,xylene,index
+PUB000012,KW0425242495,anesthesia,index
+PUB000012,KW3421359341,animal experiment,index
+PUB000012,KW8418315329,animal model,index
+PUB000012,KW4521257744,animal tissue,index
+PUB000012,KW6330256342,article,index
+PUB000012,KW3738666975,controlled study,index
+PUB000012,KW2946709462,histology,index
+PUB000012,KW1804444041,hydrogen bond,index
+PUB000012,KW3362077834,hydrophobicity,index
+PUB000012,KW2489083443,immunohistochemistry,index
+PUB000012,KW4219836143,inflammation,index
+PUB000012,KW8089008808,macrophage,index
+PUB000012,KW6618879152,male,index
+PUB000012,KW4126075724,melaleuca,index
+PUB000012,KW7370719422,melaleuca cajuputi subsp. cumingiana,index
+PUB000012,KW9800789891,molecular docking,index
+PUB000012,KW6658556605,mouse,index
+PUB000012,KW7621760004,nonhuman,index
+PUB000012,KW5748816877,protein expression,index
+PUB000012,KW9127876644,pulp inflammation,index
+PUB000012,KW7699453072,rat,index
+PUB000012,KW2721321385,real time polymerase chain reaction,index
+PUB000012,KW7011800800,static electricity,index
+PUB000013,KW2157344334,human alcohol dehydrogenase inhibitors,author
+PUB000013,KW6676760566,in silico,author
+PUB000013,KW8940318316,pandanus conoideus,author
+PUB000013,KW5376346758,alcohol dehydrogenase,index
+PUB000013,KW8503054974,decanoic acid,index
+PUB000013,KW9503074475,flavonoid,index
+PUB000013,KW8893620869,myristic acid,index
+PUB000013,KW6356922098,pandanus conoideus lamk,index
+PUB000013,KW8482996174,plant extract,index
+PUB000013,KW2628450129,quercetin,index
+PUB000013,KW1438877829,taxifolin,index
+PUB000013,KW5461933167,unclassified drug,index
+PUB000013,KW5195421812,alcoholism,index
+PUB000013,KW6330256342,article,index
+PUB000013,KW4968268180,binding affinity,index
+PUB000013,KW4120282048,bioavailability,index
+PUB000013,KW3225782157,blood brain barrier,index
+PUB000013,KW1210524574,computer model,index
+PUB000013,KW3299238590,fibrosis,index
+PUB000013,KW1932292427,fruit,index
+PUB000013,KW1460459191,human,index
+PUB000013,KW1804444041,hydrogen bond,index
+PUB000013,KW3370751798,lipophilicity,index
+PUB000013,KW1456781359,liver cell carcinoma,index
+PUB000013,KW9800789891,molecular docking,index
+PUB000013,KW4455024799,molecular dynamics,index
+PUB000013,KW7961871828,molecular weight,index
+PUB000013,KW8505537421,neutralization test,index
+PUB000013,KW7621760004,nonhuman,index
+PUB000013,KW8940318316,pandanus conoideus,index
+PUB000013,KW3915264512,steatohepatitis,index
+PUB000013,KW4340584913,steatosis,index
+PUB000014,KW5135360292,aquilaria malaccensis l,author
+PUB000014,KW1696508915,ethylacetate fraction,author
+PUB000014,KW9748411399,flavonoids,author
+PUB000014,KW8702054378,xanthine oxidase inhibition,author
+PUB000014,KW2086664269,acetic acid ethyl ester,index
+PUB000014,KW8167509800,alcohol,index
+PUB000014,KW1305798518,alkaloid,index
+PUB000014,KW5757039942,catalase,index
+PUB000014,KW9503074475,flavonoid,index
+PUB000014,KW8487866805,glutathione peroxidase,index
+PUB000014,KW5135949767,hexane,index
+PUB000014,KW6134636949,phenol derivative,index
+PUB000014,KW7711868400,phytochemical,index
+PUB000014,KW8482996174,plant extract,index
+PUB000014,KW9803965428,quinone derivative,index
+PUB000014,KW9440363697,saponin,index
+PUB000014,KW8239673201,steroid,index
+PUB000014,KW1971145453,superoxide dismutase,index
+PUB000014,KW6840010495,tannin,index
+PUB000014,KW2778894632,triterpenoid,index
+PUB000014,KW3038373825,xanthine oxidase,index
+PUB000014,KW0171750063,antioxidant activity,index
+PUB000014,KW3617236392,aquilaria,index
+PUB000014,KW7702688613,aquilaria malaccensis,index
+PUB000014,KW6330256342,article,index
+PUB000014,KW2574305181,ash,index
+PUB000014,KW1022037495,biological activity,index
+PUB000014,KW9225888582,dpph radical scavenging assay,index
+PUB000014,KW4035226673,examination,index
+PUB000014,KW4766179658,fourier transform infrared spectroscopy,index
+PUB000014,KW1395998566,in vitro study,index
+PUB000014,KW7359060500,liquid chromatography-mass spectrometry,index
+PUB000014,KW1680034503,liquid liquid extraction,index
+PUB000014,KW8649442764,metabolic fingerprinting,index
+PUB000014,KW8936940629,moisture,index
+PUB000014,KW7621760004,nonhuman,index
+PUB000014,KW2679179806,organoleptic examination,index
+PUB000014,KW5740181124,plant leaf,index
+PUB000014,KW9857465505,ultraviolet visible spectrophotometry,index
+PUB000015,KW6715334226,acanthus ilicifolius,author
+PUB000015,KW3854481935,dengue virus,author
+PUB000015,KW9800789891,molecular docking,author
+PUB000015,KW2628450129,quercetin,author
+PUB000015,KW8984830900,stigmasterol,author
+PUB000016,KW1888044756,detection,author
+PUB000016,KW4251138559,elisa,author
+PUB000016,KW6469078013,leptospirosis,author
+PUB000016,KW6854022692,lipl32,author
+PUB000016,KW2741866489,recombinant,author
+PUB000017,KW8409049729,amnion powder,author
+PUB000017,KW2578284541,cd206,author
+PUB000017,KW2505753091,inos,author
+PUB000017,KW2988765837,macrophage polarization,author
+PUB000017,KW0225293914,wound healing,author
+PUB000017,KW5930822375,collagen,index
+PUB000017,KW2626833097,interleukin 6,index
+PUB000017,KW7450860889,interstitial collagenase,index
+PUB000017,KW3892881313,phosphate buffered saline,index
+PUB000017,KW8331507510,amnion,index
+PUB000017,KW3421359341,animal experiment,index
+PUB000017,KW4521257744,animal tissue,index
+PUB000017,KW6330256342,article,index
+PUB000017,KW7791586426,cell proliferation,index
+PUB000017,KW3266731661,connective tissue,index
+PUB000017,KW1637532555,correlational study,index
+PUB000017,KW8270360983,epithelization,index
+PUB000017,KW6017843310,extracellular matrix,index
+PUB000017,KW3092726031,gene expression,index
+PUB000017,KW2489083443,immunohistochemistry,index
+PUB000017,KW4219836143,inflammation,index
+PUB000017,KW7530588920,m1 macrophage,index
+PUB000017,KW6217342888,m2 macrophage,index
+PUB000017,KW8089008808,macrophage,index
+PUB000017,KW6618879152,male,index
+PUB000017,KW2648612267,mesenchyme cell,index
+PUB000017,KW7621760004,nonhuman,index
+PUB000017,KW6806528150,phenotype,index
+PUB000017,KW7699453072,rat,index
+PUB000017,KW0225293914,wound healing,index
+PUB000018,KW2006972330,antibacterial,author
+PUB000018,KW3100538475,antioxidant,author
+PUB000018,KW5222611347,hydrogel,author
+PUB000018,KW3429151381,saccharum spontaneum,author
+PUB000018,KW0225293914,wound healing,author
+PUB000018,KW1305798518,alkaloid,index
+PUB000018,KW3100538475,antioxidant,index
+PUB000018,KW5518229298,carbopol 940,index
+PUB000018,KW9503074475,flavonoid,index
+PUB000018,KW5222611347,hydrogel,index
+PUB000018,KW4595248405,methyl paraben,index
+PUB000018,KW9620786316,monoterpenoid,index
+PUB000018,KW9428520592,phenol,index
+PUB000018,KW7711868400,phytochemical,index
+PUB000018,KW8482996174,plant extract,index
+PUB000018,KW6495909300,polyphenol,index
+PUB000018,KW6758770292,propyl paraben,index
+PUB000018,KW9803965428,quinone derivative,index
+PUB000018,KW8142060909,saccharum spontaneum extract,index
+PUB000018,KW9440363697,saponin,index
+PUB000018,KW1496167067,sesquiterpene,index
+PUB000018,KW2352492689,sesquiterpenoid,index
+PUB000018,KW8239673201,steroid,index
+PUB000018,KW6840010495,tannin,index
+PUB000018,KW2778894632,triterpenoid,index
+PUB000018,KW5461933167,unclassified drug,index
+PUB000018,KW3421359341,animal experiment,index
+PUB000018,KW8418315329,animal model,index
+PUB000018,KW4968105858,antibacterial activity,index
+PUB000018,KW0171750063,antioxidant activity,index
+PUB000018,KW6330256342,article,index
+PUB000018,KW0307490375,bacterium culture,index
+PUB000018,KW9225888582,dpph radical scavenging assay,index
+PUB000018,KW8025731994,ferric reducing antioxidant power assay,index
+PUB000018,KW6618879152,male,index
+PUB000018,KW8842021164,metabolite,index
+PUB000018,KW9473457361,minimum bactericidal concentration,index
+PUB000018,KW7338376431,minimum inhibitory concentration,index
+PUB000018,KW7621760004,nonhuman,index
+PUB000018,KW5740181124,plant leaf,index
+PUB000018,KW8815648067,pseudomonas aeruginosa,index
+PUB000018,KW7699453072,rat,index
+PUB000018,KW3429151381,saccharum spontaneum,index
+PUB000018,KW7842097662,staphylococcus aureus,index
+PUB000018,KW6228454996,streptococcus pyogenes,index
+PUB000018,KW5620503713,viscosity,index
+PUB000018,KW0129783574,wound closure,index
+PUB000018,KW0225293914,wound healing,index
+PUB000018,KW6702238849,zone of inhibition,index
+PUB000019,KW4063981547,cultivation,author
+PUB000019,KW2980417049,dairy farm wastewater,author
+PUB000019,KW4279948734,euglena gracilis,author
+PUB000019,KW9817475316,growth kinetics,author
+PUB000019,KW2224101069,microalgae,author
+PUB000020,KW8194091640,aluminum,author
+PUB000020,KW5736891384,cobalt,author
+PUB000020,KW4598769128,leaching,author
+PUB000020,KW7142664685,molybdenum,author
+PUB000020,KW3560783096,organic acid,author
+PUB000020,KW0202587604,spent catalyst,author
