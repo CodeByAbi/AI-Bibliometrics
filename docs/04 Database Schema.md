@@ -1,24 +1,30 @@
-# Database Schema — Arsitektur Data & Spesifikasi Skema Kanonikal (Hybrid Master Blueprint)
+# Skema Database — Arsitektur Data & Spesifikasi Skema Kanonikal (Hybrid Master Blueprint)
 
-**Document Version:** 3.2.0 (Consolidated Hybrid Master Blueprint)  
-**Status Date:** 2026-09-28  
-**Supersedes:** `04 Database Schema.md` Draft v1 s.d. v3.0.0  
-**Authoritative Context:** Aligned with `README.md` and `docs/00` through `docs/12`  
+**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Tanggal Status:** 2026-09-27  
+**Menggantikan:** `04 Database Schema.md` Draft v1 s.d. v3.5.0  
+**Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi & Sumber Kebenaran (Verifikasi Repositori 2026-09-28):**  
-> Repositori saat ini berada pada tahap perancangan arsitektur (*documentation-only*). Data publikasi ilmiah 9 tabel relasional Silver Layer dilaporkan telah dimuat pada instance eksternal Supabase PostgreSQL, namun **Task 0 (Audit Skema via `information_schema.columns`) belum dijalankan** dari repositori ini. Kolom `chunks.embedding vector(1024)` (Task 1), 2 tabel edge derivatif kolaborasi (Task 8), serta 3 tabel Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) berstatus **PLANNED / NOT IMPLEMENTED**. Seluruh DDL, constraint, formula keahlian, dan indeks di bawah ini merupakan **kontrak rekayasa data normatif**.
+> **Status Implementasi & Sumber Kebenaran (Sinkronisasi Progress 2026-09-27):**  
+> 1. **PostgreSQL Database — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**. Tim tidak perlu membuat database baru dari nol, dan seluruh kredensial koneksi telah diamankan secara internal (tidak diekspos di dokumentasi).  
+> 2. **Dataset Prototipe (Validasi E2E) — DONE:** Database saat ini memuat **dataset prototipe kecil** (~20 naskah, 40 chunk, 138 author, 107 institusi, 22 kolom metadata naskah pada `publications`) yang disiapkan secara spesifik untuk memvalidasi alur end-to-end (retrieval 4 rute, unifikasi bukti, sintesis LLM, verifikasi sitasi, API, dan UI).  
+> 3. **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan hasilnya ter-export sebagai 9 file `data/*_cleaned.csv`; 9 tabel relasional kanonikal Silver (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) sudah terisi data bersih tersebut.  
+> 4. **Vector Storage — PENDING / BELUM SELESAI (Task 1):** `pgvector` akan digunakan untuk menyimpan embedding pada kolom `chunks.embedding vector(1024)` + indeks HNSW sesuai DDL §5, tetapi kolom, data vektor, dan indeks tersebut **belum dibuat/diisi**. Keputusan skema vektor di bawah dipertahankan apa adanya — tidak ada skema baru. Dimensi embedding tidak dikarang: terkunci `1024` mengikuti model `BAAI/bge-m3` yang sudah diputuskan.  
+> 5. **Komponen Turunan Lain (PLANNED / NOT YET IMPLEMENTED):** 2 tabel edge kolaborasi `institution_collaboration` dan `author_collaboration` (Task 8), serta 3 tabel Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) berstatus **PLANNED** dan akan dimaterialisasi secara idempoten dari tabel relasional Silver.  
+> 6. **Pembedaan Fase:** Dokumentasi membedakan secara tegas antara **Fase Validasi Prototipe E2E** (menggunakan 9 tabel kanonikal saat ini) dan **Fase Produksi Skala Besar** (pipeline ingestion otomatis untuk ratusan ribu record Scopus).
 
 ---
 
-## 1. Purpose & Medallion Data Architecture
+## 1. Tujuan & Arsitektur Data Medallion
 
-Dokumen ini mendefinisikan arsitektur basis data relasional, representasi vektor (*pgvector*), struktur graf derivatif (*Knowledge Graph Minimum Surface*), dan lapisan analitik tingkat lanjut (**Gold Layer**) untuk sistem **Research Intelligence Assistant**.
+Dokumen ini mendefinisikan arsitektur database relasional, representasi vector (*pgvector*), struktur graf turunan (*Knowledge Graph Minimum Surface*), dan lapisan analitik tingkat lanjut (**Lapisan Gold**) untuk sistem **Asisten Riset Intelijen**.
 
 Arsitektur data mengadopsi pola **Medallion Data Architecture**:
-1. **Bronze Layer (Staging)**: Arsip berkas mentah Scopus (CSV/JSON/BibTeX) yang immutable untuk reproduktibilitas data dan audit log (`docs/12 Data Pipeline.md`).
-2. **Silver Layer (Canonical Relational Storage - 9 Tabel)**: Sumber kebenaran terstruktur (*canonical source of truth*) yang telah dibersihkan, dinormalisasi, dan di-deduplikasi untuk menyimpan metadata naskah, penulis, institusi, kata kunci, pendanaan, dan chunk teks.
-3. **Derived Graph Layer (2 Edge Tables)**: Struktur graf kolaborasi berbobot (*weighted collaboration edge tables*) yang dimaterialisasi secara idempoten dari tabel relasional Silver untuk mendukung penelusuran multi-hop berlatensi rendah.
-4. **Gold Layer (Advanced Bibliometrics & Intelligence - 3 Tabel)**: Tabel analitik derivatif berkinerja tinggi yang menyimpan klaster topik naskah (*BERTopic clusters*), metrik akselerasi tren waktu (*topic evolution time-series*), serta pemeringkatan kepakaran peneliti multi-dimensi (*researcher expertise scoring*).
+1. **Bronze Layer (Raw Staging - Future/Production)**: Arsip berkas mentah Scopus (CSV/JSON/BibTeX) yang immutable untuk reproduktibilitas data dan audit log (`docs/12 Data Pipeline.md`).
+2. **Silver Layer (Canonical Relational Storage - 9 Tabel Prototipe + 2 Edge Tables)**: Sumber kebenaran terstruktur (*canonical source of truth*) yang telah dibersihkan, dinormalisasi, dan di-deduplikasi:
+   - 9 Tabel Relasional: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, dan `chunks`.
+   - 2 Derived Edge Tables (PLANNED, Task 8): `institution_collaboration` dan `author_collaboration` yang dimaterialisasi secara idempoten dari `pub_institution` dan `pub_author`.
+3. **Gold Layer (Advanced Bibliometrics & Policy Intelligence - 3 Tabel - PLANNED, Task 8.5)**: Tabel analitik derivatif berkinerja tinggi yang menyimpan klaster topik naskah (`topics`), metrik akselerasi tren waktu (`topic_evolution`), serta pemeringkatan kepakaran peneliti multi-dimensi (`researcher_expertise`).
 
 ---
 
@@ -26,7 +32,7 @@ Arsitektur data mengadopsi pola **Medallion Data Architecture**:
 
 ```mermaid
 flowchart TD
-    subgraph SilverLayer [Silver Layer: Canonical Relational & Semantic Index]
+    subgraph SilverLayer [Lapisan Silver: 9 Tabel Kanonikal]
         T_Pub[(publications)]
         T_Auth[(authors)]
         T_Inst[(institutions)]
@@ -35,70 +41,70 @@ flowchart TD
         T_PA[(pub_author)]
         T_PI[(pub_institution)]
         T_Ref[(publication_references)]
-        T_Chunk[(chunks with pgvector 1024-dim)]
+        T_Chunk[(chunks dengan pgvector 1024-dim)]
     end
 
-    subgraph EdgeLayer [Derived Graph Layer: Collaboration Minimum Surface]
+    subgraph EdgeLayer [Lapisan Graf Turunan: Permukaan Minimum Kolaborasi - Task 8]
         T_AuthCollab[(author_collaboration\nweight, via_publication_ids)]
         T_InstCollab[(institution_collaboration\nweight, via_publication_ids)]
     end
 
-    subgraph GoldLayer [Gold Layer: Director Analytics & Policy Intelligence]
-        T_Topics[(topics\nBERTopic Clusters & Representation Vector)]
-        T_Evol[(topic_evolution\nGrowth Score & Citation Acceleration)]
-        T_Exp[(researcher_expertise\nMulti-Dimensional Weighted Expertise Score)]
+    subgraph GoldLayer [Lapisan Gold: Analitik Kebijakan & Direktur - Task 8.5]
+        T_Topics[(topics\nKlaster BERTopic & Vector Representasi)]
+        T_Evol[(topic_evolution\nSkor Pertumbuhan & Akselerasi Sitasi)]
+        T_Exp[(researcher_expertise\nSkor Kepakaran Terbobot Multi-Dimensi)]
     end
 
-    T_PA & T_PI -->|Idempotent Materialization| EdgeLayer
-    T_Pub & T_Chunk -->|Topic Modeling & Co-word Pipeline| T_Topics
-    T_Topics & T_Pub -->|Time-series Acceleration Engine| T_Evol
-    T_Topics & T_Auth & T_Pub -->|Weighted Scoring Engine| T_Exp
+    T_PA & T_PI -->|Materialisasi Idempoten| EdgeLayer
+    T_Pub & T_Chunk -->|Pipeline Pemodelan Topik & Co-word| T_Topics
+    T_Topics & T_Pub -->|Mesin Akselerasi Deret Waktu| T_Evol
+    T_Topics & T_Auth & T_Pub -->|Mesin Skoring Terbobot| T_Exp
 
-    subgraph Serving [FastAPI Query Serving Layer - /api/v1/ask]
-        SQLRoute[SQLRoute: Factual & Stats] --> SilverLayer
-        VectorRoute[VectorRoute: Semantic Search] --> T_Chunk
-        GraphRoute[GraphRoute: Network Traversal] --> EdgeLayer
-        HybridRoute[HybridRoute: Policy & Trend Synthesis] --> GoldLayer & SilverLayer & T_Chunk
+    subgraph Serving [Lapisan Serving Kueri FastAPI - /api/v1/ask]
+        SQLRoute[SQLRoute: Faktual & Statistik] --> SilverLayer
+        VectorRoute[VectorRoute: Pencarian Semantik] --> T_Chunk
+        GraphRoute[GraphRoute: Traversal Jaringan] --> EdgeLayer
+        HybridRoute[HybridRoute: Sintesis Kebijakan & Tren] --> GoldLayer & SilverLayer & T_Chunk
     end
 ```
 
 ---
 
-## 3. Matriks Status Implementasi (Current vs Target Schema)
+## 3. Matriks Status Implementasi (Skema Saat Ini vs Target)
 
-| Komponen / Tabel | Layer Arsitektur | Status Saat Ini | Target Phase | Keterangan Kesiapan Rekayasa |
+| Komponen / Tabel | Lapisan Arsitektur | Status Saat Ini | Fase Target | Keterangan Kesiapan Rekayasa |
 |---|---|---|---|---|
-| `publications` | Silver (Core) | `CURRENT` (di Supabase) | Phase 0 | 18 kolom metadata bibliometrik; perlu audit Task 0. |
-| `authors` | Silver (Core) | `CURRENT` (di Supabase) | Phase 0 | Menyimpan nama display dan `author_name_normalized`. |
-| `institutions` | Silver (Core) | `CURRENT` (di Supabase) | Phase 0 | Menyimpan nama display, normalized, city, dan country. |
-| `keywords` | Silver (Core) | `CURRENT` (di Supabase) | Phase 0 | Menyimpan keyword lowercase dan `keyword_type`. |
-| `funding` | Silver (Core) | `CURRENT` (di Supabase) | Phase 0 | Menyimpan nama agensi, normalized, grant number, dan teks. |
-| `pub_author` | Silver (Junction) | `CURRENT` (di Supabase) | Phase 0 | Relasi publikasi-penulis beserta `author_order`. |
-| `pub_institution` | Silver (Junction) | `CURRENT` (di Supabase) | Phase 0 | Relasi publikasi-institusi. |
-| `publication_references` | Silver (1:N) | `CURRENT` (di Supabase) | Phase 0 | String sitasi mentah (`reference_text`); status *unlinked*. |
-| `chunks` (Teks) | Silver (1:N) | `CURRENT` (di Supabase) | Phase 0 | Teks judul & abstrak untuk embedding. |
+| `publications` | Silver (Core) | `CURRENT` (di PostgreSQL) | Phase 0 | 22 kolom metadata bibliometrik pada prototype dataset. |
+| `authors` | Silver (Core) | `CURRENT` (di PostgreSQL) | Phase 0 | Menyimpan nama display dan `author_name_normalized`. |
+| `institutions` | Silver (Core) | `CURRENT` (di PostgreSQL) | Phase 0 | Menyimpan nama display, normalized, city, dan country. |
+| `keywords` | Silver (Core) | `CURRENT` (di PostgreSQL) | Phase 0 | Menyimpan keyword lowercase dan `keyword_type`. |
+| `funding` | Silver (Core) | `CURRENT` (di PostgreSQL) | Phase 0 | Menyimpan nama agensi, normalized, grant number, dan teks. |
+| `pub_author` | Silver (Junction) | `CURRENT` (di PostgreSQL) | Phase 0 | Relasi publikasi-penulis beserta `author_order`. |
+| `pub_institution` | Silver (Junction) | `CURRENT` (di PostgreSQL) | Phase 0 | Relasi publikasi-institusi. |
+| `publication_references` | Silver (1:N) | `CURRENT` (di PostgreSQL) | Phase 0 | String sitasi mentah (`reference_text`); status *unlinked*. |
+| `chunks` (Teks) | Silver (1:N) | `CURRENT` (di PostgreSQL) | Phase 0 | Teks judul & abstrak untuk semantic search. Sumber load: `data/chunks_cleaned.csv` (export DONE). |
 | `chunks.embedding` | Silver (Vector) | `PLANNED / NOT IMPLEMENTED` | Phase 3 (Task 1) | `vector(1024)` BAAI/bge-m3; HNSW (`m=16, ef=64`). |
 | `institution_collaboration` | Derived Edge | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8) | Edge table kolaborasi institusi dengan `via_publication_ids`. |
 | `author_collaboration` | Derived Edge | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8) | Edge table co-authorship dengan `via_publication_ids`. |
-| `topics` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Klaster topik BERTopic, kata kunci representatif, & vektor. |
+| `topics` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Klaster topik BERTopic, kata kunci representatif, & centroid vector. |
 | `topic_evolution` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Time-series tahunan, growth score, dan citation acceleration. |
 | `researcher_expertise` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Skor kepakaran terbobot multi-faktor ($w_1, w_2, w_3, w_4$). |
-| Dedicated Graph DB (Neo4j/AGE) | External Graph | `POST-MVP / OPEN DECISION` | Phase 9 (Post-MVP) | Evaluasi engine graf dedicated setelah baseline SQL stabil. |
+| Dedicated Graph Extension (Apache AGE) | Ext Graf Native | `POST-MVP / RECOMMENDED` | Fase 9 (Pasca-MVP) | Ekstensi native PostgreSQL Cypher query untuk traversal graf tingkat lanjut. |
 
 ---
 
-## 4. Silver Layer: Entitas Relasional Kanonikal (9 Tabel)
+## 4. Lapisan Silver: 9 Entitas Relasional Kanonikal
 
 ### 4.1 Tabel `publications` (Entitas Inti Publikasi)
-| Nama Kolom | Tipe Data | Constraint | Deskripsi & Aturan Normalisasi |
+| Nama Kolom | Tipe Data | Batasan (Constraint) | Deskripsi & Aturan Normalisasi |
 |---|---|---|---|
 | `publication_id` | `VARCHAR(64)` / `BIGINT` | `PRIMARY KEY` | Identifier unik kanonikal publikasi (Scopus ID atau internal hash). |
-| `title` | `TEXT` | `NOT NULL` | Judul publikasi dalam format **Titlecase** (kecuali akronim baku). |
+| `title` | `TEXT` | `NOT NULL` | Judul publikasi dalam format **Titlecase** (casing asli dipertahankan). |
 | `abstract` | `TEXT` | `NULLABLE` | Teks abstrak lengkap publikasi (seluruh teks telah di-**lowercase**). |
 | `doi` | `VARCHAR(255)` | `NULLABLE`, `INDEX` | Digital Object Identifier resmi (format: `10.xxxx/...`, case preserved). |
 | `eid` | `VARCHAR(64)` | `NULLABLE`, `UNIQUE` | Electronic Identifier Scopus (misal: `2-s2.0-85...`). |
 | `year` | `SMALLINT` | `NOT NULL`, `INDEX` | Tahun publikasi (numerik, misal: `2023`). |
-| `citation_count` | `INTEGER` | `NOT NULL DEFAULT 0` | Jumlah sitasi yang tercatat saat snapshot data Scopus diambil. |
+| `citation_count` | `INTEGER` | `NOT NULL DEFAULT 0` | Jumlah sitasi yang tercatat saat snapshot data diambil. |
 | `document_type` | `VARCHAR(64)` | `NULLABLE` | Jenis dokumen (**lowercase**, contoh: `article`, `conference paper`). |
 | `publication_stage` | `VARCHAR(32)` | `NULLABLE` | Tahap publikasi (**lowercase**, contoh: `final`, `article in press`). |
 | `open_access` | `VARCHAR(16)` | `NULLABLE` | Status akses terbuka (**lowercase**, contoh: `all open access`, `gold`). |
@@ -108,14 +114,14 @@ flowchart TD
 | `volume`, `issue`, `art_no`, `page_start`, `page_end` | `VARCHAR(32)`/`TEXT` | `NULLABLE` | Metadata volume/halaman tanpa pemrosesan string. |
 
 ### 4.2 Tabel `authors` (Entitas Penulis)
-| Nama Kolom | Tipe Data | Constraint | Deskripsi & Aturan Normalisasi |
+| Nama Kolom | Tipe Data | Batasan (Constraint) | Deskripsi & Aturan Normalisasi |
 |---|---|---|---|
 | `author_id` | `VARCHAR(64)` / `BIGINT` | `PRIMARY KEY` | Identifier unik penulis (Scopus Author ID jika tersedia). |
 | `author_name` | `VARCHAR(255)` | `NOT NULL` | Nama penulis untuk keperluan tampilan antarmuka (casing asli dipertahankan). |
 | `author_name_normalized` | `VARCHAR(255)` | `NOT NULL`, `INDEX` | Nama hasil normalisasi: **lowercase + strip whitespace + strip punctuation**. Wajib digunakan pada `GROUP BY` dan pencarian nama. |
 
 ### 4.3 Tabel `institutions` (Entitas Institusi & Afiliasi)
-| Nama Kolom | Tipe Data | Constraint | Deskripsi & Aturan Normalisasi |
+| Nama Kolom | Tipe Data | Batasan (Constraint) | Deskripsi & Aturan Normalisasi |
 |---|---|---|---|
 | `institution_id` | `VARCHAR(64)` / `BIGINT` | `PRIMARY KEY` | Identifier unik institusi (Scopus Affiliation ID atau internal ID). |
 | `institution_name` | `TEXT` | `NOT NULL` | Nama resmi institusi untuk display (casing asli dipertahankan). |
@@ -124,35 +130,31 @@ flowchart TD
 | `country` | `VARCHAR(128)` | `NULLABLE`, `INDEX` | Negara lokasi institusi (**lowercase**, contoh: `indonesia`, `singapore`). |
 
 ### 4.4 Tabel `keywords` & `funding`
-- **`keywords`**: `keyword_id BIGSERIAL PK`, `publication_id FK`, `keyword VARCHAR(255) NOT NULL` (lowercase murni), `keyword_type VARCHAR(32)` (`author keyword` vs `index keyword`).
-- **`funding`**: `funding_id BIGSERIAL PK`, `publication_id FK`, `funding_agency TEXT`, `funding_agency_normalized TEXT` (lowercase+trim), `grant_number VARCHAR(128)`, `funding_text TEXT` (lowercase).
+- **`keywords`**: `keyword_id BIGSERIAL PK`, `publication_id VARCHAR(64) FK REFERENCES publications(publication_id)`, `keyword VARCHAR(255) NOT NULL` (lowercase murni), `keyword_type VARCHAR(32)` (`author keyword` vs `index keyword`).
+- **`funding`**: `funding_id BIGSERIAL PK`, `publication_id VARCHAR(64) FK REFERENCES publications(publication_id)`, `funding_agency TEXT`, `funding_agency_normalized TEXT` (lowercase+trim), `grant_number VARCHAR(128)`, `funding_text TEXT` (lowercase).
 
 ### 4.5 Tabel Junction & Referensi
-- **`pub_author`**: `PRIMARY KEY (publication_id, author_id)`, `author_order SMALLINT NOT NULL DEFAULT 1`.
-- **`pub_institution`**: `PRIMARY KEY (publication_id, institution_id)`.
-- **`publication_references`**: `reference_id BIGSERIAL PK`, `publication_id FK`, `reference_order INT NOT NULL`, `reference_text TEXT NOT NULL` (Status MVP: *unlinked citation strings*).
+- **`pub_author`**: `PRIMARY KEY (publication_id, author_id)`, `author_order SMALLINT NOT NULL DEFAULT 1`, `FOREIGN KEY (publication_id) REFERENCES publications(publication_id)`, `FOREIGN KEY (author_id) REFERENCES authors(author_id)`.
+- **`pub_institution`**: `PRIMARY KEY (publication_id, institution_id)`, `FOREIGN KEY (publication_id) REFERENCES publications(publication_id)`, `FOREIGN KEY (institution_id) REFERENCES institutions(institution_id)`.
+- **`publication_references`**: `reference_id BIGSERIAL PK`, `publication_id VARCHAR(64) FK REFERENCES publications(publication_id)`, `reference_order INT NOT NULL`, `reference_text TEXT NOT NULL` (Status MVP: *unlinked citation strings*).
 
 ---
 
-## 5. Vector Layer: Spesifikasi pgvector (`chunks` Table)
+## 5. Lapisan Vector: Spesifikasi pgvector (Tabel `chunks`)
+
+> **Status: PENDING / BELUM SELESAI (Task 1).** DDL di bawah adalah spesifikasi terkunci yang belum dieksekusi — kolom `embedding`, kolom metadata, dan indeks HNSW belum ada di database. Setelah Task 1 selesai, rantai linkage yang berlaku: **article/research record (`publications`) → embedding input (`chunks.chunk_text` dari `Title + Abstract`) → embedding/vector (`chunks.embedding`) → database record (`chunks` ↔ `publications` via `publication_id`) → retrieval (`VectorRoute`)**.
 
 Tabel `chunks` bertindak sebagai indeks semantik berdimensi tinggi:
 
 ```sql
--- DDL Standarisasi Kolom Vektor & Metadata (Task 1)
+-- DDL Penambahan Kolom Vektor & Metadata pada Tabel chunks (Task 1)
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE IF NOT EXISTS chunks (
-    chunk_id            BIGSERIAL PRIMARY KEY,
-    publication_id      VARCHAR(64) NOT NULL REFERENCES publications(publication_id) ON DELETE CASCADE,
-    chunk_text          TEXT NOT NULL,
-    section             VARCHAR(32) DEFAULT 'title_abstract',
-    embedding           vector(1024),                               -- BAAI/bge-m3 Float32 dense representation
-    embedding_model     VARCHAR(64) DEFAULT 'BAAI/bge-m3',
-    embedding_version   VARCHAR(32) DEFAULT 'v1.0',
-    embedding_dimension SMALLINT DEFAULT 1024,
-    created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+-- Tabel chunks sudah ada, DDL di bawah untuk melengkapi kolom embedding jika belum tersedia:
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding vector(1024);
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(64) DEFAULT 'BAAI/bge-m3';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_version VARCHAR(32) DEFAULT 'v1.0';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_dimension SMALLINT DEFAULT 1024;
 
 -- Indeks HNSW Standar Produksi (Keseimbangan Akurasi & Latensi)
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw 
@@ -165,35 +167,35 @@ CREATE INDEX IF NOT EXISTS idx_chunks_pub_id ON chunks (publication_id);
 
 ---
 
-## 6. Derived Graph Layer: Tabel Edge Kolaborasi
+## 6. Lapisan Graf Turunan: Tabel Edge Kolaborasi
 
 Dua tabel edge dimaterialisasi secara idempoten dari tabel junction Silver (`pub_author` dan `pub_institution`):
 
 ```sql
--- Edge 1: Kolaborasi Antar-Institusi
+-- Edge 1: Kolaborasi Antar-Institusi (PLANNED, Task 8)
 CREATE TABLE IF NOT EXISTS institution_collaboration (
-    institution_a       BIGINT   NOT NULL REFERENCES institutions(institution_id) ON DELETE CASCADE,
-    institution_b       BIGINT   NOT NULL REFERENCES institutions(institution_id) ON DELETE CASCADE,
-    weight              INTEGER  NOT NULL,         -- Jumlah publikasi bersama
-    via_publication_ids TEXT[]   NOT NULL,         -- Array ID publikasi sebagai bukti provenance (NFR2)
+    institution_a       VARCHAR(64) NOT NULL REFERENCES institutions(institution_id) ON DELETE CASCADE,
+    institution_b       VARCHAR(64) NOT NULL REFERENCES institutions(institution_id) ON DELETE CASCADE,
+    weight              INTEGER     NOT NULL,         -- Jumlah publikasi bersama
+    via_publication_ids TEXT[]      NOT NULL,         -- Array ID publikasi sebagai bukti provenance (NFR2)
     created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (institution_a, institution_b),
-    CHECK (institution_a < institution_b)          -- Kunci kanonikal: mencegah duplikasi simetris (A,B)/(B,A)
+    CHECK (institution_a < institution_b)             -- Kunci kanonikal: mencegah duplikasi simetris (A,B)/(B,A)
 );
 
 CREATE INDEX idx_inst_collab_a ON institution_collaboration (institution_a);
 CREATE INDEX idx_inst_collab_b ON institution_collaboration (institution_b);
 CREATE INDEX idx_inst_collab_weight ON institution_collaboration (weight DESC);
 
--- Edge 2: Co-Authorship Antar-Penulis
+-- Edge 2: Co-Authorship Antar-Penulis (PLANNED, Task 8)
 CREATE TABLE IF NOT EXISTS author_collaboration (
-    author_a            BIGINT   NOT NULL REFERENCES authors(author_id) ON DELETE CASCADE,
-    author_b            BIGINT   NOT NULL REFERENCES authors(author_id) ON DELETE CASCADE,
-    weight              INTEGER  NOT NULL,         -- Jumlah publikasi bersama
-    via_publication_ids TEXT[]   NOT NULL,         -- Array ID publikasi sebagai bukti grounding
+    author_a            VARCHAR(64) NOT NULL REFERENCES authors(author_id) ON DELETE CASCADE,
+    author_b            VARCHAR(64) NOT NULL REFERENCES authors(author_id) ON DELETE CASCADE,
+    weight              INTEGER     NOT NULL,         -- Jumlah publikasi bersama
+    via_publication_ids TEXT[]      NOT NULL,         -- Array ID publikasi sebagai bukti grounding
     created_at          TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (author_a, author_b),
-    CHECK (author_a < author_b)                    -- Kunci kanonikal: author_a selalu < author_b
+    CHECK (author_a < author_b)                       -- Kunci kanonikal: author_a selalu < author_b
 );
 
 CREATE INDEX idx_author_collab_a ON author_collaboration (author_a);
@@ -202,15 +204,15 @@ CREATE INDEX idx_author_collab_weight ON author_collaboration (weight DESC);
 ```
 
 > **Keputusan Arsitektur Graf (Graph Strategy):**  
-> Penelusuran jaringan kolaborasi pada MVP dijalankan via **PostgreSQL Parameterized Recursive CTE (Templat T1–T4)** pada tabel edge di atas. Penggunaan engine graf terpisah seperti **Neo4j, Memgraph, atau Apache AGE/Kùzu secara eksplisit dinyatakan POST-MVP (Phase 9)** untuk meminimalkan kompleksitas infrastruktur.
+> Penelusuran jaringan kolaborasi pada MVP dijalankan via **Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4)** pada tabel edge di atas. Untuk kebutuhan graf pasca-MVP (Phase 9), sistem menetapkan **Apache AGE** sebagai ekstensi native PostgreSQL pilihan.
 
 ---
 
-## 7. Gold Layer: Tabel Analitik Kepakaran & Tren Topik
+## 7. Lapisan Gold: Tabel Analitik Kepakaran & Tren Topik
 
-Lapisan **Gold Database Layer** menambahkan 3 tabel analitik tingkat lanjut untuk mendukung kebutuhan pembuat kebijakan (*Director Analytics & Policy Synthesis*):
+Lapisan **Database Gold** menambahkan 3 tabel analitik tingkat lanjut untuk mendukung kebutuhan pembuat kebijakan (*Director Analytics & Policy Synthesis*):
 
-### 7.1 Tabel `topics` (Klaster Topik Riset)
+### 7.1 Tabel `topics` (Klaster Topik Riset - PLANNED, Task 8.5)
 Menyimpan klaster topik riset yang dihasilkan melalui analisis ko-kata (*co-word analysis*) dan pemodelan topik (*BERTopic*).
 
 ```sql
@@ -233,7 +235,7 @@ CREATE INDEX idx_topics_total_pub ON topics (total_publications DESC);
 CREATE INDEX idx_topics_rep_vector_hnsw ON topics USING hnsw (representation_vector vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 ```
 
-### 7.2 Tabel `topic_evolution` (Akselerasi & Tren Waktu Topik)
+### 7.2 Tabel `topic_evolution` (Akselerasi & Tren Waktu Topik - PLANNED, Task 8.5)
 Menyimpan metrik evolusi temporal tahunan untuk mengidentifikasi topik yang sedang berkembang (*emerging topics*) atau mengalami penurunan.
 
 ```sql
@@ -256,7 +258,7 @@ CREATE INDEX idx_topic_evol_emerging ON topic_evolution (year, is_emerging) WHER
 CREATE INDEX idx_topic_evol_growth ON topic_evolution (year, growth_score DESC);
 ```
 
-### 7.3 Tabel `researcher_expertise` (Skor Kepakaran Peneliti Terbobot)
+### 7.3 Tabel `researcher_expertise` (Skor Kepakaran Peneliti Terbobot - PLANNED, Task 8.5)
 Menyimpan skor kepakaran peneliti multi-dimensi per topik riset.
 
 ```sql
@@ -282,22 +284,16 @@ CREATE INDEX idx_researcher_exp_author ON researcher_expertise (author_id);
 ```
 
 #### Formula Perhitungan Skor Kepakaran (`ExpertiseScore`):
-Skor kepakaran peneliti dihitung secara matematis menggunakan formula multi-faktor terbobot:
 $$\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$$
-
-Di mana bobot standar (*default weights*) dikonfigurasi sebagai:
-- **$w_1 = 0.30$ (Relevance)**: Tingkat kemiripan semantik naskah penulis terhadap representasi vektor topik (`representation_vector`).
-- **$w_2 = 0.25$ (Productivity)**: Jumlah publikasi penulis dalam topik, diskalakan secara logaritmik $\log_2(1 + N_{\text{pubs}})$.
-- **$w_3 = 0.25$ (Impact)**: Total sitasi penulis dalam topik dibagi rata-rata sitasi global topik (*Field-Weighted Citation Impact*).
-- **$w_4 = 0.20$ (Recency)**: Rasio naskah yang diterbitkan dalam 3 tahun terakhir terhadap total publikasi penulis ($\sum e^{-\lambda(T_{\text{curr}} - T_{\text{pub}})}$).
+- $w_1 = 0.30$ (Relevance), $w_2 = 0.25$ (Productivity), $w_3 = 0.25$ (Impact), $w_4 = 0.20$ (Recency).
 
 ---
 
-## 8. Diagram Lengkap Relasi Entitas (Comprehensive Master ERD)
+## 8. Diagram Lengkap Relasi Entitas (ERD Master Komprehensif)
 
 ```mermaid
 erDiagram
-    %% Silver Core Relational
+    %% Silver Core Relational (9 Tabel Kanonikal)
     PUBLICATIONS ||--o{ PUB_AUTHOR : "has authors"
     AUTHORS ||--o{ PUB_AUTHOR : "writes"
     PUBLICATIONS ||--o{ PUB_INSTITUTION : "affiliated with"
@@ -354,15 +350,15 @@ erDiagram
     }
 
     INSTITUTION_COLLABORATION {
-        bigint institution_a PK,FK
-        bigint institution_b PK,FK
+        varchar institution_a PK,FK
+        varchar institution_b PK,FK
         int weight
         text_array via_publication_ids
     }
 
     AUTHOR_COLLABORATION {
-        bigint author_a PK,FK
-        bigint author_b PK,FK
+        varchar author_a PK,FK
+        varchar author_b PK,FK
         int weight
         text_array via_publication_ids
     }
@@ -408,14 +404,14 @@ erDiagram
 
 | Rute RAG | Lapisan Data yang Diakses | Pola Kueri SQL / Vector / Graph | Output Bukti Terstruktur |
 |---|---|---|---|
-| **`SQLRoute`** | Silver Layer (`publications`, `authors`, `institutions`, `funding`) | Parameterized SQL SELECT / Aggregation (`COUNT`, `AVG`, `GROUP BY`) dengan AST validation `sqlglot`. | Faktual bibliometrik, ranking produktivitas, statistik pendanaan. |
-| **`VectorRoute`** | Silver Vector (`chunks.embedding`) JOIN `publications` | `chunks.embedding <=> query_vec` (HNSW Cosine) dengan `DISTINCT ON (p.publication_id) LIMIT 8`. | Bukti semantik naskah relevan, ringkasan abstrak, sitasi DOI. |
-| **`GraphRoute`** | Edge Layer (`institution_collaboration`, `author_collaboration`) | Parameterized Recursive CTE (Templat T1–T4) dengan batasan kedalaman `max_hops = 3`. | Jaringan kolaborasi, partner institusi, bukti co-authorship via `via_publication_ids`. |
-| **`HybridRoute`** | Gold Layer (`topics`, `topic_evolution`, `researcher_expertise`) + Silver & Vector | Join analitik multi-tabel: pencarian klaster topik, akselerasi tren, dan pemeringkatan kepakaran. | Tren topik tahunan, skor kepakaran multi-dimensi, sintesis kebijakan. |
+| **`SQLRoute`** | Lapisan Silver (`publications`, `authors`, `institutions`, `funding`, `pub_author`, `pub_institution`, `keywords`, `publication_references`) | SQL SELECT / Agregasi terparameterisasi (`COUNT`, `AVG`, `GROUP BY`) dengan validasi AST `sqlglot`. | Faktual bibliometrik, ranking produktivitas, statistik pendanaan. |
+| **`VectorRoute`** | Silver Vector (`chunks.embedding`) JOIN `publications` | `chunks.embedding <=> query_vec` (Kosinus HNSW $\ge 0.65$) dengan `DISTINCT ON (p.publication_id) LIMIT 8`. | Bukti semantik naskah relevan, ringkasan abstrak, sitasi DOI/no-doi. |
+| **`GraphRoute`** | Lapisan Edge (`institution_collaboration`, `author_collaboration`) | Recursive CTE Terparameterisasi (Templat T1–T4) dengan batasan kedalaman `max_hops = 3`. | Jaringan kolaborasi, partner institusi, bukti co-authorship via `via_publication_ids`. |
+| **`HybridRoute`** | Lapisan Gold (`topics`, `topic_evolution`, `researcher_expertise`) + Silver & `chunks` | Gabungan (join) analitik multi-tabel: pencarian klaster topik, akselerasi tren, dan pemeringkatan kepakaran. | Tren topik tahunan, skor kepakaran multi-dimensi, sintesis kebijakan. |
 
 ---
 
-## 10. Prosedur Audit & Validasi Skema (Task 0 DDL Checklist)
+## 10. Prosedur Audit & Validasi Skema (Daftar Periksa DDL Task 0)
 
 Sebelum skema ini didaftarkan sebagai system prompt Text-to-SQL atau dieksekusi oleh backend, jalankan kueri introspeksi berikut pada Task 0 (`10 Implementation Plan.md`):
 
@@ -430,13 +426,58 @@ WHERE table_schema = 'public'
 ORDER BY table_name, ordinal_position;
 ```
 
-### Checklist Kesiapan Skema (Schema Acceptance Criteria):
-- [ ] **AC-DB-1**: 9 tabel relasional Silver terverifikasi ada di Supabase dengan tipe data dan kolom sesuai §4.
+### Daftar Periksa Kesiapan Skema (Kriteria Penerimaan Skema):
+- [ ] **AC-DB-1**: 9 tabel relasional Silver terverifikasi ada di PostgreSQL dengan tipe data dan kolom sesuai §4.
 - [ ] **AC-DB-2**: Seluruh kolom teks naratif/kategorikal dipastikan telah di-lowercase sesuai aturan pembersihan.
 - [ ] **AC-DB-3**: Kolom `author_name_normalized`, `institution_name_normalized`, dan `funding_agency_normalized` tersedia dan terindeks untuk agregasi.
-- [ ] **AC-DB-4**: Granularitas tabel `chunks` terverifikasi via query rasio (1:1 vs N:1).
+- [ ] **AC-DB-4**: Granularitas tabel `chunks` terverifikasi via query rasio publikasi-chunk.
 - [ ] **AC-DB-5**: Ekstensi `vector` aktif dan kolom `chunks.embedding vector(1024)` beserta metadata versi terbuat (Task 1).
 - [ ] **AC-DB-6**: Indeks HNSW `idx_chunks_embedding_hnsw` (`m=16, ef=64`) terbuat dan aktif pada tabel `chunks` (Task 1).
 - [ ] **AC-DB-7**: Tabel edge `institution_collaboration` dan `author_collaboration` terbuat dan terisi data agregasi idempoten (Task 8).
 - [ ] **AC-DB-8**: Tabel Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) terbuat beserta indeks dan formula kepakaran terbobot (§7).
 - [ ] **AC-DB-9**: Hak akses `SELECT` pada seluruh tabel Silver, Edge, dan Gold diberikan kepada role `app_readonly` dengan enforcement timeout 10 detik.
+
+---
+
+## 11. Matriks Konsistensi Keputusan (Lintas Dokumen)
+
+| Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
+|---|---|---|---|
+| **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
+| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
+| **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
+| **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
+| **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
+| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
+| **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
+| **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
+| **Dataset skala produksi** | Target masa depan untuk ingestion Scopus skala besar (>100K publikasi) dengan pipeline batch otomatis, deduplikasi multi-tier, dan worker async | `01`, `02`, `03`, `04`, `11`, `12` | ALIGNED |
+
+---
+
+## 12. Keputusan Arsitektur Kanonikal
+
+1. **Keputusan Sitasi Tanpa DOI:**
+   - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
+2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
+   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Keputusan Mesin Graf Pasca-MVP:**
+   - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
+
+---
+
+## 13. Riwayat Perubahan
+
+| Dokumen | Perubahan | Alasan |
+|---|---|---|
+| `docs/04 Database Schema.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
+| `docs/04 Database Schema.md` v3.5.0 | Menandai DB + prototype + cleaning/cleaned-export sebagai DONE; menandai vector storage (kolom, data, HNSW) sebagai PENDING eksplisit; menambah rantai linkage article → embedding input → vector → record | Sinkronisasi progress aktual 2026-09-27 |
+| `docs/04 Database Schema.md` v3.4.0 | Mengembalikan seluruh nama 9 tabel Silver ke nama standar tanpa akhiran `_cleaned` pada DDL, ERD, dan kueri | Penyelarasan format penamaan sesuai instruksi project |
+| `docs/04 Database Schema.md` v3.4.0 | Mengunci keputusan format sitasi (`no-doi`), threshold kosinus $\ge 0.65$, dan strategi graf Apache AGE | Menutup open decisions menjadi keputusan kanonikal |
+| `docs/04 Database Schema.md` v3.4.0 | Memperbarui Matriks Konsistensi Keputusan dan Riwayat Perubahan | Menjamin konsistensi dokumen di seluruh repository |

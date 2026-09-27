@@ -1,77 +1,79 @@
-# API Design — Spesifikasi Teknis & Kontrak API (/api/v1)
+# Desain API — Spesifikasi Teknis & Kontrak API (/api/v1)
 
-**Document Version:** 3.2.0 (Consolidated Hybrid Master Blueprint)  
-**Status Date:** 2026-09-28  
-**Supersedes:** `06 Api Design.md` Draft v2 s.d. v3.0.0  
-**Authoritative Context:** Aligned with `README.md` and `docs/00` through `docs/12`  
+**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Tanggal Status:** 2026-09-27  
+**Menggantikan:** `06 Api Design.md` Draft v2 s.d. v3.5.0  
+**Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi (Verifikasi Repositori 2026-09-28):**  
-> Repositori saat ini hanya berisi dokumentasi perancangan teknis (`README.md` dan `docs/00–12`). Direktori implementasi (`backend/`, `frontend/`, `database/`, `scripts/`, `docker/`, `tests/`) belum ada di repositori. Seluruh endpoint API, skema Pydantic `EvidenceObject`, dan middleware di bawah ini berstatus **PLANNED / NOT IMPLEMENTED** dan mendefinisikan kontrak rekayasa normatif untuk fase implementasi (Task 2, 4, 10).
-
----
-
-## 1. Purpose
-
-Dokumen ini mendefinisikan spesifikasi teknis lengkap dan kontrak antarmuka **REST API v1** untuk sistem **Research Intelligence Assistant**. 
-
-API ini bertindak sebagai **lapisan batas sistem terluar (*system boundary layer*)** yang melayani kueri analitik dan kebijakan riset multi-moda melalui endpoint terpadu `POST /api/v1/ask`. Seluruh respons analitik diwajibkan menyertakan **`EvidenceObject` terstruktur** untuk menjamin *zero-hallucination* pada data statistik dan metrik bibliometrik.
+> **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
+> 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal.  
+> 2. **Implementasi API (PLANNED / NOT YET IMPLEMENTED):** Direktori implementasi (`backend/`, `frontend/`, `database/`, `scripts/`, `docker/`, `tests/`) belum ada di repositori. Seluruh endpoint API, skema Pydantic `EvidenceObject`, middleware, dan handler di bawah ini berstatus **PLANNED** dan mendefinisikan kontrak rekayasa normatif untuk fase implementasi (Task 2, 4, 10).
+> 3. **Sinkronisasi Progress 2026-09-27:** Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) **DONE**; generate + insert embedding/vector ke pgvector (Task 1) **PENDING** — contoh payload `health` dengan `pgvector_ready: true` / `gold_tables_ready: true` di §6 baru berlaku pasca-Task 1/8.5.
 
 ---
 
-## 2. API Architecture & System Boundary
+## 1. Tujuan
+
+Dokumen ini mendefinisikan spesifikasi teknis lengkap dan kontrak antarmuka **REST API v1** untuk sistem **Asisten Riset Intelijen**. 
+
+API ini bertindak sebagai **lapisan batas sistem terluar (*system boundary layer*)** yang melayani kueri analitik dan kebijakan riset multi-moda melalui endpoint terpadu `POST /api/v1/ask`. Seluruh respons analitik diwajibkan menyertakan **`Objek Bukti (EvidenceObject)` terstruktur** untuk menjamin *tanpa halusinasi (zero-hallucination)* pada data statistik dan metrik bibliometrik.
+
+---
+
+## 2. Arsitektur API & Batas Sistem
 
 ```mermaid
 flowchart TD
-    Client[Next.js Web Client / API Client] -->|HTTPS POST /api/v1/ask| Gateway[FastAPI Gateway Boundary]
+    Client[Klien Web Next.js / Klien API] -->|HTTPS POST /api/v1/ask| Gateway[Batas Gateway FastAPI]
     
-    subgraph GatewayBoundary [API Gateway Responsibilities]
-        Gateway --> PydanticVal[Pydantic v2 Schema Validation]
-        PydanticVal --> Trace[UUIDv4 request_id Generation]
-        Trace --> RateLimit[IP Rate Limiter Check]
+    subgraph GatewayBoundary [Tanggung Jawab Gateway API]
+        Gateway --> PydanticVal[Validasi Skema Pydantic v2]
+        PydanticVal --> Trace[Pembuatan request_id UUIDv4]
+        Trace --> RateLimit[Pemeriksaan Pembatas Laju IP]
     end
 
-    RateLimit --> AppService[Query Application Orchestrator]
+    RateLimit --> AppService[Orkestrator Aplikasi Kueri]
     
-    subgraph InternalRAGPipeline [Internal RAG Core - 4 Routes]
-        AppService --> Router[Question Router: Intent Classifier]
-        Router -->|SQLRoute| SQLR[SqlRetriever: Silver Relational]
-        Router -->|VectorRoute| VecR[VectorRetriever: pgvector HNSW]
-        Router -->|GraphRoute| GraphR[GraphRetriever: Collaboration Edges]
-        Router -->|HybridRoute| HybR[HybridRetriever: Gold Analytics Layer]
+    subgraph InternalRAGPipeline [Inti RAG Internal - 4 Rute]
+        AppService --> Router[Router Pertanyaan: Pengklasifikasi Intent]
+        Router -->|SQLRoute| SQLR[SqlRetriever: 9 Tabel Silver]
+        Router -->|VectorRoute| VecR[VectorRetriever: chunks pgvector HNSW]
+        Router -->|GraphRoute| GraphR[GraphRetriever: Edge Kolaborasi]
+        Router -->|HybridRoute| HybR[HybridRetriever: Lapisan Analitik Gold + Silver]
         
         SQLR & VecR & GraphR & HybR --> Unifier[EvidenceUnifier & Ranker]
         Unifier --> Synthesizer[AnswerSynthesizer & CitationVerifier]
     end
 
-    Synthesizer --> Formatter[API Response Envelope with Evidence Objects]
-    Formatter -->|200 OK JSON Payload| Client
+    Synthesizer --> Formatter[Envelope Respons API dengan Objek Bukti]
+    Formatter -->|Payload JSON 200 OK| Client
 
-    subgraph ErrorHandlingBoundary [Exception & Security Shield]
-        InternalRAGPipeline -.->|Exception Raised| ErrorMap[Exception Mapper]
-        ErrorMap -->|Sanitized JSON Error| Client
+    subgraph ErrorHandlingBoundary [Perisai Pengecualian & Keamanan]
+        InternalRAGPipeline -.->|Pengecualian Dimunculkan| ErrorMap[Pemeta Pengecualian]
+        ErrorMap -->|Error JSON Tersanitasi| Client
     end
 ```
 
 ---
 
-## 3. Current vs Target State
+## 3. Status Saat Ini vs Target
 
-| Endpoint Path | HTTP Method | Status Implementasi | Target Phase | Deskripsi & Kesenjangan (Gap) |
+| Path Endpoint | Metode HTTP | Status Implementasi | Fase Target | Deskripsi & Kesenjangan (Gap) |
 |---|---|---|---|---|
 | `/api/v1/ask` | `POST` | `PLANNED` | MVP (Task 10) | Endpoint primer RAG riset multi-rute; mendukung payload `evidence_objects`. |
-| `/api/v1/health` | `GET` | `PLANNED` | MVP (Task 2) | Endpoint health & dependency check (PostgreSQL, pgvector, Ollama). |
-| `/api/query` | `POST` | `SUPERSEDED` | Historical Draft v2 | Desain v2 awal; **resmi superseded oleh `/api/v1/ask`**. |
-| `/api/v1/ask/stream` | `POST` | `POST-MVP` | Phase 10 (Future) | SSE Streaming synthesis token-by-token; didefer ke pasca-MVP. |
-| Resource Endpoints (`/papers`, `/authors`, `/topics`) | `GET` | `POST-MVP` | Phase 10 (Future) | Metadata detail individual; didefer ke pasca-MVP. |
+| `/api/v1/health` | `GET` | `PLANNED` | MVP (Task 2) | Endpoint pemeriksaan kesehatan & dependensi (PostgreSQL, pgvector, Ollama). |
+| `/api/query` | `POST` | `SUPERSEDED` | Historis Draft v2 | Desain awal v2; **resmi digantikan (superseded) oleh `/api/v1/ask`**. |
+| `/api/v1/ask/stream` | `POST` | `POST-MVP` | Fase 10 (Masa Depan) | Sintesis streaming SSE token-per-token; ditunda ke pasca-MVP. |
+| Endpoint Resource (`/papers`, `/authors`, `/topics`) | `GET` | `POST-MVP` | Fase 10 (Masa Depan) | Detail metadata individual; ditunda ke pasca-MVP. |
 
 ---
 
-## 4. API Conventions & Standards
+## 4. Konvensi & Standar API
 
-- **Base Path**: `/api/v1`
+- **Path Dasar (Base Path)**: `/api/v1`
 - **Header Request Wajib**: `Content-Type: application/json`
-- **Header Response Standar**: `Content-Type: application/json; charset=utf-8`
-- **Header Tracing**: `X-Request-ID: <UUIDv4>`
+- **Header Respons Standar**: `Content-Type: application/json; charset=utf-8`
+- **Header Penelusuran (Tracing)**: `X-Request-ID: <UUIDv4>`
 
 ---
 
@@ -79,7 +81,7 @@ flowchart TD
 
 Menerima pertanyaan bahasa natural, mengeksekusi routing 4-jalur, menyintesis jawaban analitik, dan mengembalikan bukti terstruktur.
 
-### 5.1 Request Contract (Pydantic v2 Schema)
+### 5.1 Kontrak Request (Skema Pydantic v2)
 
 ```python
 from pydantic import BaseModel, Field
@@ -87,8 +89,8 @@ from typing import Optional, List, Literal
 
 class FilterParams(BaseModel):
     year: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun publikasi eksak")
-    year_from: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun publikasi awal")
-    year_to: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun publikasi akhir")
+    year_from: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun awal publikasi")
+    year_to: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun akhir publikasi")
     country: Optional[str] = Field(None, max_length=128, description="Negara institusi (lowercase)")
     author_name: Optional[str] = Field(None, max_length=255, description="Nama penulis")
     institution_name: Optional[str] = Field(None, max_length=255, description="Nama institusi")
@@ -101,16 +103,16 @@ class AskRequest(BaseModel):
     developer_mode: Optional[bool] = Field(False, description="Flag untuk menyertakan metadata debug, SQL, dan latensi")
 ```
 
-### 5.2 Response Contract (Pydantic v2 Schema with Evidence Objects)
+### 5.2 Kontrak Respons (Skema Pydantic v2 dengan Objek Bukti)
 
 ```python
 from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Union, Dict, Any
 
 class EvidenceSourceRef(BaseModel):
-    publication_id: str = Field(..., description="ID kanonikal publikasi di PostgreSQL")
-    doi: Optional[str] = Field(None, description="DOI resmi publikasi")
-    eid: Optional[str] = Field(None, description="Scopus EID publikasi")
+    publication_id: str = Field(..., description="ID kanonikal publikasi di PostgreSQL (publications)")
+    doi: Optional[str] = Field(None, description="DOI resmi publikasi (jika ada)")
+    eid: Optional[str] = Field(None, description="EID Scopus publikasi")
     title: Optional[str] = Field(None, description="Judul publikasi")
     year: Optional[int] = Field(None, description="Tahun publikasi")
 
@@ -144,16 +146,16 @@ class DebugInfo(BaseModel):
     latency_breakdown_ms: Dict[str, float]
 
 class AskResponse(BaseModel):
-    request_id: str = Field(..., description="UUIDv4 pelacakan request unik")
+    request_id: str = Field(..., description="UUIDv4 pelacakan request yang unik")
     status: Literal["ok", "not_found", "needs_clarification", "error"]
     route: Literal["SQLRoute", "VectorRoute", "GraphRoute", "HybridRoute"]
-    answer: str = Field(..., description="Teks jawaban naratif ter-grounding")
+    answer: str = Field(..., description="Teks jawaban naratif yang ter-grounding")
     evidence_objects: List[EvidenceObject] = Field(default_factory=list, description="Array bukti numerik dan tematik terstruktur")
     sources: List[SourceItem] = Field(default_factory=list, description="Daftar naskah literatur bukti")
     candidates: Optional[List[CandidateItem]] = Field(None, description="Daftar pilihan entitas ambigu saat status=needs_clarification")
     filters_ignored: List[str] = Field(default_factory=list, description="Daftar filter yang diabaikan")
-    answered_via_fallback: bool = Field(False, description="Flag jika rute dijatuhkan ke fallback semantik")
-    unverified_citations: List[str] = Field(default_factory=list, description="Sitasi yang di-strip oleh CitationVerifier")
+    answered_via_fallback: bool = Field(False, description="Flag bila rute dijatuhkan ke fallback semantik")
+    unverified_citations: List[str] = Field(default_factory=list, description="Sitasi yang dipangkas oleh CitationVerifier")
     debug: Optional[DebugInfo] = Field(None, description="Metadata debug jika developer_mode=true")
 ```
 
@@ -218,9 +220,9 @@ class AskResponse(BaseModel):
 
 ---
 
-## 6. Spesifikasi Health Check: `GET /api/v1/health`
+## 6. Spesifikasi Pemeriksaan Kesehatan: `GET /api/v1/health`
 
-Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, dan service Ollama:
+Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, dan layanan Ollama:
 
 ```json
 {
@@ -248,9 +250,9 @@ Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, dan
 
 ---
 
-## 7. Error Handling & Standardized Error Envelope
+## 7. Penanganan Error & Envelope Error Terstandarisasi
 
-Semua pengecualian (*exceptions*) internal ditangkap di gerbang boundary dan dipetakan ke format error terstandarisasi:
+Semua pengecualian (*exception*) internal ditangkap di gerbang batas (boundary) dan dipetakan ke format error terstandarisasi:
 
 ```json
 {
@@ -265,9 +267,54 @@ Semua pengecualian (*exceptions*) internal ditangkap di gerbang boundary dan dip
 
 ---
 
-## 8. Kriteria Penerimaan Kontrak API (Acceptance Criteria)
+## 8. Kriteria Penerimaan Kontrak API (Kriteria Penerimaan)
 
 - [ ] **AC-API-1**: Endpoint `POST /api/v1/ask` tervalidasi menggunakan Pydantic v2 dan mendukung 4 rute retrieval normatif.
 - [ ] **AC-API-2**: Skema `AskResponse` menyertakan array `evidence_objects` dengan field `claim`, `metric`, `value`, `period`, `sources`, dan `confidence`.
 - [ ] **AC-API-3**: Tidak ada error internal atau raw stack trace yang bocor ke respons client.
 - [ ] **AC-API-4**: Endpoint `GET /api/v1/health` memverifikasi status koneksi basis data Silver/Gold, pgvector, dan LLM Ollama.
+
+---
+
+## 9. Matriks Konsistensi Keputusan (Lintas Dokumen)
+
+| Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
+|---|---|---|---|
+| **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
+| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
+| **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
+| **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
+| **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
+| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
+| **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
+| **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
+| **Dataset skala produksi** | Target masa depan untuk ingestion Scopus skala besar (>100K publikasi) dengan pipeline batch otomatis, deduplikasi multi-tier, dan worker async | `01`, `02`, `03`, `04`, `11`, `12` | ALIGNED |
+
+---
+
+## 10. Keputusan Arsitektur Kanonikal
+
+1. **Keputusan Sitasi Tanpa DOI:**
+   - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
+2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
+   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Keputusan Mesin Graf Pasca-MVP:**
+   - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
+
+---
+
+## 11. Riwayat Perubahan
+
+| Dokumen | Perubahan | Alasan |
+|---|---|---|
+| `docs/06 Api Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
+| `docs/06 Api Design.md` v3.5.0 | Menandai cleaning + cleaned export DONE; mengklarifikasi contoh `health` (`pgvector_ready`/`gold_tables_ready: true`) baru berlaku pasca-Task 1/8.5 | Sinkronisasi progress aktual 2026-09-27 |
+| `docs/06 Api Design.md` v3.4.0 | Menyelaraskan referensi model data backend ke nama tabel kanonikal tanpa akhiran `_cleaned` | Penyelarasan format penamaan sesuai instruksi project |
+| `docs/06 Api Design.md` v3.4.0 | Mengunci keputusan format sitasi (`no-doi`), threshold kosinus $\ge 0.65$, dan strategi graf Apache AGE | Menutup open decisions menjadi keputusan kanonikal |
+| `docs/06 Api Design.md` v3.4.0 | Memperbarui Matriks Konsistensi Keputusan dan Riwayat Perubahan | Menjamin standarisasi dokumentasi di seluruh repository |

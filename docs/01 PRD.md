@@ -1,135 +1,143 @@
-# PRD — Research Intelligence Assistant (Publications Knowledge Base)
+# PRD — Asisten Riset Intelijen (Basis Pengetahuan Publikasi)
 
-Status: Draft v2 | Owner: Nouval | Last updated: 2026-09-23 | Architecture-review alignment: 2026-09-27 (docs-only, no runtime verification)
+**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Tanggal Status:** 2026-09-27  
+**Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
 ## 1. Latar Belakang
 
-Data publikasi ilmiah (11 tabel: 9 relasional — `publications`, `authors`,
-`institutions`, `keywords`, `funding`, `publication_references`, `chunks`, + 2
-tabel junction — dan 2 **edge table derivatif** `institution_collaboration` /
-`author_collaboration`, lihat 04 §4.2) — **data siap dalam database SQLite lokal**.
-Saat ini data hanya bisa diakses lewat query SQL manual (tanpa embedding, tanpa edge tables).
-Tidak ada cara bagi pengguna non-teknis untuk bertanya dalam bahasa natural dan
-dapat jawaban yang akurat, bisa diverifikasi, dan berdasar pada data yang
-benar-benar ada di database (bukan halusinasi model) — **fitur ini PLANNED,
-belum terintegrasi** (lihat 10-implementation-plan.md untuk urutan build).
+Data publikasi ilmiah prototipe (9 tabel relasional kanonikal — `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` — serta 2 **edge table derivatif** `institution_collaboration` dan `author_collaboration` yang berstatus *planned*, lihat `docs/04 Database Schema.md`) **sudah tersedia dalam basis data PostgreSQL**.
 
-**Status infrastruktur:**
-- Database: SQLite (9 tabel sumber terload, tanpa kolom embedding, tanpa edge tables)
-- pgvector: BELUM terpasang — harus dibuat sebagai ekstensine + kolom `chunks.embedding`
-- Edge tables (`institution_collaboration`, `author_collaboration`): BELUM dibuat
-  — harus dibangun dari junction table (Task 8, 10-implementation-plan.md)
-- Embedding pipeline untuk kolom `chunks`: BELUM ada — blocker keras (Task 1)
-  sebelum jalur semantic/hybrid bisa jalan.
+Database PostgreSQL **sudah dibuat dan siap pakai**, sehingga tidak perlu dibuat ulang. Kredensial koneksi telah dikonfigurasi secara aman di internal environment dan tidak diekspos dalam dokumentasi. Basis data saat ini memuat **dataset prototipe kecil** yang menggunakan struktur sekitar 20 kolom (tepatnya 22 kolom metadata naskah pada `publications`) yang disiapkan khusus untuk **validasi end-to-end (E2E)**. Tujuannya adalah membuktikan seluruh rantai retrieval, routing, unifikasi bukti, sintesis, hingga UI berjalan sempurna pada dataset kecil sebelum melangkah ke ingestion dataset Scopus skala besar.
+
+Dokumentasi membedakan secara tegas dua fase rekayasa:
+1. **Fase Prototipe / Validasi E2E (Saat Ini)**: Menjalankan dan membuktikan alur fungsional penuh pada 9 tabel relasional kanonikal yang sudah ter-load di PostgreSQL.
+2. **Large-Scale / Future Production Ingestion Phase (Future)**: Pipeline ingestion otomatis dari berkas mentah Scopus (Bronze), deduplikasi multi-tier, batch embedding skala besar, dan pemodelan Gold analytics lengkap.
+
+**Status infrastruktur & data saat ini:**
+- **Database:** PostgreSQL sudah aktif dan terisi dataset prototipe pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`).
+- **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`; tahap ini selesai dan bukan pending.
+- **pgvector & Embedding (`chunks.embedding`):** Ekstensi `vector` dan kolom `chunks.embedding vector(1024)` beserta indeks HNSW berstatus **PLANNED / NOT YET IMPLEMENTED** (akan dieksekusi pada Task 1, `docs/10 Implementation Plan.md`).
+- **Edge Tables (`institution_collaboration`, `author_collaboration`):** **PLANNED / NOT YET IMPLEMENTED** — akan dimaterialisasi secara idempoten dari tabel relasional junction (Task 8).
+- **Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`):** **PLANNED / NOT YET IMPLEMENTED** — akan dikomputasi dari tabel Silver kanonikal (Task 8.5).
+
+---
 
 ## 2. Masalah yang Diselesaikan
 
-- Menjawab pertanyaan agregat/analitik ("siapa 5 author paling produktif tahun 2023?",
-  "institusi mana yang paling banyak funding dari NIH?") butuh SQL manual setiap kali.
-- Menjawab pertanyaan semantik/eksploratif ("paper apa saja yang membahas stres
-  oksidatif pada Wharton's jelly?") butuh full-text/semantic search yang belum ada.
-- Tidak ada satu pintu masuk (chat/UI) yang menggabungkan dua kebutuhan itu sekaligus
-  dan menjawab dengan grounding ke data asli (bukan jawaban umum dari pengetahuan model).
+- Menjawab pertanyaan agregat/analitik (*"siapa 5 author paling produktif tahun 2023?"*, *"institusi mana yang paling banyak funding dari NIH?"*) butuh SQL manual setiap kali.
+- Menjawab pertanyaan semantik/eksploratif (*"paper apa saja yang membahas stres oksidatif pada Wharton's jelly?"*) butuh full-text/semantic search yang belum ada.
+- Tidak ada satu pintu masuk (chat/UI) yang menggabungkan dua kebutuhan itu sekaligus dan menjawab dengan grounding ke data asli (bukan jawaban umum dari pengetahuan model).
 
-## 3. Goal (Fase MVP — End-to-End)
+---
 
-**Goal utama: sistem harus jalan end-to-end.** Bukan optimal, bukan lengkap semua
-fitur — tapi rantai penuh dari pertanyaan pengguna sampai jawaban yang benar dan
-grounded harus berfungsi, bisa didemokan, dan bisa dipakai tim internal setiap hari.
+## 3. Tujuan (Fase MVP — End-to-End)
 
-Definisi "jalan end to end" untuk MVP ini (target architecture, not yet implemented):
+**Tujuan utama: sistem harus berjalan end-to-end.** Bukan optimal, bukan lengkap semua fitur — tetapi rantai penuh dari pertanyaan pengguna hingga jawaban yang benar dan ter-grounding harus berfungsi, bisa didemokan, dan bisa dipakai tim internal setiap hari.
 
-1. User mengetik pertanyaan bahasa natural di UI web (Next.js).
-2. Sistem backend menentukan apakah pertanyaan butuh query terstruktur (SQL)
-   atau pencarian semantik (vector), atau keduanya — **router belum terintegrasi**.
-3. Query dieksekusi ke PostgreSQL/pgvector (target) atau SQLite (current —
-   belum ada pgvector/embedding) — **retrieval belum terintegrasi**.
-4. Hasil (rows / chunks) disusun jadi jawaban natural language oleh LLM, dengan
-   sitasi ke publikasi asal (judul, tahun, DOI) — bukan jawaban tanpa sumber.
-5. Jawaban + sumber ditampilkan di UI dengan rapi, termasuk saat data kosong/tidak
-   relevan (tidak mengarang jawaban).
+Definisi "berjalan end-to-end" untuk MVP ini:
+1. Pengguna mengetik pertanyaan berbahasa natural di UI web (Next.js).
+2. Backend sistem menentukan apakah pertanyaan membutuhkan kueri terstruktur (`SQLRoute`), pencarian semantik (`VectorRoute`), jaringan kolaborasi (`GraphRoute`), atau analitik tren (`HybridRoute`).
+3. Kueri dieksekusi ke PostgreSQL (jalur terstruktur langsung ke 9 tabel kanonikal; jalur semantik memanfaatkan `chunks.embedding` setelah Task 1 selesai).
+4. Hasil (baris / chunk / metrik) disusun menjadi jawaban berbahasa natural oleh LLM, dengan sitasi ke publikasi asal (`[Title, Year, DOI]` atau `[Title, Year, no-doi]`) — bukan jawaban tanpa sumber.
+5. Jawaban + sumber ditampilkan di UI dengan rapi, termasuk saat data kosong/tidak relevan (short-circuit deterministik).
+
+---
 
 ## 4. Target Pengguna
 
-Internal only untuk MVP — tim riset/analis kecil yang sudah dipercaya (lihat 08-security.md
-untuk konsekuensi pilihan akses ini). Bukan produk publik, belum butuh multi-tenant
-auth yang kompleks.
+Internal only untuk MVP — tim riset/analis kecil yang sudah dipercaya (lihat `docs/08 Security.md` untuk konsekuensi pilihan akses ini). Bukan produk publik, belum butuh multi-tenant auth yang kompleks.
 
-## 5. Scope MVP (In)
+---
 
-- Chat UI satu halaman (single-turn atau multi-turn ringan, tanpa riwayat kompleks).
-- **Target architecture**: hybrid retrieval — text-to-SQL untuk query terstruktur/agregat,
-  vector search (target: pgvector + kolom `chunks.embedding`) untuk query semantik,
-  gabungan keduanya untuk query campuran, dan relational (target: edge tables
-  institution_collaboration / author_collaboration) untuk pertanyaan kolaborasi
-  antar entitas — keputusan P0.1: knowledge graph in-scope MVP dalam bentuk minimum,
-  namun **belum dibangun** (lihat 04 §4.2 / 10-implementation-plan.md Task 8).
-- **Embedding pipeline untuk kolom `chunks`**: BELUM Ada — ini blocker keras
-  (lihat 10-implementation-plan.md Task 1). **Sebelum task ini selesai, jalur
-  semantic dan hybrid tidak berfungsi sama sekali.**
-- Router: desain LLM-based (Qwen2.5-Coder-7B) dengan **entity-contract typed**
-  dan **entity resolution gate** untuk memilih jalur SQL vs vector vs relational
-  vs gabungan terstruktur+semantik — **design sudah ada tapi belum diintegrasi ke
-  backend API** (lihat 10-implementation-plan.md Task 4).
-- Jawaban dengan sitasi (judul publikasi, tahun, author, DOI bila ada).
-- Read-only DB access — sistem tidak pernah menulis/mengubah data lewat chat.
-- LLM & embedding self-hosted, CPU-only (Ollama + Qwen2.5-Coder-7B, embedding target
-  BAAI/bge-m3, 1024 dims) — lihat 09-tech-stack.md untuk rationale dan trade-off performa.
-  **Catatan**: embedding model dan diintegrasi BELUM terintegrasi (config.py
-  masih menggunakan all-MiniLM-L6-v2, lihat 09-tech-stack.md untuk target).
+## 5. Cakupan MVP (Termasuk)
 
-## 6. Scope MVP (Out — Deferred ke Fase 2+)
+- UI chat satu halaman (tata letak padat ala Notion/Linear).
+- **Arsitektur target**: retrieval hybrid — 4 rute dinamis: `SQLRoute` (Relasional Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (tabel edge turunan `institution_collaboration` dan `author_collaboration`), dan `HybridRoute` (Lapisan Gold `topics`, `topic_evolution`, `researcher_expertise` + Silver).
+- **Pipeline embedding untuk kolom `chunks`**: **PLANNED / NOT YET IMPLEMENTED** (Task 1).
+- Router: desain rules-first dengan fallback LLM (Qwen2.5-Coder-7B) beserta **kontrak entitas bertipe (entity-contract typed)** dan **gerbang resolusi entitas (entity resolution gate)**.
+- Jawaban dengan sitasi formal terstandarisasi: `[Judul Publikasi, Tahun, DOI]` jika ada DOI, dan `[Judul Publikasi, Tahun, no-doi]` jika naskah tidak memiliki DOI.
+- Akses DB read-only — sistem tidak pernah menulis/mengubah data lewat chat (peran `app_readonly`).
+- LLM & embedding mandiri (self-hosted), khusus CPU (Ollama + Qwen2.5-Coder-7B, embedding `BAAI/bge-m3`, 1024 dimensi).
+- **Normalisasi Casing & Pembersihan:** Aturan lowercase diterapkan secara kanonikal pada data tersimpan untuk field naratif/kategorikal serta kolom `*_normalized` guna mendukung `GROUP BY` dan pencarian eksak, sementara casing asli judul dan nama entitas dipertahankan untuk tampilan UI dan sitasi resmi.
 
-- Fuzzy entity resolution lanjutan untuk author/institution (**alias semantik** —
-  lebih dari sekadar lower+trim `*_normalized` dan lebih dari gate exact/substring
-  yang sudah ada di MVP). Entity gate minimum (0/multi/1 kandidat + `needs_clarification`)
-  ada di MVP (05 §2.4); fuzzy matching "MIT" vs "Massachusetts Institute of
-  Technology" tetap di-defer ke roadmap §2.1, di-flag sebagai risiko kualitas agregasi.
-- Multi-user auth, row-level security, rate limiting per user.
-- GPU-backed model yang lebih besar/cepat.
-- Riwayat percakapan persisten, multi-session, sharing hasil.
-- Evaluasi otomatis (golden query set, regression testing jawaban).
-- Ingestion pipeline otomatis untuk publikasi baru (saat ini data statis, load sekali).
+---
 
-## 7. Success Metrics (MVP)
+## 6. Cakupan MVP (Dikecualikan — Ditunda ke Fase 2+)
 
-Kualitatif dulu karena ini fase "jalan", bukan fase "optimal":
-- Pertanyaan agregat sederhana (top N by count/year/institution) → jawaban benar,
-  diverifikasi manual terhadap query SQL langsung.
-- Pertanyaan semantik ("paper tentang X") → mengembalikan publikasi yang secara
-  topikal relevan (judul relevance check manual terhadap top-5 hasil).
-- Pertanyaan relational sederhana (kolaborasi institusi, co-author) → jawaban
-  konsisten dengan edge table (dicek manual), membawa provenance publikasi.
-- Entitas ambigu ("j. wang") → sistem meminta klarifikasi/`needs_clarification`
-  atau menyebut ambiguitas eksplisit, bukan memilih kandidat secara diam-diam.
-- Setiap sitasi dalam jawaban cocok dengan sources di response (citation verifier
-  lolos) — tidak ada [judul, tahun] karangan.
-- Sistem tidak pernah mengeksekusi SQL destruktif (DROP/DELETE/UPDATE/INSERT) —
-  ini hard requirement, bukan target, lihat 08-security.md.
-- Sistem menyatakan "tidak ditemukan" ketika data memang tidak ada, bukan mengarang.
-- End-to-end latency per pertanyaan dalam rentang wajar untuk internal tool (target
-  kasar: <15s untuk CPU-only MVP; dicatat sebagai batasan yang diketahui, bukan bug).
+- Resolusi entitas fuzzy lanjutan untuk penulis/institusi (tabel alias `rapidfuzz`).
+- Auth multi-pengguna, keamanan tingkat baris (row-level security), pembatasan laju (rate limiting) per pengguna.
+- Model berbasis GPU yang lebih besar/cepat.
+- Riwayat percakapan persisten multi-sesi.
+- Evaluasi otomatis (pengujian regresi perangkat kueri emas / golden query set).
+- Pipeline ingestion otomatis untuk publikasi baru (saat ini data statis, load sekali).
 
-## 8. Risiko Utama (lihat detail di dokumen terkait)
+---
+
+## 7. Metrik Keberhasilan (MVP)
+
+- Pertanyaan agregat sederhana (top N menurut hitungan/tahun/institusi) → jawaban benar, diverifikasi manual terhadap kueri SQL langsung.
+- Pertanyaan semantik ("paper tentang X") → mengembalikan publikasi yang relevan secara topikal (8 naskah unik teratas).
+- Pertanyaan relasional sederhana (kolaborasi institusi, co-author) → jawaban konsisten dengan tabel edge yang membawa provenance `via_publication_ids`.
+- Entitas ambigu ("j. wang") → sistem meminta klarifikasi (`status: needs_clarification`).
+- Setiap sitasi dalam jawaban cocok dengan sumber di respons (`CitationVerifier` lolos) — tidak ada sitasi karangan.
+- Sistem tidak pernah mengeksekusi SQL destruktif.
+- Sistem menyatakan `status: not_found` ketika data tidak ada, bukan mengarang.
+- Latensi end-to-end per pertanyaan $\le 15$ detik untuk MVP khusus CPU.
+
+---
+
+## 8. Risiko Utama
 
 | Risiko | Dampak | Mitigasi awal |
 |---|---|---|
-| Text-to-SQL salah generate kolom/tabel (halusinasi skema) | Jawaban salah/error | Prompt dengan skema eksplisit + validasi SQL sebelum eksekusi (05, 08) |
-| Model CPU-only lambat/kurang akurat | UX lambat, SQL error rate lebih tinggi | Model kecil terbaik di kelasnya (Qwen2.5-Coder-7B), guardrail retry (09, 05) |
-| Agregasi author/institution pecah karena variasi nama | Angka top-N salah | Didokumentasikan sebagai known limitation, fuzzy resolution di-defer (04, 11) |
-| Kolom `chunks` belum punya embedding | **Vector search tidak berfungsi sama sekali** (bukan hanya risk, tapi blocker
-   saat ini) — Task #0 wajib di implementation plan sebelum fitur lain (10) |
-| SQL injection via prompt injection | Kebocoran/kerusakan data | Read-only DB role + SQL allowlist parser (08) |
+| Text-to-SQL salah membuat (generate) kolom/tabel | Jawaban salah/error | Prompt dengan skema eksplisit 9 tabel kanonikal + validasi AST `sqlglot` (`docs/05`, `docs/08`) |
+| Model khusus CPU lambat/kurang akurat | UX lambat, tingkat error SQL lebih tinggi | Model kecil terbaik di kelasnya (Qwen2.5-Coder-7B), percobaan ulang (retry) guardrail (`docs/09`, `docs/05`) |
+| Agregasi author/institution pecah karena variasi nama | Angka top-N salah | Didokumentasikan sebagai keterbatasan yang diketahui (known limitation), kolom `*_normalized` digunakan, resolusi fuzzy ditunda (defer) (`docs/04`, `docs/11`) |
+| Kolom `chunks` belum punya embedding | Pencarian vector tidak berfungsi | Task 1 wajib di implementation plan sebelum rute semantik aktif (`docs/10 Implementation Plan.md`) |
+| Injeksi SQL via injeksi prompt (prompt injection) | Kebocoran/kerusakan data | Peran DB read-only `app_readonly` + parser allowlist AST (`docs/08`) |
 
-## 9. Dependensi Dokumen Lain
+---
 
-- Requirement detail teknis → `02-SRD.md`
-- Arsitektur & alur data → `03-system-architecture.md`
-- Skema final → `04-database-schema.md`
-- Desain retrieval hybrid → `05-retrieval-rag-design.md`
-- Kontrak API → `06-api-design.md`
-- Spesifikasi UI → `07-ui-spec.md`
-- Keamanan → `08-security.md`
-- Stack & rationale → `09-tech-stack.md`
-- Urutan build → `10-implementation-plan.md`
-- Roadmap pasca-MVP → `11-roadmap.md`
+## 9. Matriks Konsistensi Keputusan (Lintas Dokumen)
+
+| Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
+|---|---|---|---|
+| **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
+| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
+| **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
+| **Normalisasi lowercase** | Narasi & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
+| **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
+| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
+| **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
+| **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
+| **Dataset skala produksi** | Target masa depan untuk ingestion Scopus skala besar (>100K publikasi) dengan pipeline batch otomatis, deduplikasi multi-tier, dan worker async | `01`, `02`, `03`, `04`, `11`, `12` | ALIGNED |
+
+---
+
+## 10. Keputusan Arsitektur Kanonikal
+
+1. **Keputusan Sitasi Tanpa DOI:**
+   - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
+2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
+   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Keputusan Mesin Graf Pasca-MVP:**
+   - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
+
+---
+
+## 11. Riwayat Perubahan
+
+| Dokumen | Perubahan | Alasan |
+|---|---|---|
+| `docs/01 PRD.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
+| `docs/01 PRD.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; menegaskan vector storage PENDING | Sinkronisasi progress aktual 2026-09-27 |
+| `docs/01 PRD.md` v3.4.0 | Mengembalikan nama tabel kanonikal menjadi standar tanpa akhiran `_cleaned` (`publications`, `authors`, dll.) | Penyelarasan format penamaan sesuai instruksi project |
+| `docs/01 PRD.md` v3.4.0 | Mengunci keputusan format sitasi (`no-doi`), threshold kosinus $\ge 0.65$, dan strategi graf Apache AGE | Menutup seluruh open decision menjadi keputusan kanonikal |
+| `docs/01 PRD.md` v3.4.0 | Memperbarui Matriks Konsistensi Keputusan dan Riwayat Perubahan | Menjamin konsistensi dokumentasi di seluruh repository |

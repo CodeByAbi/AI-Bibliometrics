@@ -1,49 +1,60 @@
-# System Architecture — End to End (Hybrid Master Blueprint)
+# Arsitektur Sistem — End-to-End (Hybrid Master Blueprint)
 
-**Document Version:** 3.2.0 (Consolidated Hybrid Master Blueprint)  
-**Status Date:** 2026-09-28  
-**Supersedes:** `03 System Architecture.md` Draft v2 s.d. v3.0.0  
-**Authoritative Context:** Aligned with `README.md` and `docs/00` through `docs/12`  
+**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Tanggal Status:** 2026-09-27  
+**Menggantikan:** `03 System Architecture.md` Draft v2 s.d. v3.5.0  
+**Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi (Verifikasi Repositori 2026-09-28):**  
-> Repositori saat ini hanya berisi dokumentasi Markdown (`README.md` dan `docs/00–12`). Direktori `backend/`, `frontend/`, `database/`, `scripts/`, `docker/`, dan `tests/` belum ada. Seluruh arsitektur sistem, 4 rute RAG, dan lapisan analitik Gold di bawah ini berstatus **PLANNED / NOT IMPLEMENTED** dan mendefinisikan target rekayasa sistem yang normatif.
+> **Status Implementasi & Realitas Basis Data (Sinkronisasi Progress 2026-09-27):**  
+> 1. **Database PostgreSQL:** Tim **sudah membuat database PostgreSQL**. Database tidak perlu dibuat ulang dan kredensial koneksi sudah tersedia secara internal (tidak diekspos di dokumentasi).  
+> 2. **Dataset Prototipe:** Database saat ini berisi **dataset prototipe kecil** yang menggunakan struktur sekitar 20 kolom (tepatnya 22 kolom pada `publications`) yang disiapkan khusus untuk **validasi end-to-end (E2E)** sebelum masuk ke dataset Scopus skala besar.  
+> 3. **9 Tabel Relasional Silver:** Dataset prototipe ter-load pada 9 tabel kanonikal: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, dan `chunks`.  
+> 4. **Komponen Turunan (PLANNED / NOT YET IMPLEMENTED):** Kolom vektor `chunks.embedding vector(1024)` beserta indeks HNSW (Task 1), 2 tabel edge kolaborasi `institution_collaboration` dan `author_collaboration` (Task 8), serta 3 tabel Gold Analytics `topics`, `topic_evolution`, dan `researcher_expertise` (Task 8.5) belum dibuat dan merupakan target rekayasa berikutnya.  
+> 5. **Kode Aplikasi:** Direktori `backend/`, `frontend/`, `scripts/`, `docker/`, dan `tests/` berstatus **PLANNED / NOT YET IMPLEMENTED**.
+> 6. **Cleaning & Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`. **Vector Storage — PENDING:** embedding belum di-generate dan belum dimasukkan ke pgvector (Task 1, prioritas berikutnya).
 
 ---
 
-## 0. Target Architecture & Core Invariants
+## 0. Arsitektur Target & Invariant Inti
 
-### 0.1 Target End-to-End Pipeline
+### 0.1 Pipeline Target End-to-End
 Arsitektur target mengalirkan pertanyaan pengguna secara linear dan deterministik dari antarmuka web hingga respons ter-grounding:
 
 ```mermaid
 flowchart TD
-    UserQuestion[User Question] --> APIGateway[FastAPI Gateway: POST /api/v1/ask]
-    APIGateway --> BoundaryVal[Boundary Validation & Request ID Generation]
-    BoundaryVal --> Router[Question Router: 4-Route Dynamic Dispatcher]
+    UserQuestion[Pertanyaan Pengguna] --> APIGateway[Gateway FastAPI: POST /api/v1/ask]
+    APIGateway --> BoundaryVal[Validasi Batas & Pembuatan ID Request]
+    BoundaryVal --> Router[Router Pertanyaan: Dispatcher Dinamis 4-Rute]
     
-    subgraph RetrievalEngine [Retrieval Engine Fan-Out]
-        Router -->|SQLRoute| SQLR[SqlRetriever: Silver Relational Tables]
-        Router -->|VectorRoute| VecR[VectorRetriever: BAAI/bge-m3 pgvector HNSW]
-        Router -->|GraphRoute| GraphR[GraphRetriever: Parameterized Recursive CTE T1-T4]
-        Router -->|HybridRoute| HybR[HybridRetriever: Gold Analytics Layer]
+    subgraph RetrievalEngine [Fan-Out Mesin Retrieval]
+        Router -->|SQLRoute| SQLR[SqlRetriever: 9 Tabel Relasional Silver]
+        Router -->|VectorRoute| VecR[VectorRetriever: chunks.embedding BAAI/bge-m3 HNSW]
+        Router -->|GraphRoute| GraphR[GraphRetriever: Recursive CTE Terparameterisasi T1-T4 pada Edge Turunan]
+        Router -->|HybridRoute| HybR[HybridRetriever: Lapisan Analitik Gold + Tabel Silver]
     end
+    SQLR & VecR & GraphR & HybR --> Unifier[EvidenceUnifier: Normalisasi & Deduplikasi]
+    Unifier --> Ranker[EvidenceRanker: Skoring Deterministik & Kalkulasi Confidence]
+    Ranker --> Context[Konstruksi Konteks & Pembingkaian Data Tidak Tepercaya]
+    Context --> Synth[AnswerSynthesizer: Mesin LLM Analitik]
+    Synth --> Verifier[CitationVerifier & Validator Objek Bukti]
+    Verifier --> Output[Jawaban Ter-grounding + Objek Bukti Terstruktur + Sumber]
 
-    SQLR & VecR & GraphR & HybR --> Unifier[EvidenceUnifier: Normalization & Deduplication]
-    Unifier --> Ranker[EvidenceRanker: Deterministic Scoring & Confidence Calculation]
-    Ranker --> Context[Context Construction & Untrusted Data Framing]
-    Context --> Synth[AnswerSynthesizer: Analytical LLM Engine]
-    Synth --> Verifier[CitationVerifier & Evidence Object Validator]
-    Verifier --> Output[Grounded Answer + Structured Evidence Objects + Sources]
-
-    Unifier -.->|0 Evidence Items| ShortCircuit[Deterministic Short-Circuit Gate]
-    ShortCircuit -->|status: not_found / 0 LLM calls| Output
+    Unifier -.->|0 Item Bukti| ShortCircuit[Gerbang Short-Circuit Deterministik]
+    ShortCircuit -->|status: not_found / 0 pemanggilan LLM| Output
 ```
 
-### 0.2 Lapisan Data Medallion (Data Storage Architecture)
-Sistem menstrukturkan data ke dalam 3 tingkatan Medallion di PostgreSQL:
-1. **Bronze Layer (Raw Staging)**: Berkas arsip ekspor mentah Scopus yang immutable beserta hash SHA-256 untuk auditability dan re-ingestion.
-2. **Silver Layer (Canonical Relational Storage - 9 Tabel + 2 Edge Tables)**: Sumber kebenaran terstruktur (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) ditambah 2 tabel edge kolaborasi (`institution_collaboration`, `author_collaboration`).
-3. **Gold Layer (Analytics & Intelligence - 3 Tabel)**: Tabel analitik derivatif berkinerja tinggi untuk mendukung sintesis kebijakan:
+### 0.2 Lapisan Data Medallion & Pemisahan Dua Fase (Data Architecture & Phasing)
+
+Arsitektur data memisahkan secara tegas dua fase rekayasa:
+- **Fase Prototipe / Validasi E2E (Saat Ini):** Basis data PostgreSQL sudah aktif memuat **dataset prototipe kecil** pada 9 tabel relasional Silver (20 publikasi, 40 chunk, 138 author, 107 institusi, 344 keyword, 33 funding, 4.120 referensi). Tujuannya membuktikan seluruh flow end-to-end (Router → Retrieval 4 Rute → Evidence Unifier → LLM Synthesizer → Citation Verifier → API → UI) berfungsi sempurna dengan latensi terukur sebelum menangani dataset besar.
+- **Fase Produksi / Skala Besar (Future):** Pipeline otomatisasi ingestion untuk ratusan ribu record Scopus dari berkas mentah (Bronze), pembersihan & deduplikasi multi-tier berkala, batch re-embedding bertahap, dan kalkulasi ulang Gold analytics.
+
+Tingkatan data Medallion pada sistem ini:
+1. **Bronze Layer (Raw Staging - Future/Production):** Berkas arsip ekspor mentah Scopus yang immutable beserta hash SHA-256 untuk auditability dan re-ingestion (`docs/12 Data Pipeline.md`).
+2. **Silver Layer (Canonical Relational Storage - 9 Tabel Prototipe + 2 Edge Tables):** Sumber kebenaran terstruktur kanonikal yang telah dibersihkan dan dinormalisasi:
+   - 9 Tabel Relasional: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, dan `chunks`.
+   - 2 Derived Edge Tables (PLANNED, Task 8): `institution_collaboration` dan `author_collaboration` yang dimaterialisasi secara idempoten dari `pub_institution` dan `pub_author`.
+3. **Gold Layer (Analytics & Intelligence - 3 Tabel - PLANNED, Task 8.5):** Tabel analitik derivatif untuk mendukung sintesis kebijakan:
    - `topics`: Klaster topik BERTopic dan representasi vektor 1024-dimensi.
    - `topic_evolution`: Metrik time-series tahunan, growth score, dan citation acceleration.
    - `researcher_expertise`: Pemeringkatan kepakaran peneliti multi-dimensi terbobot ($\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$).
@@ -56,58 +67,103 @@ Sistem menstrukturkan data ke dalam 3 tingkatan Medallion di PostgreSQL:
 
 ---
 
-## 1. High-Level Component Topology
+## 1. Topologi Komponen Tingkat Tinggi
 
 ```
 ┌─────────────────────────────────┐           HTTPS            ┌──────────────────────────────────────────────┐
 │        Next.js Frontend         │ ─────────────────────────> │             FastAPI Backend API              │
-│   (Clean White, Dense Layout,   │ <───────────────────────── │       (Async Python Application Core)        │
-│      Notion/Linear-Style)       │        JSON Response       └──────────────────────────────────────────────┘
+│   (Putih Bersih, Padat,             │ <───────────────────────── │       (Inti Aplikasi Python Async)         │
+│      gaya Notion/Linear)            │        JSON Response       └──────────────────────────────────────────────┘
 └─────────────────────────────────┘                                                   │
-                                                      ┌───────────────────────────────┼───────────────────────────────┐
-                                                      ▼                               ▼                               ▼
-                                              ┌───────────────┐               ┌───────────────┐               ┌───────────────┐
-                                              │Question Router│               │ Local Ollama  │               │ Local Embed   │
-                                              │   (4 Routes)  │               │(Qwen2.5-Coder │               │ (BAAI/bge-m3, │
-                                              │               │               │  7B-Instruct) │               │   1024 dims)  │
-                                              └───────────────┘               └───────────────┘               └───────────────┘
-                                                      │                               │                               │
-                                                      └───────────────────────┬───────┴───────────────────────────────┘
-                                                                              ▼
-                                              ┌───────────────────────────────────────────────────────────────┐
-                                              │               PostgreSQL Database (Supabase)                  │
-                                              │  • Silver: 9 Canonical Relational Tables                      │
-                                              │  • Derived Edges: institution/author_collaboration            │
-                                              │  • Gold Analytics: topics, topic_evolution, expertise         │
-                                              │  • pgvector Semantic Layer: chunks.embedding (HNSW Index)     │
-                                              │  • Enforced Connection Role: app_readonly (SELECT only)       │
-                                              └───────────────────────────────────────────────────────────────┘
+                                                       ┌───────────────────────────────┼───────────────────────────────┐
+                                                       ▼                               ▼                               ▼
+                                               ┌───────────────┐               ┌───────────────┐               ┌───────────────┐
+                                               │Router Pertanyaan│               │ Ollama Lokal  │               │ Embed Lokal   │
+                                               │   (4 Rute)  │               │(Qwen2.5-Coder │               │ (BAAI/bge-m3, │
+                                               │               │               │  7B-Instruct) │               │   1024 dims)  │
+                                               └───────────────┘               └───────────────┘               └───────────────┘
+                                                       │                               │                               │
+                                                       └───────────────────────┬───────┴───────────────────────────────┘
+                                                                               ▼
+                                               ┌───────────────────────────────────────────────────────────────┐
+                                               │               Database PostgreSQL                             │
+                                               │  • Silver: 9 Tabel Relasional Kanonikal                       │
+                                               │  • Edge Turunan: institution/author_collaboration (PLANNED)  │
+                                               │  • Analitik Gold: topics, topic_evolution, exp (PLANNED)     │
+                                               │  • Lapisan Semantik pgvector: chunks.embedding (PLANNED)        │
+                                               │  • Peran Koneksi Terpaksa: app_readonly (hanya SELECT)       │
+                                               └───────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 2. Spesifikasi Rute & Komponen Retrieval
 
-| Rute RAG | Lapisan Data Target | Strategi Eksekusi & Validasi | Tipe Objek Bukti yang Dihasilkan |
+| Rute RAG | Lapisan Data Target | Strategi Eksekusi & Validasi | Jenis Objek Bukti yang Dihasilkan |
 |---|---|---|---|
-| **`SQLRoute`** | Silver Relational (`publications`, `authors`, `institutions`, `funding`) | Text-to-SQL $\rightarrow$ Validasi AST `sqlglot` $\rightarrow$ Enforce `LIMIT 50`. | `publication_count`, `citation_count`, total pendanaan. |
-| **`VectorRoute`** | Silver Vector (`chunks.embedding vector(1024)`) | Embedding kueri `BAAI/bge-m3` $\rightarrow$ HNSW Cosine $\rightarrow$ `DISTINCT ON (publication_id) LIMIT 8`. | Ringkasan abstrak ilmiah, kemiripan semantik, tautan DOI. |
-| **`GraphRoute`** | Derived Edges (`institution_collaboration`, `author_collaboration`) | Parameterized Recursive CTE (Templat T1–T4) $\rightarrow$ Depth `max_hops = 3`. | Bukti kolaborasi institusi/penulis via `via_publication_ids`. |
-| **`HybridRoute`** | Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) + Silver & Vector | Join analitik multi-tabel terparameterisasi $\rightarrow$ Ekstraksi metrik time-series & skor kepakaran. | `growth_score`, `citation_acceleration`, `expertise_score` terbobot ($w_1\text{--}w_4$). |
+| **`SQLRoute`** | Silver Relasional (`publications`, `authors`, `institutions`, `funding`, `keywords`, `pub_author`, `pub_institution`, `publication_references`) | Text-to-SQL $\rightarrow$ Validasi AST `sqlglot` $\rightarrow$ Penegakan `LIMIT 50`. | `publication_count`, `citation_count`, total pendanaan. |
+| **`VectorRoute`** | Silver Vector (`chunks.embedding vector(1024)`) JOIN `publications` | Embedding kueri `BAAI/bge-m3` $\rightarrow$ Kosinus HNSW $\rightarrow$ `DISTINCT ON (publication_id) LIMIT 8`. Gerbang kosinus $\ge 0.65$. | Ringkasan abstrak ilmiah, kemiripan semantik, tautan DOI. |
+| **`GraphRoute`** | Edge Turunan (`institution_collaboration`, `author_collaboration`) | Recursive CTE Terparameterisasi (Templat T1–T4) $\rightarrow$ Kedalaman `max_hops = 3`. | Bukti kolaborasi institusi/penulis via `via_publication_ids`. |
+| **`HybridRoute`** | Analitik Gold (`topics`, `topic_evolution`, `researcher_expertise`) + Silver & `chunks` | Gabungan (join) analitik multi-tabel terparameterisasi $\rightarrow$ Ekstraksi metrik deret waktu & skor kepakaran. | `growth_score`, `citation_acceleration`, `expertise_score` terbobot ($w_1\text{--}w_4$). |
 
 ---
 
-## 3. Non-Functional Requirements (NFR Verification)
+## 3. Kebutuhan Non-Fungsional (Verifikasi NFR)
 
-1. **NFR1: Query Latency Budget (CPU-Only)**:
+1. **NFR1: Anggaran Latensi Kueri (Khusus CPU)**:
    - `SQLRoute` & `GraphRoute`: $\le 500\text{ ms}$
    - `VectorRoute`: $\le 1.5\text{ detik}$
    - `HybridRoute` (Gold Analytics): $\le 1.0\text{ detik}$
-   - LLM Synthesis (`Qwen2.5-Coder-7B` CPU): $\sim 5\text{–}10\text{ detik}$
-   - Total End-to-End: $\le 15\text{ detik}$ (dengan streaming/progress indicator pada UI).
-2. **NFR2: Strict Groundedness**:
-   - 100% fakta statistik dan sitasi terikat pada bukti database melalui `EvidenceObject` dan verifikasi `CitationVerifier`.
-3. **NFR3: Auditability & Lineage**:
+    - Sintesis LLM (`Qwen2.5-Coder-7B` CPU): $\sim 5\text{–}10\text{ detik}$
+    - Total End-to-End: $\le 15\text{ detik}$ (dengan indikator progres pada UI).
+2. **NFR2: Keter-groundingan Ketat (Strict Groundedness)**:
+   - 100% fakta statistik dan sitasi terikat pada bukti database melalui `EvidenceObject` dan verifikasi `CitationVerifier`. Format sitasi baku: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI.
+3. **NFR3: Ketertelusuran & Silsilah Data (Auditability & Lineage)**:
    - Setiap respons menyertakan `request_id` (UUIDv4) dan array `sources` yang dapat ditelusuri balik ke record publikasi kanonikal.
-4. **NFR4: Least Privilege Security**:
-   - Isolasi runtime database dengan role `app_readonly`, statement timeout 10 detik, dan search path terkunci.
+4. **NFR4: Keamanan Hak Minimum (Least Privilege Security)**:
+   - Isolasi runtime database dengan peran `app_readonly`, statement timeout 10 detik, dan search path terkunci.
+
+---
+
+## 4. Matriks Konsistensi Keputusan (Lintas Dokumen)
+
+| Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
+|---|---|---|---|
+| **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
+| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
+| **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
+| **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
+| **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
+| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
+| **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
+| **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
+| **Dataset skala produksi** | Target masa depan untuk ingestion Scopus skala besar (>100K publikasi) dengan pipeline batch otomatis, deduplikasi multi-tier, dan worker async | `01`, `02`, `03`, `04`, `11`, `12` | ALIGNED |
+
+---
+
+## 5. Keputusan Arsitektur Kanonikal
+
+1. **Keputusan Sitasi Tanpa DOI:**
+   - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
+2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
+   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Keputusan Mesin Graf Pasca-MVP:**
+   - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
+
+---
+
+## 6. Riwayat Perubahan
+
+| Dokumen | Perubahan | Alasan |
+|---|---|---|
+| `docs/03 System Architecture.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
+| `docs/03 System Architecture.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; menandai vector storage sebagai PENDING eksplisit | Sinkronisasi progress aktual 2026-09-27 |
+| `docs/03 System Architecture.md` v3.4.0 | Menyeragamkan seluruh komponen dan diagram ke nama tabel kanonikal tanpa akhiran `_cleaned` | Penyelarasan format penamaan sesuai instruksi project |
+| `docs/03 System Architecture.md` v3.4.0 | Mengunci keputusan threshold kosinus $\ge 0.65$, sitasi `[Judul, Tahun, no-doi]`, dan strategi graf Apache AGE | Menutup open decision menjadi keputusan kanonikal |
+| `docs/03 System Architecture.md` v3.4.0 | Memperbarui Matriks Konsistensi Keputusan dan Riwayat Perubahan | Menjamin konsistensi format dan keputusan di seluruh repository |

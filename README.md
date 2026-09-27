@@ -1,122 +1,120 @@
-# Scopus Research Intelligence & STI Policy Intelligence Platform
+# Platform Riset Intelijen Scopus & Intelijen Kebijakan STI
 
-> **AI-Bibliometrics — Evidence-Grounded Research Intelligence Assistant over Scopus Publications**
+> **AI-Bibliometrics — Asisten Riset Intelijen berbasis bukti (evidence-grounded) di atas publikasi Scopus**
 >
-> Ask in natural language (ID/EN) — get factual, statistical, semantic, network, and policy-level answers grounded to real database evidence with verified `[Title, Year, DOI]` citations. Zero hallucination by design.
+> Bertanya dalam bahasa natural (ID/EN) — dapatkan jawaban faktual, statistik, semantik, jaringan, dan kebijakan yang ter-grounding pada bukti database nyata dengan sitasi `[Title, Year, DOI]` terverifikasi. Tanpa halusinasi sejak dari desain.
 >
-> | Meta | Value |
+> | Meta | Nilai |
 > |---|---|
-> | **Architecture** | Hybrid Master: Bronze → Silver (9 canonical tables) → Gold (pgvector + 2 edge tables + 3 analytics tables) → FastAPI 4-Route RAG |
-> | **API Contract** | `POST /api/v1/ask` + `GET /api/v1/health` (see `docs/06 Api Design.md`). Legacy `POST /api/query` is **SUPERSEDED** and must not be implemented. |
-> | **Doc Status** | Consolidated Hybrid Master Blueprint · Last aligned: **2026-09-28** (`docs/03` v3.0.0, `docs/04` v3.2.0, `docs/05` v3.1.0, `docs/06` v3.0.0, `docs/07` v3.1.0, `docs/11` v3.0.0, `docs/12` v1.0.0) |
-> | **Implementation Status** | **Documentation-only. PLANNED / NOT IMPLEMENTED.** No `backend/`, `frontend/`, `database/`, `scripts/`, `docker/`, `tests/` in repo yet. 9 Silver tables reported in external Supabase but **Task 0 schema audit not run**. `chunks.embedding`, 2 edge tables, 3 Gold analytics tables **do not exist yet**. |
+> | **Arsitektur** | Hybrid Master: Bronze → Silver (9 tabel kanonikal) → Gold (pgvector + 2 tabel edge + 3 tabel analitik) → RAG 4-Rute FastAPI |
+> | **Kontrak API** | `POST /api/v1/ask` + `GET /api/v1/health` (lihat `docs/06 Api Design.md`). `POST /api/query` versi lama berstatus **SUPERSEDED** dan tidak boleh diimplementasikan. |
+> | **Status Dok** | Consolidated Hybrid Master Blueprint · Disinkronkan: **2026-09-27** (`docs/01`–`docs/12` v3.6.0) |
+> | **Status Implementasi** | **Dokumentasi saja. PLANNED / NOT IMPLEMENTED.** Belum ada `backend/`, `frontend/`, `scripts/`, `docker/`, `tests/` di repo. Database PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`). **Pembersihan data (cleaning) Scopus + export data bersih (`data/*_cleaned.csv`, 9 file) DONE.** `chunks.embedding vector(1024)`, 2 tabel edge, dan 3 tabel analitik Gold **berstatus PLANNED — penyimpanan vector BELUM selesai (Task 1 NEXT)**. |
 
-**Contents:** [1. Executive Summary](#1-executive-summary) · [2. Key Capabilities](#2-key-capabilities--features) · [3. Architecture](#3-end-to-end-system-architecture) · [4. Tech Stack](#4-technology-stack) · [5. Database & Pipeline](#5-database--data-pipeline-summary) · [6. Repo & Docs Index](#6-repository-structure--documentation-index) · [7. Getting Started](#7-getting-started--setup-guide) · [8. Roadmap & Status](#8-roadmap--implementation-status) · [Security](#9-security--zero-hallucination-guarantees) · [API Quick Ref](#10-api-contract-quick-reference)
+**Daftar Isi:** [1. Ringkasan Eksekutif](#1-ringkasan-eksekutif) · [2. Kemampuan Utama](#2-kemampuan-utama--fitur) · [3. Arsitektur](#3-arsitektur-sistem-end-to-end) · [4. Tumpukan Teknologi](#4-tumpukan-teknologi) · [5. Database & Pipeline](#5-ringkasan-database--pipeline-data) · [6. Struktur Repo & Indeks Dok](#6-struktur-repositori--indeks-dokumentasi) · [7. Panduan Memulai](#7-panduan-memulai--setup) · [8. Roadmap & Status](#8-roadmap--status-implementasi) · [9. Matriks Konsistensi](#9-matriks-konsistensi-keputusan-lintas-dokumen) · [10. Keputusan Kanonikal](#10-keputusan-arsitektur-kanonikal) · [11. Riwayat Perubahan](#11-riwayat-perubahan)
 
 ---
 
-## 1. Executive Summary
+## 1. Ringkasan Eksekutif
 
-### Vision
+### Visi
 
-Build a **Scopus Research Intelligence & STI (Science, Technology & Innovation) Policy Intelligence Platform** that lets non-technical users — researchers, analysts, and research directors / policymakers — interrogate a Scopus publication corpus through a single chat surface, and receive answers that are:
+Membangun sebuah **Platform Riset Intelijen Scopus & Intelijen Kebijakan STI (Sains, Teknologi & Inovasi)** yang memungkinkan pengguna non-teknis — peneliti, analis, serta direktur riset / pengambil kebijakan — menelusuri korpus publikasi Scopus melalui satu permukaan chat, dan menerima jawaban yang:
 
-1. **Factually exact** (counts, rankings, distributions verified against SQL),
-2. **Semantically deep** (conceptual discovery via multilingual vector search),
-3. **Relationally aware** (collaboration networks via graph traversals), and
-4. **Policy-ready** (emerging-topic detection, expertise ranking, trend synthesis).
+1. **Tepat secara faktual** (hitungan, pemeringkatan, distribusi terverifikasi terhadap SQL di atas tabel Silver kanonikal),
+2. **Mendalam secara semantik** (penemuan konseptual via pencarian vector multibahasa pada `chunks.embedding`),
+3. **Sadar relasi** (jaringan kolaborasi via traversal graf di atas tabel edge turunan), dan
+4. **Siap kebijakan** (deteksi topik berkembang, pemeringkatan kepakaran, sintesis tren via analitik Gold).
 
-### Dual-Path + Evidence Architecture
+### Arsitektur Jalur Ganda + Bukti
 
-The system fuses three complementary intelligence paths behind one deterministic serving path:
+Sistem memadukan tiga jalur intelijen yang saling melengkapi di belakang satu jalur serving yang deterministik:
 
 ```text
-Structured Data (PostgreSQL Silver)  +  Semantic AI (pgvector bge-m3 HNSW)  +  Network/Policy Analytics (Gold)
-                                         ──────────────────────────────────────────────────────────────────────────
-                                                                                      │
-                                                                          Evidence Object (canonical grounding)
-                                                                                      │
-                                                                         Evidence-based LLM (Qwen2.5-Coder-7B, CPU)
+Data Terstruktur (PostgreSQL Silver)  +  AI Semantik (pgvector bge-m3 HNSW)  +  Analitik Jaringan/Kebijakan (Gold)
+                                          ──────────────────────────────────────────────────────────────────────────
+                                                                                       │
+                                                                           Objek Bukti (grounding kanonikal)
+                                                                                       │
+                                                                          LLM berbasis bukti (Qwen2.5-Coder-7B, CPU)
 ```
 
-| Path | Question type | Engine |
+| Jalur | Jenis pertanyaan | Mesin |
 |---|---|---|
-| **Structured / Factual** | *"Top 5 most productive authors in 2023?"*, *"Total citations of institution X?"* | `SQLRoute` → `SqlRetriever` (Text-to-SQL + `sqlglot` AST validation) over Silver Layer |
-| **Semantic / Discovery** | *"Papers on oxidative stress in Wharton's jelly?"* | `VectorRoute` → `VectorRetriever` (`bge-m3` 1024-d + pgvector `<=>` HNSW, `DISTINCT ON (publication_id) LIMIT 8`) |
-| **Network / Relational** | *"Which institutions collaborate with AI researchers?"*, *"Co-authors of Author X?"* | `GraphRoute` (= `relational` in v2 docs) → `GraphRetriever` (parameterized templates T1–T4 over SQL edge tables, `max_hops=3`) |
-| **Policy / Trend Synthesis** | *"Stem-cell papers by Indonesian institutions after 2020 — what's emerging, who are the experts?"* | `HybridRoute` → `HybridRetriever` (vector + structured filters in one parameterized query) + Gold analytics (`topics`, `topic_evolution`, `researcher_expertise`) |
+| **Terstruktur / Faktual** | *"5 penulis paling produktif tahun 2023?"*, *"Total sitasi institusi X?"* | `SQLRoute` → `SqlRetriever` (Text-to-SQL + validasi AST `sqlglot`) pada 9 tabel Silver |
+| **Semantik / Penemuan** | *"Paper tentang stres oksidatif pada Wharton's jelly?"* | `VectorRoute` → `VectorRetriever` (`bge-m3` 1024-d + pgvector `<=>` HNSW pada `chunks`, `DISTINCT ON (p.publication_id) LIMIT 8`, gerbang $\ge 0.65$) |
+| **Jaringan / Relasional** | *"Institusi mana yang berkolaborasi dengan peneliti AI?"*, *"Co-author dari Penulis X?"* | `GraphRoute` → `GraphRetriever` (templat terparameterisasi T1–T4 pada tabel edge SQL, `max_hops=3`) |
+| **Kebijakan / Sintesis Tren** | *"Paper stem-cell dari institusi Indonesia setelah 2020 — apa yang berkembang, siapa pakarnya?"* | `HybridRoute` → `HybridRetriever` (vector + filter terstruktur dalam satu kueri) + analitik Gold (`topics`, `topic_evolution`, `researcher_expertise`) |
 
-**Non-negotiable invariant:** no raw row / chunk / edge ever reaches the LLM. Everything is normalized to a strict **Evidence Object** (`Evidence` / `EvidenceSet`), ranked deterministically, framed as `UNTRUSTED DATA`, synthesized, then **post-hoc citation-verified**. Empty evidence short-circuits to `status: not_found` in <200 ms with **zero LLM calls** (`docs/03 §0.3`, `docs/05 §9–§12`).
+**Invariant yang tidak dapat ditawar:** tidak ada baris / chunk / edge mentah yang mencapai LLM. Semuanya dinormalisasi menjadi **Objek Bukti** (`Evidence` / `EvidenceSet`) yang ketat, diberi peringkat deterministik, dibingkai sebagai `UNTRUSTED DATA`, disintesis, lalu **diverifikasi sitasinya secara post-hoc**. Bukti kosong melakukan short-circuit ke `status: not_found` dalam <200 ms dengan **nol pemanggilan LLM** (`docs/03 §0.3`, `docs/05 §9–§12`).
 
 ---
 
-## 2. Key Capabilities & Features
+## 2. Kemampuan Utama & Fitur
 
-### 2.1 Bibliometric Intelligence (Factual / Statistical) — `SQLRoute`
+### 2.1 Intelijen Bibliometrik (Faktual / Statistik) — `SQLRoute`
 
-- Top-N rankings, aggregations, distributions, time filters over Silver Layer (`publications`, `authors`, `institutions`, `keywords`, `funding` + junctions).
-- Guardrails: `sqlglot` AST parse → `SELECT`-only root → table/column whitelist (`docs/04`) → destructive-keyword blacklist → **Aggregate-Shape Check** (aggregate intent must contain `COUNT/SUM/AVG/GROUP BY`) → **Double-Count Check** (`COUNT(DISTINCT publication_id)` on junction joins) → `LIMIT 50` on non-aggregates (`docs/05 §6.1`, `docs/02 FR3`).
-- 1x retry with AST error context; persistent failure → `HTTP 422 { error_type: sql_generation_failed }`, never raw DB errors.
+- Pemeringkatan Top-N, agregasi, distribusi, filter waktu pada Lapisan Silver (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`).
+- Guardrail: parse AST `sqlglot` → root wajib `SELECT` → daftar putih (whitelist) tabel/kolom (`docs/04`) → daftar hitam (blacklist) kata kunci destruktif → **Pemeriksaan Bentuk Agregat (Aggregate-Shape Check)** (maksud agregat wajib memuat `COUNT/SUM/AVG/GROUP BY`) → **Pemeriksaan Hitung Ganda (Double-Count Check)** (`COUNT(DISTINCT publication_id)` pada join junction) → `LIMIT 50` untuk non-agregat (`docs/05 §5.1`, `docs/02 FR3`).
+- 1x percobaan ulang (retry) dengan konteks error AST; kegagalan menetap → `HTTP 422 { error_type: sql_generation_failed }`, tidak pernah membocorkan error DB mentah.
 
-### 2.2 Semantic & AI Discovery (Vector Search & RAG) — `VectorRoute`
+### 2.2 Penemuan Semantik & AI (Pencarian Vector & RAG) — `VectorRoute`
 
-- Multilingual (ID/EN) conceptual search over `chunks.embedding vector(1024)` (`BAAI/bge-m3`), HNSW `vector_cosine_ops` (`m=16, ef_construction=64`).
-- Deduplication guarantee: `DISTINCT ON (p.publication_id)` so `LIMIT 8` = **8 unique publications**, not overlapping chunks. Similarity-threshold gate; below-threshold → `not_found` (`docs/05 §6.2–§7`, `docs/02 FR4`).
+- Pencarian konseptual multibahasa (ID/EN) pada `chunks.embedding vector(1024)` (`BAAI/bge-m3`), HNSW `vector_cosine_ops` (`m=16, ef_construction=64`).
+- Jaminan deduplikasi: `DISTINCT ON (p.publication_id)` sehingga `LIMIT 8` = **8 publikasi unik**, bukan chunk yang tumpang tindih. Gerbang ambang batas similaritas ($\ge 0.65$); di bawah ambang → `status: not_found` (`docs/05 §5.2`, `docs/02 FR4`).
 
-### 2.3 Collaboration Network Analysis (SQL-Based Edge Tables) — `GraphRoute`
+### 2.3 Analisis Jaringan Kolaborasi (Tabel Edge Berbasis SQL) — `GraphRoute`
 
-- Knowledge-Graph **minimum surface as derived PostgreSQL edge tables** (no standalone graph DB in MVP):
-  - `institution_collaboration(institution_a, institution_b, weight, via_publication_ids)` with `CHECK (a < b)`
-  - `author_collaboration(author_a, author_b, weight, via_publication_ids)` with `CHECK (a < b)`
-- Zero LLM-generated graph SQL. Four parameterized templates only: **T1** institution collaborators, **T2** co-authors, **T3** topic→institution composition, **T4** bounded recursive-CTE path search (`max_hops=3`, `LIMIT 50`). Every edge carries `via_publication_ids` provenance (`docs/04 §6`, `docs/05 §6.3/§8`).
-- Graph engine decision (Apache AGE vs Kùzu) is **PENDING**; Neo4j/Memgraph are **OUT-OF-SCOPE** for MVP. AGE/Kùzu deferred to Phase 9 (`docs/09 §8`, `docs/11 Phase 6`).
+- Knowledge-Graph **permukaan minimum (minimum surface) berupa tabel edge PostgreSQL turunan** (tanpa database graf mandiri di MVP):
+  - `institution_collaboration(institution_a, institution_b, weight, via_publication_ids)` dengan `CHECK (institution_a < institution_b)`
+  - `author_collaboration(author_a, author_b, weight, via_publication_ids)` dengan `CHECK (author_a < author_b)`
+- Nol SQL graf yang digenerate LLM. Hanya empat templat terparameterisasi: **T1** kolaborator institusi, **T2** co-author, **T3** komposisi topik→institusi, **T4** pencarian jalur recursive-CTE terbatas (`max_hops=3`, `LIMIT 50`). Setiap edge membawa provenance `via_publication_ids` (`docs/04 §6`, `docs/05 §5.3`).
 
-### 2.4 Emerging-Topic & Expertise Engine (Director's Analytics) — Gold Layer + `HybridRoute`
+### 2.4 Mesin Topik Berkembang & Kepakaran (Analitik Direktur) — Lapisan Gold + `HybridRoute`
 
-- **`topics`**: BERTopic / co-word clusters — `topic_name`, `cluster_keywords[10]`, `representation_vector vector(1024)` (HNSW), `total_publications`, `total_citations` (`docs/04 §7.1`).
-- **`topic_evolution`**: annual time-series per topic — `publication_count`, `citation_count`, `growth_score` (YoY), `citation_acceleration` (d²C/dt²), `recency_weight`, `is_emerging` flag (`docs/04 §7.2`).
-- **`researcher_expertise`**: multi-dimensional weighted expertise per (author, topic) — `ExpertiseScore` with components `relevance`, `productivity`, `impact`, `recency` + `h_index_topic`, `publication_count_topic`, `citation_count_topic`, `coauthor_network_size` (`docs/04 §7.3`):
+- **`topics`**: klaster BERTopic / co-word — `topic_name`, `cluster_keywords[10]`, `representation_vector vector(1024)` (HNSW), `total_publications`, `total_citations` (`docs/04 §7.1`).
+- **`topic_evolution`**: deret waktu (time-series) tahunan per topik — `publication_count`, `citation_count`, `growth_score` (YoY), `citation_acceleration` (d²C/dt²), `recency_weight`, flag `is_emerging` (`docs/04 §7.2`).
+- **`researcher_expertise`**: kepakaran terbobot multi-dimensi per (penulis, topik) — `ExpertiseScore` dengan komponen `relevance`, `productivity`, `impact`, `recency` + `h_index_topic`, `publication_count_topic`, `citation_count_topic`, `coauthor_network_size` (`docs/04 §7.3`):
 
   $$\text{ExpertiseScore} = w_1\cdot\text{Relevance} + w_2\cdot\text{Productivity} + w_3\cdot\text{Impact} + w_4\cdot\text{Recency}$$
 
-  Defaults: `w1=0.30` (semantic similarity to `representation_vector`), `w2=0.25` (log-scaled volume `log2(1+N)`), `w3=0.25` (field-weighted citation impact), `w4=0.20` (last-3-year activity decay). Score range `[0–100]`.
-- Powers trend acceleration queries, expert-finder ranking, and policy synthesis via `HybridRoute` joins across Gold + Silver + Vector.
+  Nilai bawaan (default): `w1=0.30`, `w2=0.25`, `w3=0.25`, `w4=0.20`. Rentang skor `[0–100]`.
 
-### 2.5 Evidence-Based AI Copilot (Zero-Hallucination) — All Routes
+### 2.5 Kopilot AI Berbasis Bukti (Tanpa Halusinasi) — Semua Rute
 
-- Typed **Question Router**: deterministic regex/keyword rules first (<50 ms); schema-light LLM fallback only on uncertainty (~1.5 s). Emits validated Pydantic `RouterOutput(route, reasoning, entities)` with `YearFilter(op ∈ {eq,gt,gte,lt,lte,between})`. **Entity Resolution Gate**: `lower+trim → exact → ILIKE`; 0 hits → `not_found`, >1 → `needs_clarification` + candidates, 1 → bind canonical ID. Out-of-slot fields → `filters_ignored`. Router JSON failure → safe fallback to `semantic` + `answered_via_fallback: true` (`docs/05 §5`, `docs/02 FR2`).
-- **Evidence normalization** (`EvidenceUnifier`): SQL rows + vector chunks + graph edges → canonical `EvidenceSet`; dedup on `publication_id`; deterministic `EvidenceRanker` (`0.7·cosine + 0.2·recency + 0.1·graph`, cross-encoder deferred).
-- **Grounded synthesis** (Qwen2.5-Coder-7B-Instruct via Ollama, CPU): prompt-isolated context (`=== BEGIN/END RETRIEVED EVIDENCE ===`), mandatory `[Title, Year, DOI]` citations, contradiction surfacing.
-- **Post-hoc `CitationVerifier`**: regex-extract citations, match against `EvidenceSet` (DOI + normalized title/year); hallucinations stripped to `unverified_citations` (`docs/05 §11–§12`).
+- **Router Pertanyaan** bertipe: aturan regex/kata kunci deterministik terlebih dahulu (<50 ms); fallback LLM ringan-skema hanya saat tidak pasti (~1,5 dtk). Mengeluarkan `RouterOutput(route, reasoning, entities)` Pydantic yang tervalidasi dengan `YearFilter(op ∈ {eq,gt,gte,lt,lte,between})`. **Gerbang Resolusi Entitas (Entity Resolution Gate)**: `lower+trim → exact → ILIKE`; 0 hasil → `not_found`, >1 → `needs_clarification` + kandidat, 1 → ikat ke ID kanonikal.
+- **Normalisasi bukti** (`EvidenceUnifier`): baris SQL + chunk vector + edge graf → `EvidenceSet` kanonikal; dedup pada `publication_id`; `EvidenceRanker` deterministik.
+- **Sintesis ter-grounding** (Qwen2.5-Coder-7B-Instruct via Ollama, CPU): konteks terisolasi dari prompt (`=== BEGIN/END RETRIEVED EVIDENCE ===`), sitasi wajib `[Title, Year, DOI]` / `[Title, Year, no-doi]`, kontradiksi dimunculkan ke permukaan.
+- **Post-hoc `CitationVerifier`**: ekstrak sitasi via regex, cocokkan dengan `EvidenceSet` (DOI + judul/tahun ternormalisasi); halusinasi dipangkas ke `unverified_citations` (`docs/05 §7`).
 
 ---
 
-## 3. End-to-End System Architecture
+## 3. Arsitektur Sistem End-to-End
 
-### 3.1 Data Flow: Bronze → Silver → Gold (Offline) + Serving (Online)
+### 3.1 Aliran Data: Bronze → Silver → Gold (Offline) + Serving (Online)
 
 ```mermaid
 flowchart TD
-    subgraph Bronze[BRONZE - Raw Staging - immutable]
-        Scopus[Scopus Export<br/>CSV / JSON / BibTeX] --> Archive[(Raw Archive<br/>payload + sha256 + batch_id)]
+    subgraph Bronze[BRONZE - Penampungan Mentah - Ingestion Mendatang]
+        Scopus[Export Scopus<br/>CSV / JSON / BibTeX] --> Archive[(Arsip Mentah<br/>payload + sha256 + batch_id)]
     end
-    Archive --> Parser[Bibliometric Parser<br/>split ; authors/affils/keywords]
-    Parser --> QGate{Quality Gate<br/>DOI/EID/Title+Year<br/>Title len>=5, 1900<=year<=2026}
-    QGate -->|reject| Quarantine[(Quarantine JSONL)]
+    Archive --> Parser[Parser Bibliometrik<br/>split ; authors/affils/keywords]
+    Parser --> QGate{Gerbang Kualitas<br/>DOI/EID/Title+Year<br/>Title len>=5, 1900<=year<=2026}
+    QGate -->|reject| Quarantine[(Karantina JSONL)]
     QGate -->|valid| Normalizer[Normalizer<br/>title Titlecase, narrative lowercase<br/>*_normalized lower+trim+strip-punct]
-    Normalizer --> Dedup[Deduplicator<br/>DOI - EID - Title+Year]
-    Dedup --> Loader[Atomic Loader<br/>BEGIN..COMMIT, ON CONFLICT upsert]
+    Normalizer --> Dedup[Deduplikator<br/>DOI - EID - Title+Year]
+    Dedup --> Loader[Loader Atomik<br/>BEGIN..COMMIT, ON CONFLICT upsert]
 
-    subgraph Silver[SILVER - 9 Canonical Tables - source of truth]
+    subgraph Silver[SILVER - 9 Tabel Kanonikal - sumber kebenaran]
         Loader --> PG[(PostgreSQL 15+<br/>publications, authors, institutions<br/>keywords, funding, publication_references<br/>pub_author, pub_institution, chunks)]
     end
 
     PG --> Embed[Batch Embedder Task 1<br/>BAAI/bge-m3 1024-d, batch 32-64<br/>WHERE embedding IS NULL]
-    Embed --> VecCol[chunks.embedding vector-1024<br/>+ model/version/dim metadata]
-    VecCol --> HNSW[HNSW Index<br/>vector_cosine_ops m=16 ef=64]
-    PG --> EdgeMat[Edge Materialization Task 8<br/>self-join a&lt;b, COUNT + ARRAY_AGG]
+    Embed --> VecCol[chunks.embedding vector-1024<br/>+ metadata model/version/dim]
+    VecCol --> HNSW[Indeks HNSW<br/>vector_cosine_ops m=16 ef=64]
+    PG --> EdgeMat[Materialisasi Edge Task 8<br/>self-join a&lt;b, COUNT + ARRAY_AGG]
 
-    subgraph Gold[GOLD - Derived Indexes - read-only]
+    subgraph Gold[GOLD - Indeks Turunan - read-only]
         EdgeMat --> Edges[(institution_collaboration<br/>author_collaboration)]
         PG --> TopicMod[BERTopic / Co-word Task 8.5]
         TopicMod --> Topics[(topics)]
@@ -125,18 +123,18 @@ flowchart TD
     end
 
     subgraph Serving[ONLINE SERVING - FastAPI /api/v1/ask]
-        Q[User Question] --> GW[Gateway<br/>Pydantic validate + request_id UUIDv4<br/>rate-limit 20/min/IP]
-        GW --> Router[Question Router<br/>SQLRoute - VectorRoute - GraphRoute - HybridRoute<br/>+ Entity Resolution Gate]
-        Router --> SQLR[SqlRetriever<br/>Text-to-SQL + sqlglot AST]
+        Q[Pertanyaan Pengguna] --> GW[Gateway<br/>validasi Pydantic + request_id UUIDv4<br/>rate-limit 20/min/IP]
+        GW --> Router[Router Pertanyaan<br/>SQLRoute - VectorRoute - GraphRoute - HybridRoute<br/>+ Gerbang Resolusi Entitas]
+        Router --> SQLR[SqlRetriever<br/>Text-to-SQL + AST sqlglot]
         Router --> VecR[VectorRetriever<br/>bge-m3 + pgvector HNSW]
-        Router --> GrR[GraphRetriever<br/>Templates T1-T4, hops<=3]
-        Router --> HyR[HybridRetriever<br/>vector + filters parameterized]
+        Router --> GrR[GraphRetriever<br/>Templat T1-T4, hops<=3]
+        Router --> HyR[HybridRetriever<br/>vector + filter terparameterisasi]
         SQLR & VecR & GrR & HyR --> EU[EvidenceUnifier<br/>Evidence / EvidenceSet + dedup]
-        EU --> RK[EvidenceRanker<br/>deterministic]
-        EU -.->|count==0| SC[Short-circuit<br/>200 not_found, 0 LLM calls, <200ms]
+        EU --> RK[EvidenceRanker<br/>deterministik]
+        EU -.->|count==0| SC[Short-circuit<br/>200 not_found, 0 pemanggilan LLM, <200ms]
         RK --> Synth[AnswerSynthesizer<br/>Qwen2.5-Coder-7B via Ollama]
-        Synth --> CV[CitationVerifier<br/>strip fakes to unverified_citations]
-        CV --> Resp[200 OK Grounded Answer<br/>answer + sources + request_id]
+        Synth --> CV[CitationVerifier<br/>pangkas sitasi palsu ke unverified_citations]
+        CV --> Resp[Jawaban Ter-grounding 200 OK<br/>answer + sources + request_id]
     end
 
     HNSW --> VecR
@@ -145,107 +143,62 @@ flowchart TD
     PG --> SQLR
 ```
 
-Text fallback (if Mermaid unsupported):
+### 3.2 Invariant Arsitektur (Tidak Boleh Dilanggar)
 
-```text
-OFFLINE: Scopus files → Parse → Quality Gate → Normalize → Dedup → 9 Silver tables
-            → (a) Embed chunks (bge-m3) → HNSW index  |  (b) Build 2 edge tables  |  (c) BERTopic → topics → evolution + expertise
-ONLINE:  Question → POST /api/v1/ask → validate + request_id → Router (4 routes + entity gate)
-            → Retriever (SQL/Vector/Graph/Hybrid, app_readonly, 10s timeout)
-            → EvidenceUnifier → Ranker → Synthesizer (Ollama) → CitationVerifier → Grounded JSON
-            → if 0 evidence: deterministic not_found, no LLM call
-```
-
-### 3.2 Architectural Invariants (must never be violated)
-
-| # | Invariant | Source |
+| # | Invariant | Sumber |
 |---|---|---|
-| 1 | **Source-of-Truth**: PostgreSQL Silver is canonical. pgvector + edge tables + Gold analytics are derived read-only indexes. | `docs/03 §0.3`, `docs/04 §1` |
-| 2 | **Evidence Normalization**: no raw row/chunk/edge reaches the LLM; all pass through `EvidenceUnifier` → `EvidenceSet`. | `docs/03 §0.3`, `docs/05 §9` |
-| 3 | **Security**: `app_readonly` (SELECT-only) + `SET search_path=public` + `statement_timeout='10s'` per pooled connection; retrieved text = `UNTRUSTED DATA`. | `docs/08 §1–§2` |
-| 4 | **Zero-Hallucination**: 0 evidence → deterministic `not_found`/`insufficient_evidence`, no synthesis call. | `docs/03 §0.3`, `docs/05 §11.2` |
-
-Deployment (MVP): single CPU VM (8 vCPU / 16 GB: ~6 GB Qwen-7B-Q4 + ~2 GB bge-m3 + OS/pool headroom) running Docker Compose (`backend` + `ollama`) against managed Supabase PostgreSQL; Next.js frontend on Vercel. Concurrency target 1–2 req within 15 s budget. No Redis/Celery/SSE until Phase 7 baseline proves a bottleneck (`docs/03 §7–§9`, `docs/09 §6`).
+| 1 | **Sumber Kebenaran (Source-of-Truth)**: PostgreSQL Silver bersifat kanonikal. pgvector + tabel edge + analitik Gold adalah struktur turunan read-only. | `docs/03 §0.3`, `docs/04 §1` |
+| 2 | **Normalisasi Bukti (Evidence Normalization)**: tidak ada baris/chunk/edge mentah yang mencapai LLM; semuanya melewati `EvidenceUnifier` → `EvidenceSet`. | `docs/03 §0.3`, `docs/05 §4` |
+| 3 | **Keamanan (Security)**: `app_readonly` (hanya SELECT) + `SET search_path=public` + `statement_timeout='10s'` per koneksi pool; teks hasil retrieval = `UNTRUSTED DATA`. | `docs/08 §1–§2` |
+| 4 | **Tanpa Halusinasi (Zero-Hallucination)**: 0 bukti → `not_found`/`insufficient_evidence` deterministik, tanpa pemanggilan sintesis. | `docs/03 §0.3`, `docs/05 §1` |
 
 ---
 
-## 4. Technology Stack
+## 4. Tumpukan Teknologi
 
-| Layer | Choice (pinned) | Rationale / Trade-off |
+| Lapisan | Pilihan (terkunci) | Rasional / Kompromi |
 |---|---|---|
-| **Language / Framework** | Python 3.11+, FastAPI (async), Pydantic v2, `asyncpg`/`psycopg3` | Mature RAG/SQL-AST/embedding ecosystem; async I/O for Ollama + PG; strict schema boundary. Split from Next.js to avoid `child_process.spawn` anti-pattern (`docs/03 §3`, `docs/09 §4`). |
-| **LLM (self-hosted, CPU)** | `Qwen2.5-Coder-7B-Instruct` (GGUF Q4_K_M) via Ollama | Best-in-class 7B for Text-to-SQL + structured JSON on CPU (~25–35 tok/s, 5–10 s synthesis). Llama-3.1-8B / Mistral-7B / Phi-mini rejected on SQL reliability (`docs/09 §2`). GPU upgrade (32B/70B) is a model-swap only. |
-| **Embedding** | `BAAI/bge-m3`, 1024-dim float32 (revision + `sentence-transformers` version + batch-size 32–64 pinned) | Multilingual ID/EN; CPU-viable batch-offline + single-query-online. `all-MiniLM-L6-v2` rejected (English-only). Deterministic re-runs require pinning (`docs/09 §3`). |
-| **Database & Search** | PostgreSQL 15+ (Supabase) + `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) | Existing 9-table corpus; HNSW chosen over IVFFlat (no retraining). `DISTINCT ON (publication_id)` dedup; threshold gate (`docs/04 §5`, `docs/05 §7`). |
-| **SQL Guardrail** | `sqlglot` AST validator | Parse → SELECT-root → table/column whitelist → destructive blacklist → aggregate-shape → double-count → LIMIT/timeout (`docs/05 §6.1`). |
-| **Analytics & NLP** | BERTopic / TF-IDF + scikit-learn, Pandas, NetworkX (offline); `rapidfuzz` deferred to Phase 9 | Topic clustering, YoY growth/acceleration, weighted expertise scoring; fuzzy alias resolution post-MVP (`docs/04 §7`, `docs/11 Phase 9`). |
-| **Frontend** | Next.js (React) on Vercel — Clean White, Dense, Notion/Linear-style | Tabular monospace data, collapsible sources, honest `ok/not_found/needs_clarification/error` states, Dev-Mode SQL viewer (`docs/07`). |
-| **Deploy** | Docker Compose (`backend` + `ollama`) on 1 VPS; no LangChain/LlamaIndex | LangChain/LlamaIndex rejected for MVP (indirection hides 7B failure modes; direct Ollama-HTTP + raw SQL is debuggable) (`docs/09 §5`). |
+| **Bahasa / Framework** | Python 3.11+, FastAPI (async), Pydantic v2, `asyncpg`/`psycopg3` | Ekosistem RAG/SQL-AST/embedding yang matang; I/O async untuk Ollama + PG; batas skema yang ketat. |
+| **LLM (mandiri, CPU)** | `Qwen2.5-Coder-7B-Instruct` (GGUF Q4_K_M) via Ollama | Kelas 7B terbaik untuk Text-to-SQL + JSON terstruktur di CPU (~25–35 tok/s, sintesis 5–10 dtk). |
+| **Embedding** | `BAAI/bge-m3`, 1024-dim float32 (versi/commit terkunci + batch-size 32–64) | Multibahasa ID/EN; batch-offline + single-query-online yang layak di CPU. |
+| **Database & Pencarian** | PostgreSQL 15+ + `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) | 9 tabel kanonikal yang sudah ada; indeks HNSW pada `chunks.embedding`. |
+| **Pengaman SQL** | validator AST `sqlglot` | Parse → root SELECT → whitelist tabel/kolom → blacklist destruktif → pemeriksaan bentuk agregat → pemeriksaan hitung ganda → LIMIT 50. |
+| **Analitik & NLP** | BERTopic / TF-IDF + scikit-learn, Pandas, NetworkX (offline) | Klasterisasi topik, pertumbuhan/akselerasi YoY, skor kepakaran terbobot. |
+| **Frontend** | Next.js (React) di Vercel — Putih Bersih, Padat, gaya Notion/Linear | Data tabular monospace, sumber collapsible, status jujur, penampil SQL Dev-Mode. |
+| **Deployment** | Docker Compose (`backend` + `ollama`) di 1 VPS | Sederhana, kokoh, deployment mandiri (self-hosted). |
 
 ---
 
-## 5. Database & Data Pipeline Summary
+## 5. Ringkasan Database & Pipeline Data
 
-Full DDL, cleaning rules, and acceptance checklist: `docs/04` (+ pipeline narrative `docs/12`).
+DDL lengkap, aturan pembersihan (cleaning), dan daftar periksa penerimaan: `docs/04` (+ narasi pipeline `docs/12`).
 
-### 5.1 Silver Layer — 9 Canonical Relational Tables (`CURRENT` in Supabase, pending Task 0 audit)
+### 5.1 Lapisan Silver — 9 Tabel Relasional Kanonikal
 
-| Table | Role | Key columns / Rules |
+| Tabel | Peran | Kolom kunci / Aturan |
 |---|---|---|
-| `publications` | Core entity (18 cols) | `publication_id PK`, `title` (Titlecase), `abstract` (lowercase), `doi` (indexed, `10.xxxx/...`), `eid` (unique), `year SMALLINT NOT NULL indexed`, `citation_count INT DEFAULT 0`, `document_type/stage/open_access/language/publisher/source` (lowercase), `volume/issue/art_no/page_*` (raw) |
-| `authors` | Author entity | `author_id PK`, `author_name` (display case), `author_name_normalized` (`lower+strip-punct+trim`, indexed — **mandatory for GROUP BY**) |
-| `institutions` | Affiliation entity | `institution_id PK`, `institution_name` (display), `institution_name_normalized` (indexed), `city` + `country` (lowercase, `country` indexed) |
-| `keywords` | 1:N keyword | `keyword_id BIGSERIAL PK`, `publication_id FK`, `keyword` (pure lowercase), `keyword_type` (`author keyword` / `index keyword`) |
-| `funding` | 1:N funding | `funding_id BIGSERIAL PK`, `funding_agency` (display), `funding_agency_normalized` (indexed), `grant_number`, `funding_text` (lowercase) |
+| `publications` | Entitas inti (22 kolom) | `publication_id PK`, `title` (Titlecase), `abstract` (lowercase), `doi` (terindeks, `10.xxxx/...`), `eid` (unik), `year SMALLINT NOT NULL terindeks`, `citation_count INT DEFAULT 0`, `document_type/stage/open_access/language/publisher/source` (lowercase), `volume/issue/art_no/page_*` (mentah) |
+| `authors` | Entitas penulis | `author_id PK`, `author_name` (casing tampil), `author_name_normalized` (`lower+strip-punct+trim`, terindeks — **wajib untuk GROUP BY**) |
+| `institutions` | Entitas afiliasi | `institution_id PK`, `institution_name` (tampil), `institution_name_normalized` (terindeks), `city` + `country` (lowercase, `country` terindeks) |
+| `keywords` | Kata kunci 1:N | `keyword_id BIGSERIAL PK`, `publication_id FK`, `keyword` (lowercase murni), `keyword_type` (`author keyword` / `index keyword`) |
+| `funding` | Pendanaan 1:N | `funding_id BIGSERIAL PK`, `funding_agency` (tampil), `funding_agency_normalized` (terindeks), `grant_number`, `funding_text` (lowercase) |
 | `pub_author` | Junction | `PK(publication_id, author_id)`, `author_order SMALLINT` |
 | `pub_institution` | Junction | `PK(publication_id, institution_id)` |
-| `publication_references` | 1:N raw cites | `reference_id BIGSERIAL PK`, `reference_order INT`, `reference_text TEXT` — **unlinked strings in MVP** (`CITES` resolution → Phase 9) |
-| `chunks` | 1:N semantic unit | `chunk_id BIGSERIAL PK`, `publication_id FK CASCADE`, `chunk_text TEXT`, `section DEFAULT 'title_abstract'` + vector columns below |
+| `publication_references` | Sitasi mentah 1:N | `reference_id BIGSERIAL PK`, `reference_order INT`, `reference_text TEXT` — **string tidak-tertaut (unlinked) di MVP** |
+| `chunks` | Unit semantik 1:N | `chunk_id BIGSERIAL PK`, `publication_id FK CASCADE`, `chunk_text TEXT`, `section DEFAULT 'title_abstract'` + kolom vector di bawah |
 
-**Vector columns on `chunks`** (`PLANNED`, Task 1): `embedding vector(1024)`, `embedding_model DEFAULT 'BAAI/bge-m3'`, `embedding_version DEFAULT 'v1.0'`, `embedding_dimension DEFAULT 1024` + `idx_chunks_embedding_hnsw USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)` + `idx_chunks_pub_id`.
-
-### 5.2 Derived Graph Layer — 2 Edge Collaboration Tables (`PLANNED`, Task 8)
-
-Idempotent `TRUNCATE + INSERT … SELECT` self-joins (`a < b` canonical, `COUNT(DISTINCT pub)` weight, `ARRAY_AGG(pub)` provenance), B-Tree indexes on `(a)`, `(b)`, `(weight DESC)`; re-`GRANT SELECT TO app_readonly` after creation (`docs/04 §6`, `docs/12 §14`).
-
-### 5.3 Gold Layer — 3 Director Analytics Tables (`PLANNED`, Task 8.5)
-
-| Table | Purpose | Key fields |
-|---|---|---|
-| `topics` | BERTopic clusters | `topic_id`, `topic_name` + `topic_name_normalized`, `cluster_keywords TEXT[10]`, `representation_vector vector(1024)` (HNSW), `total_publications`, `total_citations`, `first/latest_publication_year` |
-| `topic_evolution` | Annual trend acceleration | `(topic_id, year) UNIQUE`, `publication_count`, `citation_count`, `growth_score NUMERIC(6,4)` (YoY), `citation_acceleration NUMERIC(6,4)`, `recency_weight`, `is_emerging BOOL` + partial/emerging/growth indexes |
-| `researcher_expertise` | Weighted expert ranking | `(author_id, topic_id) UNIQUE`, `expertise_score NUMERIC(8,4) [0–100]`, `relevance/productivity/impact/recency NUMERIC(6,4)`, `h_index_topic`, `publication_count/citation_count_topic`, `coauthor_network_size` + `(topic_id, expertise_score DESC)` rank index |
-
-### 5.4 Route → Layer Mapping (`/api/v1/ask`)
-
-| RAG Route | Layers hit | Query pattern | Evidence output |
-|---|---|---|---|
-| `SQLRoute` (`structured`) | Silver | Parameterized `SELECT`/aggregation + `sqlglot` AST | Factual stats, productivity rankings, funding tables |
-| `VectorRoute` (`semantic`) | Silver vector (`chunks.embedding` ⨝ `publications`) | `embedding <=> :qv`, `DISTINCT ON (pub) LIMIT 8` | Relevant abstracts + `[Title, Year, DOI]` |
-| `GraphRoute` (`graph` = v2 `relational`) | Edge Layer | Templates T1–T4, recursive CTE `max_hops=3` | Collaboration lists + `via_publication_ids` |
-| `HybridRoute` (`hybrid`) | Gold + Silver + Vector | Topic-cluster + trend + expertise joins with vector distance + `year/country/author/institution/keyword` filters | Emerging-topic briefs, expert rankings, policy synthesis |
-
-### 5.5 Pipeline Stages (Bronze → Serving)
-
-1. **Bronze staging**: immutable Scopus archive + `batch_id/sha256/ingested_at/record_count` (`docs/12 §5`).
-2. **Cleaning**: casing/normalization matrix (identifiers preserved; display preserved; narrative lowercase; title Titlecase; `*_normalized` for aggregation) (`docs/12 §8`, `docs/04`).
-3. **Bulk loading**: atomic `BEGIN…COMMIT` per batch, `ON CONFLICT` upserts, full `ROLLBACK` on integrity failure (`docs/12 §11`).
-4. **Embedding generation**: `Title: …\nAbstract: …` → `bge-m3` batch 32–64, idempotent `WHERE embedding IS NULL`, OOM → batch-halving + backoff (`docs/12 §12`).
-5. **Graph materialization**: edge rebuild + provenance arrays + re-grant (`docs/12 §14`).
-6. **Quality gates**: pub↔chunk reconciliation, `WHERE embedding IS NULL = 0`, 0 orphan junctions, edge counts non-empty (`docs/12 §19`).
-
-Offline (write/DDL, `service_role`, minutes/hours) and online (read-only `app_readonly`, ms/seconds) are strictly separated (`docs/12 §20`).
+**Kolom vector pada `chunks`** (`PLANNED`, Task 1): `embedding vector(1024)`, `embedding_model DEFAULT 'BAAI/bge-m3'`, `embedding_version DEFAULT 'v1.0'`, `embedding_dimension DEFAULT 1024` + `idx_chunks_embedding_hnsw USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)` + `idx_chunks_pub_id`.
 
 ---
 
-## 6. Repository Structure & Documentation Index
+## 6. Struktur Repositori & Indeks Dokumentasi
 
-### 6.1 File Tree (actual + target)
+### 6.1 Pohon File (aktual + target)
 
 ```text
 AI-Bibliometrics/
-├── README.md                    ← this file (Hybrid Master landing page)
-├── docs/                        ← normative specifications (only committed content today)
+├── README.md                    ← file ini (halaman arahan Hybrid Master)
+├── docs/                        ← spesifikasi normatif (satu-satunya konten ter-commit saat ini)
 │   ├── 01 PRD.md
 │   ├── 02 SRD.md
 │   ├── 03 System Architecture.md
@@ -259,221 +212,132 @@ AI-Bibliometrics/
 │   ├── 11 Roadmap.md
 │   └── 12 Data Pipeline.md
 ├── backend/app/                 ← PLANNED (Task 2+): routers/, services/, models/, db/, core/
-├── database/                    ← PLANNED: migrations/ (Silver DDL, vector col, HNSW, edges, Gold)
+├── database/                    ← PLANNED: migrations/ (DDL Silver, kolom vector, HNSW, edge, Gold)
 ├── scripts/                     ← PLANNED: verify_schema.py (T0), embed_chunks.py (T1), build_edges.py (T8)
-├── frontend/                    ← PLANNED (Task 11): Next.js chat UI per docs/07
-├── docker/ + docker-compose.yml ← PLANNED: backend + ollama services
-├── tests/                       ← PLANNED: router/SQL/vector/graph/evidence/answer/API suites
-└── .env.example                 ← PLANNED: DB URL, Ollama host, model IDs, timeouts (never commit .env)
+├── frontend/                    ← PLANNED (Task 11): UI chat Next.js per docs/07
+├── docker/ + docker-compose.yml ← PLANNED: service backend + ollama
+├── tests/                       ← PLANNED: suite router/SQL/vector/graph/evidence/answer/API
+└── .env.example                 ← PLANNED: URL DB, host Ollama, ID model, timeout (jangan pernah commit .env)
 ```
 
-> Note: the old README referenced `docs/00 Readme.md` reading order. **No `docs/00` file exists in this repo** — the canonical reading order is `README.md → docs/01 … docs/12` below. Do not treat `00` as a real file until one is authored.
+### 6.2 Indeks Dokumentasi (`docs/01`–`docs/12`)
 
-### 6.2 Documentation Index (`docs/01`–`docs/12`)
-
-| Doc | Title | What it normatively defines |
+| Dok | Judul | Hal yang didefinisikan secara normatif |
 |---|---|---|
-| `01 PRD.md` | Product Requirements | Background (SQLite→PG transition, blockers), MVP end-to-end goal, internal-only scope, success metrics, risk table |
-| `02 SRD.md` | System Requirements | FR0–FR7 (validation, routing, SQL/vector/synthesis/UI/relational) + NFR1–N6 (15 s latency, groundedness, observability fields, security) + constraints C1–C5 |
-| `03 System Architecture.md` | End-to-End Architecture v3.0.0 | Vertical slice, layer I/O table, invariants, component topology, 5 data flows, offline/online split, graph ADR (AGE vs Kùzu pending), deployment, latency budget, Phase 0–7 map |
-| `04 Database Schema.md` | Hybrid Master Blueprint v3.2.0 | Medallion (Bronze/Silver/Edge/Gold), 9-table Silver DDL + cleaning rules, `chunks.embedding` + HNSW (`m=16, ef=64`), 2 edge DDLs, 3 Gold DDLs + `ExpertiseScore` formula, ERD, route mapping, Task-0 checklist AC-DB-1…9 |
-| `05 Retrieval Rag Design.md` | RAG Design v3.1.0 | 6-stage RAG, current-vs-target matrix, seq diagram, router (rules-first + entity gate + `filters_ignored` + fallback), Sql/Vector/Graph/Hybrid retrievers, vector/HNSW spec, T1–T4 templates, `Evidence`/`EvidenceSet`/`Unifier`/`Ranker`, prompt skeleton, short-circuit, verifier regex, failure matrix |
-| `06 Api Design.md` | API Contract v3.0.0 (`/api/v1`) | Boundary principles, endpoint table (`/api/v1/ask` + `/api/v1/health` planned; `/api/query` superseded; stream/papers/authors/graph deferred), URI versioning, status/envelope conventions, 4 response variants, Pydantic v2 schemas, error `error_type` enum, rate-limit/CORS, observability JSON, AC-API-1…8 |
-| `07 UI Spec.md` | UI Spec v3.1.0 | Notion/Linear dense 2-panel layout, design tokens (`#FFFFFF/#F7F7F5/#2563EB/#B45309`, Inter + JetBrains Mono), route badges, collapsible sources, Dev-Mode inspector, 6 honest states (loading/ok/not_found/clarify/error/unreachable), a11y + AC-UI-1…9 |
-| `08 Security.md` | Internal-MVP Security | `app_readonly` DDL + `search_path` + re-grant rule, timeouts/pooling, `.env` isolation, prompt-vs-SQL injection layers (code guardrails, whitelist/blacklist, operator `Literal`s, no-LLM-SQL graph path), rate-limit/CORS/no-auth risk, logging without secrets, go-live checklist |
-| `09 Tech Stack.md` | Stack Rationale | Lock table (PG+pgvector / FastAPI / Qwen-7B / bge-m3 / sqlglot / Next.js / Compose), LLM + embedding + backend-split + no-LangChain rationales, dev/prod topology (8 vCPU/16 GB, 1–2 concurrent), GPU swap path, graph ADR (Pending) |
-| `10 Implementation Plan.md` | Build Order (Tasks 0–12) | Status matrix, Phase 0–7 map, test-plan categories, linear Task 0–3 blockers + Task 4 entity-contract prerequisite chain, per-task steps + checkpoints, Task-12 E2E gate |
-| `11 Roadmap.md` | Phased Roadmap v3.0.0 (Phases 0–11) | State audit (docs-only), MVP definition, invariants diagram, status labels, Phase 0…11 goals/deliverables/acceptance, MVP-boundary table, dependency DAG, risk register, next step Milestone 0.1 |
-| `12 Data Pipeline.md` | Pipeline Design v1.0.0 | Scopus→canonical mapping, Bronze archive, nested-structure parsing, quality gates, cleaning matrix, multi-tier dedup (DOI→EID→Title+Year), ingestion-vs-resolution boundary, atomic loader SQL, embedding/HNSW spec, edge materialization SQL, lineage/provenance, idempotency, incremental strategy, quarantine handling, quality-gate SQL, offline/online + security/perf, AC-PIPE-1…10 |
+| `01 PRD.md` | Kebutuhan Produk | Latar belakang, tujuan MVP end-to-end, cakupan internal-saja, metrik keberhasilan, tabel risiko |
+| `02 SRD.md` | Kebutuhan Sistem | FR0–FR7 (validasi, routing, SQL/vector/sintesis/UI/relasional) + NFR1–N6 (latensi, grounding, keamanan) |
+| `03 System Architecture.md` | Arsitektur End-to-End v3.6.0 | Topologi komponen, 4 aliran data, invariant, pentahapan Medallion, anggaran latensi |
+| `04 Database Schema.md` | Cetak Biru Hybrid Master v3.6.0 | DDL Silver 9-tabel, `chunks.embedding` + HNSW, DDL 2 edge, DDL 3 Gold, ERD |
+| `05 Retrieval Rag Design.md` | Desain RAG v3.6.0 | Retrieval 4-rute (SQL, Vector, Graph, Hybrid), `EvidenceObject`, pembingkaian Prompt, CitationVerifier |
+| `06 Api Design.md` | Kontrak API v3.6.0 (`/api/v1`) | `POST /api/v1/ask` + `GET /api/v1/health`, skema Pydantic, envelope `AskResponse` |
+| `07 UI Spec.md` | Spesifikasi UI v3.6.0 | Tata letak padat 2-panel ala Notion/Linear, token, badge rute, sumber collapsible, Dev-Mode |
+| `08 Security.md` | Keamanan MVP Internal | Peran `app_readonly`, validasi AST SQL, parameterisasi, pembingkaian data tidak tepercaya |
+| `09 Tech Stack.md` | Rasional Tumpukan Teknologi | PG + pgvector, FastAPI, Qwen2.5-Coder-7B, bge-m3, sqlglot, Next.js, Docker Compose |
+| `10 Implementation Plan.md` | Urutan Build (Task 0–12) | Tugas build linier (T0 pemeriksaan skema hingga T12 verifikasi E2E) |
+| `11 Roadmap.md` | Roadmap Bertahap v3.6.0 | Deliverable MVP Fase 0–8, roadmap pasca-MVP/masa depan Fase 9–11, register risiko |
+| `12 Data Pipeline.md` | Desain Pipeline v3.6.0 | Arsitektur ingestion, matriks cleaning/casing, deduplikasi, batch embedding, materialisasi edge |
 
 ---
 
-## 7. Getting Started & Setup Guide
+## 7. Panduan Memulai & Setup
 
-All steps are **TO-DO** (no code committed yet). Follow `docs/10` linearly for Tasks 0–3; do not skip.
+Seluruh langkah berstatus **TO-DO** (belum ada kode ter-commit). Ikuti `docs/10` secara linier untuk Task 0–3; jangan melompat.
 
-### 7.1 Prerequisites & Environment Setup
+### 7.1 Prasyarat & Setup Lingkungan
 
-- **Infra**: Supabase PostgreSQL 15+ project (or local PG 15+ with `pgvector`), 1 dev VM / Docker host (8 vCPU / 16 GB recommended), Node 18+ (frontend later), Vercel account (frontend deploy).
-- **Tools**: Python 3.11+, Docker + Compose, Ollama binary, `psql`, Git.
-- **Models (pinned at setup)**: `qwen2.5-coder:7b-instruct` (Ollama), `BAAI/bge-m3` (+ record commit + `sentence-transformers` version + batch size in lockfile per `docs/09 §3`).
-- **Repo bootstrap** (Phase 0 / Milestone 0.1):
+- **Infra**: database PostgreSQL 15+ (sudah siap pakai, terisi 9 tabel kanonikal), 1 VM dev / host Docker (disarankan 8 vCPU / 16 GB), Node 18+, akun Vercel.
+- **Perkakas (Tools)**: Python 3.11+, Docker + Compose, biner Ollama, `psql`, Git.
+- **Model (terkunci saat setup)**: `qwen2.5-coder:7b-instruct` (Ollama), `BAAI/bge-m3`.
 
-  ```bash
-  mkdir -p backend/app/{routers,services,models,db,core} database/migrations scripts tests docker data/raw
-  touch backend/app/main.py .env.example docker-compose.yml
-  # .env (NEVER commit): SUPABASE_DB_URL=postgresql://... , OLLAMA_HOST=http://localhost:11434,
-  #   LLM_MODEL=qwen2.5-coder:7b-instruct, EMBED_MODEL=BAAI/bge-m3, STATEMENT_TIMEOUT=10s
-  ```
-
-### 7.2 Database Migration & Schema Initialization (Task 0)
-
-1. Run the schema-introspection audit **before any feature code** (`docs/04 §10`, `docs/10 Task 0`):
-
-   ```bash
-   python scripts/verify_schema.py  # SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema='public'
-   ```
-
-   Reconcile output against `docs/04 §4`; fix `docs/04` if names/types differ (AC-DB-1…4).
-2. Apply Silver DDL + extensions in `database/migrations/` order: `CREATE EXTENSION vector` → 9 Silver tables (+ `*_normalized` indexes) → create `app_readonly` role + `GRANT SELECT` + verify writes fail (`docs/08 §1`, AC-DB-9):
-
-   ```sql
-   CREATE ROLE app_readonly LOGIN PASSWORD '...';
-   GRANT USAGE ON SCHEMA public TO app_readonly;
-   GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;
-   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO app_readonly;
-   -- every pooled connection: SET search_path = public; SET statement_timeout = '10s';
-   ```
-3. Verify chunk granularity before embedding: `SELECT COUNT(*), COUNT(DISTINCT publication_id) FROM chunks;` (`docs/05 §7.2`).
-
-### 7.3 Ingestion Pipeline Execution (Tasks 1 + 8 + 8.5)
+### 7.2 Verifikasi Database & Inisialisasi Skema (Task 0)
 
 ```bash
-# 1. Cleaning → Bulk load (Bronze → Silver), atomic per batch
-python scripts/ingest_scopus.py --input data/raw/scopus_export_*.csv --batch-size 1000
-# validates DOI/EID/Title+Year, Titlecase/lowercase/*_normalized rules, ON CONFLICT upserts (docs/12 §7-§11)
+python scripts/verify_schema.py  # SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema='public'
+```
 
-# 2. Embedding generation (Task 1) — chunks.embedding vector(1024) + metadata
+### 7.3 Eksekusi Pipeline Ingestion (Task 1 + 8 + 8.5)
+
+```bash
+# 1. Pembuatan embedding pada chunks (Task 1) — chunks.embedding vector(1024)
 python scripts/embed_chunks.py --model BAAI/bge-m3 --batch-size 32 --resume
-# check: SELECT COUNT(*) - COUNT(embedding) AS missing FROM chunks;  -- must be 0
 
-# 3. HNSW index (after backfill)
-psql "$SUPABASE_DB_URL" -c "CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64); ANALYZE chunks;"
+# 2. Indeks HNSW pada chunks
+psql "$DB_URL" -c "CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64); ANALYZE chunks;"
 
-# 4. Graph materialization (Task 8) — 2 edge tables, then re-grant
-python scripts/build_edges.py   # TRUNCATE + INSERT ... SELECT a<b + via_publication_ids
-psql "$SUPABASE_DB_URL" -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;"
+# 3. Materialisasi graf (Task 8) — 2 tabel edge, lalu re-grant
+python scripts/build_edges.py
+psql "$DB_URL" -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;"
 
-# 5. Gold analytics (Task 8.5) — BERTopic → topics → topic_evolution + researcher_expertise
+# 4. Analitik Gold (Task 8.5) — topics, topic_evolution, researcher_expertise
 python scripts/build_topics.py && python scripts/score_expertise.py
-# quality gates: docs/12 §19 (pub↔chunk counts, 0 orphans, edge counts)
 ```
-
-### 7.4 Running the FastAPI App & API Verification (Tasks 2–4, 10)
-
-```bash
-docker compose up --build          # backend (uvicorn :8000) + ollama
-ollama pull qwen2.5-coder:7b-instruct
-
-# health (must not leak secrets)
-curl -s http://localhost:8000/api/v1/health | jq
-
-# ask — structured example (expect route=structured)
-curl -s http://localhost:8000/api/v1/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"Who are the top 5 most productive authors in 2023?","developer_mode":true}' | jq '{status,route,answer: .answer[0:200], sources: (.sources|length)}'
-
-# ask — semantic example (expect 8 unique pubs after Task 1)
-curl -s http://localhost:8000/api/v1/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"Papers about oxidative stress in Wharton jelly?"}' | jq
-
-# ask — graph example (after Task 8)
-curl -s http://localhost:8000/api/v1/ask \
-  -H 'Content-Type: application/json' \
-  -d '{"question":"Which institutions collaborate with AI researchers?"}' | jq
-
-# negative checks: malformed → 422; empty topic → 200 not_found (<200ms, no LLM); "J. Wang" → 200 needs_clarification + candidates
-```
-
-Full E2E gate (12 queries), adversarial SQL suite, latency baseline (1–2 concurrent, record `validation+routing+embedding+retrieval+evidence+synthesis+verification` breakdown): `docs/10 Task 12`, `docs/11 Phase 8`.
 
 ---
 
-## 8. Roadmap & Implementation Status
+## 8. Roadmap & Status Implementasi
 
-Transparent current-vs-target. Nothing is marked done without code + measured evidence in repo.
+### 8.1 Build Task 0–12 (`docs/10`)
 
-### 8.1 Build Tasks 0–12 (`docs/10`)
+Pre-task **DONE** (di luar penomoran Task 0–12, sinkronisasi 2026-09-27): Setup database · Load database/data prototipe · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`, 9 file). NEXT eksplisit: siapkan input embedding → generate → simpan ke pgvector → validasi → similarity retrieval → RAG → E2E.
 
-| Task | Scope | Status | Blocks |
+| Task | Cakupan | Status | Memblokir |
 |---|---|---|---|
-| **Task 0 — Schema Check** | `verify_schema.py` vs `information_schema`; fix `docs/04`; chunk-ratio check | ⬜ NOT STARTED (next) | Everything (SQL prompt, role, embeddings, edges) |
-| **Task 1 — Embedding Pipeline** | `ALTER chunks ADD embedding vector(1024)` + bge-m3 batch + HNSW (`m=16, ef=64`) + 3–5 query relevance check | ⬜ BLOCKED (needs T0) | Semantic + Hybrid routes |
-| **Task 2 — Backend Skeleton + DB Layer** | FastAPI layout, `app_readonly` + `search_path`/timeout pool, `GET /api/v1/health` | ⬜ PLANNED | API + all retrievers |
-| **Task 3 — Ollama Setup** | `qwen2.5-coder:7b-instruct` pull, isolated LLM client, health integration | ⬜ PLANNED | Router fallback, SQL gen, synthesis |
-| **Task 4 — Router + Entity Gate** | 4-class routing, Pydantic entity contract, `filters_ignored`, ILIKE gate, `needs_clarification`, 12-query unit test | ⬜ PLANNED | Tasks 5, 6, 7, 8 |
-| **Task 5 — SQL Generator + Validator** | Schema-complete prompt, `sqlglot` 7-layer check, 1x retry, 12 adversarial tests | ⬜ PLANNED | Structured slice |
-| **Task 6 — Vector Retriever** | Query-embed + `<=>` + `DISTINCT ON` + threshold tuning | ⬜ PLANNED (needs T1) | Semantic slice |
-| **Task 7 — Hybrid Path** | Conditional joins + `Literal` operator whitelist + parameterized filters | ⬜ PLANNED (needs T4–T6) | Combined queries |
-| **Task 8 — Relational/Graph Path** | Build 2 edge tables + re-grant + T1–T4 templates + hop/limit/timeout clamps | ⬜ PLANNED (needs T0+T4) | Network queries |
-| **Task 8.5 — Gold Analytics** *(from `docs/04 §7`)* | `topics` + `topic_evolution` + `researcher_expertise` + `ExpertiseScore` weights | ⬜ PLANNED (needs T1+T8) | Policy/expert synthesis |
-| **Task 9 — Answer Synthesizer** | Grounding prompt + `CitationVerifier` + empty-result short-circuit + `filters_ignored` notes | ⬜ PLANNED | Grounded answers |
-| **Task 10 — Full API** | `POST /api/v1/ask` wiring, `error_type` map, NFR4 logging, rate-limit | ⬜ PLANNED | Frontend + E2E |
-| **Task 11 — Frontend** | Next.js 2-panel UI, badges, all 6 states, Dev-Mode inspector | ⬜ PLANNED | Demo |
-| **Task 12 — E2E Verification** | 12-query gate (structured/semantic/hybrid/relational/ambiguity/empty/adversarial/unreachable) + latency baseline | ⬜ PLANNED | **MVP sign-off** |
-
-Task 0–3 strictly linear; Task 4 precedes 5–8; Task 9 needs 5/6/7/8; Tasks 10–11 need 4–9 (`docs/10` sequencing).
-
-### 8.2 Phases 0–11 (`docs/11`)
-
-`Phase 0 NEXT` (baseline + Task 0) → `Phase 1 BLOCKED` (embeddings + edges) → `Phase 2–7 PLANNED` (gateway → SQL slice → vector → evidence → graph → hybrid/synthesis) → `Phase 8 PLANNED` (**MVP gate**) → `Phase 9 POST-MVP` (fuzzy `rapidfuzz`, eval harness, FTS, `CITES` resolution) → `Phase 10 POST-MVP/FUTURE` (SSE stream, Redis cache, Celery/arq, GPU-32B, resource APIs) → `Phase 11 FUTURE` (Supabase Auth + RLS, CDC/outbox ingestion, OTel audit). See `docs/11 §4–§6` for deliverables, acceptance criteria, and dependency DAG.
-
-### 8.3 Post-MVP Highlights
-
-- **Quality**: fuzzy entity resolution, golden-set eval harness (100+ pairs), threshold recalibration, `tsvector`/BM25 hybrid, citation-graph expansion.
-- **Performance**: streaming `/api/v1/ask/stream` (SSE), semantic cache, worker queues, GPU inference (<3 s perceived).
-- **Production**: multi-user auth/RLS/rate-limits, continuous ingestion + CDC, distributed tracing.
+| **Task 0 — Pemeriksaan Skema** | `verify_schema.py` vs 9 tabel kanonikal | ⬜ NOT STARTED (berikutnya) | Semuanya (prompt SQL, peran, embedding, edge) |
+| **Task 1 — Pipeline Embedding** | `ALTER chunks ADD embedding vector(1024)` + batch bge-m3 + HNSW | ⬜ BLOCKED (butuh T0) | Rute Semantik + Hybrid |
+| **Task 2 — Kerangka Backend + Lapisan DB** | Tata letak FastAPI, pool `app_readonly` + timeout, `GET /api/v1/health` | ⬜ PLANNED | API + semua retriever |
+| **Task 3 — Setup Ollama** | pull `qwen2.5-coder:7b-instruct`, klien LLM terisolasi, health check | ⬜ PLANNED | Fallback router, pembuatan SQL, sintesis |
+| **Task 4 — Router + Gerbang Entitas** | Routing 4-kelas, kontrak entitas Pydantic, `needs_clarification` | ⬜ PLANNED | Task 5, 6, 7, 8 |
+| **Task 5 — Generator + Validator SQL** | Text-to-SQL pada 9 tabel, pemeriksaan `sqlglot`, 1x retry | ⬜ PLANNED | Irisan terstruktur |
+| **Task 6 — Retriever Vector** | Embed kueri + `<=>` pada `chunks` + `DISTINCT ON` + ambang $\ge 0.65$ | ⬜ PLANNED (butuh T1) | Irisan semantik |
+| **Task 7 — Unifier Lapisan Bukti** | Normalisasi seluruh output ke `EvidenceSet` + peringkat deterministik | ⬜ PLANNED (butuh T5–T6) | Mesin sintesis |
+| **Task 8 — Tabel Edge Graf** | Build 2 tabel edge + templat T1–T4 + penjepit hop/limit | ⬜ PLANNED (butuh T0+T4) | Kueri jaringan |
+| **Task 8.5 — Analitik Gold** | `topics` + `topic_evolution` + `researcher_expertise` | ⬜ PLANNED (butuh T1+T8) | Sintesis kebijakan/pakar |
+| **Task 9 — Sintesis Jawaban** | Prompt grounding + `CitationVerifier` + short-circuit deterministik | ⬜ PLANNED | Jawaban ter-grounding |
+| **Task 10 — API Penuh** | wiring `POST /api/v1/ask`, `AskResponse` dengan `evidence_objects` | ⬜ PLANNED | Frontend + E2E |
+| **Task 11 — Frontend** | UI Next.js 2-panel, badge, seluruh 6 state, inspektor Dev-Mode | ⬜ PLANNED | Demo |
+| **Task 12 — Verifikasi E2E** | Gerbang 12-kueri pada dataset prototipe + baseline latensi | ⬜ PLANNED | **Persetujuan (sign-off) MVP** |
 
 ---
 
-## 9. Security & Zero-Hallucination Guarantees
+## 9. Matriks Konsistensi Keputusan (Lintas Dokumen)
 
-- **DB least privilege**: `app_readonly` SELECT-only; `search_path` + 10 s timeout per checkout; re-grant after every new table/column; write-attempt integration test (`docs/08 §1`).
-- **Code-level guardrails, not prompt promises**: AST + whitelist + blacklist + shape + double-count + `Literal` operator enums; graph path takes no LLM SQL; hybrid uses bound parameters (`docs/08 §2`).
-- **Untrusted-data framing**: `SYSTEM ≠ QUESTION ≠ EVIDENCE`; `=== BEGIN/END EVIDENCE ===` delimiters; injection-in-abstract treated as data (`docs/05 §10`, `docs/08 §2.2`). *Acknowledged limit*: synthesis framing is prompt-only — acceptable for trusted internal MVP, hardened pre-public (`docs/08 §2.3`).
-- **Citation integrity**: post-hoc verifier strips fakes to `unverified_citations`; 0-row short-circuit never calls the LLM (`docs/05 §11–§12`).
-- **Boundary hygiene**: Pydantic `extra="forbid"`, `question[3..1000]`, malformed-filter 422, `X-Request-ID` correlation, sanitized `error_type` envelope (no stacks/SQL/conn-strings), 20 req/min/IP rate-limit, restrictive CORS, Ollama on internal network only, `.env` never in git (`docs/06 §9–§11`, `docs/08 §3–§6`).
-
----
-
-## 10. API Contract Quick Reference
-
-**Base**: `http://localhost:8000/api/v1` · `Content-Type: application/json`
-
-```json
-// POST /api/v1/ask — request
-{ "question": "Top 5 authors in 2023?", "filters": { "year_start": 2023, "year_end": 2023 }, "developer_mode": false }
-```
-
-```json
-// 200 ok | 200 not_found | 200 needs_clarification  (422/500/503 → {status:"error", error_type, message})
-{
-  "request_id": "uuid",
-  "status": "ok",
-  "route": "structured",
-  "answer": "… [Title, 2023, 10.xxxx/…] …",
-  "sources": [{ "source_id": "row_1", "publication_id": "pub_1", "title": "…", "year": 2023, "doi": "10.xxxx/…", "snippet": "…", "source_type": "sql" }],
-  "filters_ignored": [],
-  "answered_via_fallback": false,
-  "unverified_citations": [],
-  "candidates": null,
-  "debug": null
-}
-```
-
-Canonical Evidence Object carried internally (never raw DB text to LLM):
-
-```python
-class Evidence(BaseModel):
-    source_id: str
-    source_type: Literal["sql", "vector", "graph"]
-    snippet: str
-    score: float = 1.0
-    publication_id: Optional[str] = None
-    title: Optional[str] = None
-    authors: list[str] = []
-    year: Optional[int] = None
-    doi: Optional[str] = None
-    provenance_ids: list[str] = []   # via_publication_ids for graph edges
-```
-
-Full envelopes (4 variants), Pydantic schemas, `error_type` enum, latency budgets, and sequence diagrams: `docs/06` (+ RAG internals `docs/05`, UI mapping `docs/07 §2`).
+| Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
+|---|---|---|---|
+| **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
+| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
+| **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
+| **Normalisasi lowercase** | Narasi & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
+| **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
+| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
+| **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
+| **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
+| **Dataset skala produksi** | Target masa depan untuk ingestion Scopus skala besar (>100K publikasi) dengan pipeline batch otomatis, deduplikasi multi-tier, dan worker async | `01`, `02`, `03`, `04`, `11`, `12` | ALIGNED |
 
 ---
 
-## Reading Order
+## 10. Keputusan Arsitektur Kanonikal
 
-`README.md` (this overview) → `01 PRD` (why) → `02 SRD` (what) → `03 Architecture` (how it fits) → `04 Schema` (data truth) → `12 Pipeline` (how data gets in) → `05 RAG` (how answers are built) → `06 API` (how clients call it) → `08 Security` (how it stays safe) → `09 Stack` (why these tools) → `07 UI` (what users see) → `10 Plan` (build order) → `11 Roadmap` (what's next).
+1. **Keputusan Sitasi Tanpa DOI:**
+   - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
+2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
+   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Keputusan Mesin Graf Pasca-MVP:**
+   - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
-*Removed from the previous README: legacy `/api/query` endpoint references (now marked superseded), `relational`-vs-`graph` terminology ambiguity (now `GraphRoute` = v2 `relational`), the phantom `docs/00` file entry (no such file exists), and any implication that embeddings/edge tables/API/UI already exist — all are PLANNED per the 2026-09-28 audit.*
+---
+
+## 11. Riwayat Perubahan
+
+| Dokumen | Perubahan | Alasan |
+|---|---|---|
+| `README.md` v3.6.0 | Sinkronisasi Bahasa Indonesia untuk seluruh dokumen; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
+| `README.md` v3.5.0 | Sinkronisasi progress: cleaning + cleaned export DONE, vector storage PENDING eksplisit; bump `docs/01`–`docs/12` ke v3.5.0 | Sinkronisasi progress aktual 2026-09-27 |
+| `README.md` v3.4.0 | Mengembalikan seluruh nama 9 tabel Silver ke nama standar tanpa akhiran `_cleaned` | Penyelarasan format penamaan sesuai instruksi project |
+| `README.md` v3.4.0 | Mengunci keputusan format sitasi (`no-doi`), threshold kosinus $\ge 0.65$, dan strategi graf Apache AGE | Menutup open decisions menjadi keputusan kanonikal |
+| `README.md` v3.4.0 | Memperbarui Matriks Konsistensi Keputusan dan Riwayat Perubahan | Menjamin konsistensi dokumen di seluruh repository |
