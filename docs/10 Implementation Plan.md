@@ -9,11 +9,11 @@
 > 1. **Database PostgreSQL & Vector Storage — DONE:** Basis data PostgreSQL aktif memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, serta tabel edge `institution_collaboration` dan `author_collaboration`.  
 > 2. **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`.  
 > 3. **Kerangka FastAPI & DB Pool (Task 2 & 3 / Phase 2) — DONE:** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi dengan 23 passing tests.  
-> 4. **NEXT (Phase 3):** Implementasi `QuestionRouter` (Task 4) dan `SqlRetriever` tervalidasi AST `sqlglot` (Task 5) sebagai irisan vertikal pertama.
+> 4. **IN PROGRESS (Phase 3):** `QuestionRouter` (Task 4) dan `SqlRetriever` tervalidasi AST `sqlglot` (Task 5) sudah terimplementasi sebagai irisan vertikal pertama dan hijau di `develop`; sign-off E2E penuh menyusul Task 12.
 >
 > ### Progress Tracker (Sinkronisasi Phase 2 Selesai)
-> **DONE:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a-1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8 (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health).  
-> **NEXT (Phase 3):** (1) QuestionRouter (Task 4) → (2) EntityResolutionGate → (3) SqlRetriever with sqlglot AST gate (Task 5) → (4) Vertical Slice Integration.
+> **DONE:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a-1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8 (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health) · Task 4 (QuestionRouter & EntityResolutionGate, slice hijau) · Task 5 (SqlRetriever & sqlglot AST gate, slice hijau).  
+> **NEXT:** Vertical Slice sign-off → Fase 4 (VectorRetriever, Task 6).
 ---
 
 ## 0. Matriks Status Implementasi
@@ -24,8 +24,8 @@
 | **Pembersihan Data (Cleaning) Scopus** | `DONE` | Baseline Prototipe | Data Scopus sudah dibersihkan sesuai aturan `docs/12 §3`; bukan pending |
 | **Kerangka FastAPI** | `DONE` | MVP | Kerangka FastAPI, `/api/v1/health`, `POST /api/v1/ask` contract, middleware `X-Request-ID`, rate limiting, error handling (Task 2) |
 | **Kontrak API v1** | `FOUNDATION DONE` | MVP | Kontrak `POST /api/v1/ask` dengan skema Pydantic v2 `EvidenceObject`, `AskResponse`, dan error envelope terstandarisasi (Task 2 & 10) |
-| **Router Pertanyaan** | `NOT IMPLEMENTED` | MVP | Router 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) + Gerbang Resolusi Entitas (Task 4) |
-| **SqlRetriever** | `NOT IMPLEMENTED` | MVP | Text-to-SQL + validasi AST `sqlglot` pada 9 tabel kanonikal + peran `app_readonly` (Task 5) |
+| **Router Pertanyaan** | `LIVE (Fase 3 slice)` | MVP | Router 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) + Gerbang Resolusi Entitas (Task 4) |
+| **SqlRetriever** | `LIVE (Fase 3 slice)` | MVP | Text-to-SQL + validasi AST `sqlglot` pada 9 tabel kanonikal + peran `app_readonly` (Task 5) |
 | **VectorRetriever** | `READY FOR RETRIEVER DEV` | MVP | `chunks.embedding` terisi 40/40 (1024-dim) + indeks HNSW aktif; siap untuk implementasi `VectorRetriever` (Task 6) |
 | **Lapisan Bukti (Evidence Layer)** | `NOT IMPLEMENTED` | MVP | `EvidenceUnifier` + `EvidenceRanker` + penegakan (enforcement) `EvidenceObject` (Task 7 & 9) |
 | **Materialisasi Graf**| `DONE` (Tabel Edge) | MVP | `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) termaterialisasi idempoten (Task 8) |

@@ -9,7 +9,7 @@
 > | **Arsitektur** | Hybrid Master: Bronze → Silver (9 tabel kanonikal) → Gold (pgvector + 2 tabel edge + 3 tabel analitik) → RAG 4-Rute FastAPI |
 > | **Kontrak API** | `POST /api/v1/ask` + `GET /api/v1/health` (lihat `docs/06 Api Design.md`). `POST /api/query` versi lama berstatus **SUPERSEDED** dan tidak boleh diimplementasikan. |
 > | **Status Dok** | Consolidated Hybrid Master Blueprint · Disinkronkan: **2026-09-27** (`docs/01`–`docs/12` v3.6.0) |
-> | **Status Implementasi** | **Fase 0, Fase 1 & Fase 2 DONE.** Basis data PostgreSQL memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, tabel edge kolaborasi termaterialisasi, serta kerangka gateway FastAPI (`POST /api/v1/ask` & `GET /api/v1/health`) dengan async DB pool, middleware tracing, rate limiting, dan structured logging telah terverifikasi (23 tests pass). **NEXT: Fase 3 (Irisan Vertikal QueryRouter & Text-to-SQL).** |
+> | **Status Implementasi** | **Fase 0, Fase 1 & Fase 2 DONE.** Basis data PostgreSQL memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, tabel edge kolaborasi termaterialisasi, serta kerangka gateway FastAPI (`POST /api/v1/ask` & `GET /api/v1/health`) dengan async DB pool, middleware tracing, rate limiting, dan structured logging telah terverifikasi (23 tests pass). **IN PROGRESS: Fase 3 (Irisan Vertikal QueryRouter & Text-to-SQL — slice hijau di `develop`).** |
 
 **Daftar Isi:** [1. Ringkasan Eksekutif](#1-ringkasan-eksekutif) · [2. Kemampuan Utama](#2-kemampuan-utama--fitur) · [3. Arsitektur](#3-arsitektur-sistem-end-to-end) · [4. Tumpukan Teknologi](#4-tumpukan-teknologi) · [5. Database & Pipeline](#5-ringkasan-database--pipeline-data) · [6. Struktur Repo & Indeks Dok](#6-struktur-repositori--indeks-dokumentasi) · [7. Panduan Memulai](#7-panduan-memulai--setup) · [8. Roadmap & Status](#8-roadmap--status-implementasi) · [9. Matriks Konsistensi](#9-matriks-konsistensi-keputusan-lintas-dokumen) · [10. Keputusan Kanonikal](#10-keputusan-arsitektur-kanonikal) · [11. Riwayat Perubahan](#11-riwayat-perubahan)
 
@@ -286,8 +286,8 @@ Pre-task **DONE** (di luar penomoran Task 0–12, sinkronisasi 2026-09-27): Setu
 | **Task 1 — Pipeline Embedding** | `ALTER chunks ADD embedding vector(1024)` + batch bge-m3 + HNSW | ✅ DONE | - |
 | **Task 2 — Kerangka Backend + Lapisan DB** | Tata letak FastAPI, pool `app_readonly` + timeout, `GET /api/v1/health` | ✅ DONE | - |
 | **Task 3 — Setup Ollama** | pull `qwen2.5-coder:7b-instruct`, klien LLM terisolasi, health check | ✅ DONE | - |
-| **Task 4 — Router + Gerbang Entitas** | Routing 4-kelas, kontrak entitas Pydantic, `needs_clarification` | ⬜ NEXT (Fase 3) | Task 5, 6, 7, 8 |
-| **Task 5 — Generator + Validator SQL** | Text-to-SQL pada 9 tabel, pemeriksaan `sqlglot`, 1x retry | ⬜ NEXT (Fase 3) | Irisan terstruktur |
+| **Task 4 — Router + Gerbang Entitas** | Routing 4-kelas, kontrak entitas Pydantic, `needs_clarification` | 🔶 IN PROGRESS (Fase 3, slice hijau) | Task 6, 7, 8 |
+| **Task 5 — Generator + Validator SQL** | Text-to-SQL pada 9 tabel, pemeriksaan `sqlglot`, 1x retry | 🔶 IN PROGRESS (Fase 3, slice hijau) | Irisan terstruktur |
 | **Task 6 — Retriever Vector** | Embed kueri + `<=>` pada `chunks` + `DISTINCT ON` + ambang $\ge 0.65$ | ⬜ PLANNED (Fase 4) | Irisan semantik |
 | **Task 7 — Unifier Lapisan Bukti** | Normalisasi seluruh output ke `EvidenceSet` + peringkat deterministik | ⬜ PLANNED (Fase 5) | Mesin sintesis |
 | **Task 8 — Tabel Edge Graf** | Build 2 tabel edge + templat T1–T4 + penjepit hop/limit | ✅ DONE (Tabel Edge) / PLANNED (Templat T1–T4) | Kueri jaringan |
