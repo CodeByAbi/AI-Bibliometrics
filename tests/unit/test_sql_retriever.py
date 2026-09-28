@@ -14,35 +14,60 @@ class TestSqlRetrieverGenerator:
     """Test deterministic Text-to-SQL rule generator."""
 
     def test_generate_top_authors_sql(self):
-        sql = SqlRetriever.generate_deterministic_sql("Siapa 5 penulis paling produktif tahun 2025?")
+        sql, params = SqlRetriever.generate_deterministic_sql("Siapa 5 penulis paling produktif tahun 2025?")
         assert sql is not None
         assert "FROM authors" in sql
         assert "pub_author" in sql
-        assert "p.year = 2025" in sql
+        assert "p.year = $1" in sql
+        assert 2025 in params
         assert "LIMIT 5" in sql
 
     def test_generate_most_cited_sql(self):
-        sql = SqlRetriever.generate_deterministic_sql("Tampilkan 10 publikasi dengan sitasi terbanyak")
+        sql, params = SqlRetriever.generate_deterministic_sql("Tampilkan 10 publikasi dengan sitasi terbanyak")
         assert sql is not None
         assert "FROM publications" in sql
         assert "ORDER BY p.citation_count DESC" in sql
         assert "LIMIT 10" in sql
+        assert params == []
 
     def test_generate_total_publications_sql(self):
-        sql = SqlRetriever.generate_deterministic_sql(
+        sql, params = SqlRetriever.generate_deterministic_sql(
             "Berapa total publikasi pada tahun 2025?",
             filters=FilterParams(year=2025),
         )
         assert sql is not None
         assert "COUNT(DISTINCT p.publication_id)" in sql
-        assert "p.year = 2025" in sql
+        assert "p.year = $1" in sql
+        assert 2025 in params
 
     def test_generate_top_institutions_sql(self):
-        sql = SqlRetriever.generate_deterministic_sql("Tampilkan top 5 institusi teratas")
+        sql, params = SqlRetriever.generate_deterministic_sql("Tampilkan top 5 institusi teratas")
         assert sql is not None
         assert "FROM institutions" in sql
         assert "pub_institution" in sql
         assert "LIMIT 5" in sql
+        assert params == []
+
+    def test_filter_values_are_parameterized_not_interpolated(self):
+        evil = "' OR '1'='1"
+        sql, params = SqlRetriever.generate_deterministic_sql(
+            "Berapa total publikasi pada tahun 2025?",
+            filters=FilterParams(year=2025, author_name=evil),
+        )
+        assert sql is not None
+        assert evil not in sql
+        assert evil in params
+        assert "ILIKE '%' || $" in sql
+
+    def test_resolved_ids_are_parameterized(self):
+        sql, params = SqlRetriever.generate_deterministic_sql(
+            "Daftar publikasi pada tahun 2025",
+            filters=FilterParams(year=2025),
+            resolved_author_id="A1'; DROP TABLE authors; --",
+        )
+        assert sql is not None
+        assert "DROP TABLE" not in sql
+        assert "A1'; DROP TABLE authors; --" in params
 
 
 class TestExtractLimit:

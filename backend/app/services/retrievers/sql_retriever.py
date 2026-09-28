@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -97,11 +97,21 @@ class SqlRetriever:
         filters: Optional[FilterParams] = None,
         resolved_author_id: Optional[str] = None,
         resolved_institution_id: Optional[str] = None,
-    ) -> Optional[str]:
-        """Generate deterministic SQL for canonical bibliometric questions."""
+    ) -> Tuple[Optional[str], List[Any]]:
+        """Generate deterministic SQL with bound parameters for canonical questions.
+
+        Returns (sql, params): every user-controlled value travels as a
+        bound $n parameter, never interpolated, so filter payloads cannot
+        break out of string literals (docs/08 section 2.1).
+        """
         q = question.strip().lower()
 
         limit = cls.extract_limit(question)
+        params: List[Any] = []
+
+        def _ph(value: Any) -> str:
+            params.append(value)
+            return f"${len(params)}"
 
         # Extract year from question or filters
         year_filter: Optional[int] = None
@@ -116,12 +126,12 @@ class SqlRetriever:
         if any(term in q for term in ["penulis paling produktif", "most productive author", "top author", "penulis teratas", "author paling produktif", "most prolific author"]):
             where_clauses = []
             if year_filter:
-                where_clauses.append(f"p.year = {year_filter}")
+                where_clauses.append(f"p.year = {_ph(year_filter)}")
             if filters and filters.country:
-                where_clauses.append(f"i.country ILIKE '%{filters.country}%'")
+                where_clauses.append(f"i.country ILIKE '%' || {_ph(filters.country)} || '%'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-            
+
             # If country filter is present, we need institutions join
             if filters and filters.country:
                 return f"""
@@ -135,7 +145,7 @@ class SqlRetriever:
                 GROUP BY a.author_name
                 ORDER BY publication_count DESC, a.author_name ASC
                 LIMIT {limit};
-                """
+                """, params
             else:
                 return f"""
                 SELECT a.author_name, COUNT(DISTINCT pa.publication_id) AS publication_count
@@ -146,13 +156,13 @@ class SqlRetriever:
                 GROUP BY a.author_name
                 ORDER BY publication_count DESC, a.author_name ASC
                 LIMIT {limit};
-                """
+                """, params
 
         # 2. Most cited publications
         if any(term in q for term in ["sitasi terbanyak", "most cited", "highest citation", "paling banyak disitasi"]):
             where_clauses = []
             if year_filter:
-                where_clauses.append(f"p.year = {year_filter}")
+                where_clauses.append(f"p.year = {_ph(year_filter)}")
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
             SELECT p.publication_id, p.title, p.year, p.doi, p.citation_count
@@ -160,30 +170,30 @@ class SqlRetriever:
             {where_str}
             ORDER BY p.citation_count DESC, p.title ASC
             LIMIT {limit};
-            """
+            """, params
 
         # 3. Total publications / count
         if any(term in q for term in ["berapa jumlah publikasi", "total publikasi", "how many publications", "count of publications", "total paper", "jumlah paper"]):
             where_clauses = []
             if year_filter:
-                where_clauses.append(f"p.year = {year_filter}")
+                where_clauses.append(f"p.year = {_ph(year_filter)}")
             if resolved_author_id:
-                where_clauses.append(f"pa.author_id = '{resolved_author_id}'")
+                where_clauses.append(f"pa.author_id = {_ph(resolved_author_id)}")
             if resolved_institution_id:
-                where_clauses.append(f"pi.institution_id = '{resolved_institution_id}'")
-            
+                where_clauses.append(f"pi.institution_id = {_ph(resolved_institution_id)}")
+
             joins = ""
             if resolved_author_id or (filters and filters.author_name):
                 joins += " JOIN pub_author pa ON pa.publication_id = p.publication_id"
                 if not resolved_author_id and filters and filters.author_name:
                     joins += " JOIN authors a ON a.author_id = pa.author_id"
-                    where_clauses.append(f"a.author_name ILIKE '%{filters.author_name}%'")
+                    where_clauses.append(f"a.author_name ILIKE '%' || {_ph(filters.author_name)} || '%'")
 
             if resolved_institution_id or (filters and filters.institution_name):
                 joins += " JOIN pub_institution pi ON pi.publication_id = p.publication_id"
                 if not resolved_institution_id and filters and filters.institution_name:
                     joins += " JOIN institutions i ON i.institution_id = pi.institution_id"
-                    where_clauses.append(f"i.institution_name ILIKE '%{filters.institution_name}%'")
+                    where_clauses.append(f"i.institution_name ILIKE '%' || {_ph(filters.institution_name)} || '%'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
@@ -191,15 +201,15 @@ class SqlRetriever:
             FROM publications p
             {joins}
             {where_str};
-            """
+            """, params
 
         # 4. Top institutions
         if any(term in q for term in ["top institusi", "institusi teratas", "top institutions", "most productive institution", "institusi paling produktif"]):
             where_clauses = []
             if year_filter:
-                where_clauses.append(f"p.year = {year_filter}")
+                where_clauses.append(f"p.year = {_ph(year_filter)}")
             if filters and filters.country:
-                where_clauses.append(f"i.country ILIKE '%{filters.country}%'")
+                where_clauses.append(f"i.country ILIKE '%' || {_ph(filters.country)} || '%'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
@@ -211,20 +221,20 @@ class SqlRetriever:
             GROUP BY i.institution_name
             ORDER BY publication_count DESC, i.institution_name ASC
             LIMIT {limit};
-            """
+            """, params
 
         # 5. List publications with filters
         if any(term in q for term in ["daftar publikasi", "list publications", "show publications", "tampilkan publikasi", "artikel pada tahun", "paper in year"]):
             where_clauses = []
             joins = ""
             if year_filter:
-                where_clauses.append(f"p.year = {year_filter}")
+                where_clauses.append(f"p.year = {_ph(year_filter)}")
             if resolved_author_id:
                 joins += " JOIN pub_author pa ON pa.publication_id = p.publication_id"
-                where_clauses.append(f"pa.author_id = '{resolved_author_id}'")
+                where_clauses.append(f"pa.author_id = {_ph(resolved_author_id)}")
             elif filters and filters.author_name:
                 joins += " JOIN pub_author pa ON pa.publication_id = p.publication_id JOIN authors a ON a.author_id = pa.author_id"
-                where_clauses.append(f"a.author_name ILIKE '%{filters.author_name}%'")
+                where_clauses.append(f"a.author_name ILIKE '%' || {_ph(filters.author_name)} || '%'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
@@ -234,9 +244,9 @@ class SqlRetriever:
             {where_str}
             ORDER BY p.citation_count DESC, p.title ASC
             LIMIT {limit};
-            """
+            """, params
 
-        return None
+        return None, []
 
     @classmethod
     async def generate_llm_sql(
@@ -295,8 +305,8 @@ class SqlRetriever:
         resolved_institution_id: Optional[str] = None,
     ) -> SqlRetrievalResult:
         """Generate, validate, and execute SQL query against database."""
-        # 1. Try deterministic template generator first
-        sql_query = cls.generate_deterministic_sql(
+        # 1. Try deterministic template generator first (returns bound params)
+        sql_query, params = cls.generate_deterministic_sql(
             question,
             filters=filters,
             resolved_author_id=resolved_author_id,
@@ -306,13 +316,14 @@ class SqlRetriever:
         # 2. Fall back to LLM Text-to-SQL if not matched deterministically
         if not sql_query:
             sql_query = await cls.generate_llm_sql(question, filters=filters)
+            params = []
 
         # 3. Validate and sanitize SQL with sqlglot AST security gate
         sanitized_sql = validate_and_sanitize_sql(sql_query)
 
-        # 4. Execute query on PostgreSQL
+        # 4. Execute query on PostgreSQL with bound parameters
         start_t = time.perf_counter()
-        raw_rows = await conn.fetch(sanitized_sql)
+        raw_rows = await conn.fetch(sanitized_sql, *params)
         elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
 
         # 5. Extract column names and dict rows
