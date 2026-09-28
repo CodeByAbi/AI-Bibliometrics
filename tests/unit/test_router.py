@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import pytest
 from backend.app.models.ask import FilterParams
-from backend.app.services.router import QuestionRouter
+from backend.app.services.router import (
+    EntityResolutionGate,
+    QuestionRouter,
+    normalize_text,
+)
 
 
 class TestQuestionRouter:
@@ -75,4 +79,25 @@ class TestQuestionRouter:
         assert decision.answered_via_fallback is True
 
 
-# NOTE (Phase 3, Task 4b): TestEntityResolutionGate lands with the gate commit.
+class TestEntityResolutionGate:
+    """Test entity name extraction and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_extract_candidate_names_from_filters(self):
+        filters = FilterParams(author_name="Septi Gumiandari", institution_name="Universitas Andalas")
+        auth, inst = await EntityResolutionGate.extract_candidate_names("Who wrote this?", filters)
+        assert auth == "Septi Gumiandari"
+        assert inst == "Universitas Andalas"
+
+    @pytest.mark.asyncio
+    async def test_extract_candidate_names_from_query(self):
+        auth, inst = await EntityResolutionGate.extract_candidate_names(
+            "Berapa publikasi oleh Septi Gumiandari pada tahun 2025?"
+        )
+        assert auth is not None
+        assert "Septi Gumiandari" in auth
+
+    def test_normalize_text(self):
+        assert normalize_text("Gumiandari, Septi!") == "gumiandari septi"
+        assert normalize_text("  Universitas   Andalas. ") == "universitas andalas"
+        assert normalize_text("") == ""

@@ -6,10 +6,12 @@ Docs Reference: docs/05 Retrieval Rag Design.md §3, docs/10 Implementation Plan
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Literal, Optional
+import string
+from typing import Any, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.models.ask import FilterParams
+import asyncpg
+from backend.app.models.ask import CandidateItem, FilterParams
 
 
 RouteType = Literal["SQLRoute", "VectorRoute", "GraphRoute", "HybridRoute"]
@@ -24,6 +26,20 @@ class RouteDecision(BaseModel):
     reasoning: str
     answered_via_fallback: bool = False
     extracted_entities: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EntityResolutionResult(BaseModel):
+    """Result of entity disambiguation and normalization gate."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: Literal["ok", "needs_clarification"] = "ok"
+    candidates: Optional[List[CandidateItem]] = None
+    resolved_author_id: Optional[str] = None
+    resolved_author_name: Optional[str] = None
+    resolved_institution_id: Optional[str] = None
+    resolved_institution_name: Optional[str] = None
+    clarification_message: Optional[str] = None
 
 
 # --- Regex Pattern Definitions for 4 Routes (ID & EN) ---
@@ -68,6 +84,16 @@ VECTOR_PATTERNS = [
     re.compile(r"\b(concept\s*of|mechanism\s*of|role\s*of|effect\s*of|impact\s*of|how\s*does\s*.*work)\b", re.IGNORECASE),
     re.compile(r"\b(penelitian\s*terkait|studi\s*mengenai|literatur\s*tentang)\b", re.IGNORECASE),
 ]
+
+
+def normalize_text(text: str) -> str:
+    """Normalize string by lowercasing, stripping punctuation, and compressing whitespace."""
+    if not text:
+        return ""
+    # Strip punctuation and lower
+    translator = str.maketrans("", "", string.punctuation)
+    clean = text.translate(translator).lower()
+    return " ".join(clean.split())
 
 
 class QuestionRouter:
@@ -163,5 +189,241 @@ class QuestionRouter:
         )
 
 
-# NOTE (Phase 3, Task 4b): EntityResolutionGate lands in the next commit.
-# This module currently exposes only the deterministic QuestionRouter.
+class EntityResolutionGate:
+    """Disambiguation and entity validation gate against live PostgreSQL records."""
+
+    @classmethod
+    async def extract_candidate_names(
+        cls,
+        question: str,
+        filters: Optional[FilterParams] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Extract possible author and institution candidate names from query or filters."""
+        author_name: Optional[str] = None
+        institution_name: Optional[str] = None
+
+        if filters:
+            if filters.author_name:
+                author_name = filters.author_name.strip()
+            if filters.institution_name:
+                institution_name = filters.institution_name.strip()
+
+        # If not in filters, try regex heuristics on the query
+        if not author_name:
+            # e.g., "penulis Dr. Ahmad", "author John Doe", "oleh Septi Gumiandari", "by Septi Gumiandari"
+            auth_match = re.search(
+                r"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|di|in|with|pada|yang|\?|$))",
+                question,
+                re.IGNORECASE,
+            )
+            if auth_match:
+                extracted = auth_match.group(1).strip()
+                # Exclude common query words
+                if extracted.lower() not in {"top", "most", "paling", "terbanyak", "teratas", "indonesia"}:
+                    author_name = extracted
+
+        if not institution_name:
+            # e.g., "institusi Universitas Andalas", "di ITB", "at Hasanuddin University"
+            inst_match = re.search(
+                r"\b(?:institusi|universitas|university|institut|at|di)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|in|with|yang|\?|$))",
+                question,
+                re.IGNORECASE,
+            )
+            if inst_match:
+                extracted = inst_match.group(1).strip()
+                if extracted.lower() not in {"indonesia", "tahun", "scopus", "database"}:
+                    institution_name = extracted
+
+        return author_name, institution_name
+
+    @classmethod
+    async def resolve_entities(
+        cls,
+        conn: asyncpg.Connection,
+        question: str,
+        filters: Optional[FilterParams] = None,
+    ) -> EntityResolutionResult:
+        """Resolve author and institution entities, checking for ambiguous candidate sets."""
+        author_query, inst_query = await cls.extract_candidate_names(question, filters)
+
+        # 1. Author resolution
+        if author_query and len(author_query) >= 3:
+            norm_name = normalize_text(author_query)
+
+            # Exact match check
+            exact_rows = await conn.fetch(
+                """
+                SELECT author_id, author_name, author_name_normalized
+                FROM authors
+                WHERE author_name_normalized = $1
+                   OR author_name ILIKE $2
+                LIMIT 10;
+                """,
+                norm_name,
+                author_query,
+            )
+
+            if len(exact_rows) == 1:
+                row = exact_rows[0]
+                return EntityResolutionResult(
+                    status="ok",
+                    resolved_author_id=row["author_id"],
+                    resolved_author_name=row["author_name"],
+                )
+            elif len(exact_rows) > 1:
+                # Multiple candidates found -> needs clarification
+                candidate_items: List[CandidateItem] = []
+                for r in exact_rows[:5]:
+                    pub_count = await conn.fetchval(
+                        "SELECT COUNT(publication_id) FROM pub_author WHERE author_id = $1;",
+                        r["author_id"],
+                    ) or 0
+                    candidate_items.append(
+                        CandidateItem(
+                            id=r["author_id"],
+                            name=r["author_name"],
+                            type="author",
+                            publication_count=int(pub_count),
+                            affiliation=None,
+                        )
+                    )
+                return EntityResolutionResult(
+                    status="needs_clarification",
+                    candidates=candidate_items,
+                    clarification_message=(
+                        f"Ditemukan {len(exact_rows)} penulis yang cocok dengan '{author_query}'. "
+                        "Silakan pilih penulis yang dimaksud."
+                    ),
+                )
+            else:
+                # Partial ILIKE search if not exact
+                partial_rows = await conn.fetch(
+                    """
+                    SELECT a.author_id, a.author_name, COUNT(pa.publication_id) AS pub_count
+                    FROM authors a
+                    LEFT JOIN pub_author pa ON pa.author_id = a.author_id
+                    WHERE a.author_name ILIKE $1
+                    GROUP BY a.author_id, a.author_name
+                    ORDER BY pub_count DESC
+                    LIMIT 10;
+                    """,
+                    f"%{author_query}%",
+                )
+                if len(partial_rows) > 1:
+                    candidates = [
+                        CandidateItem(
+                            id=r["author_id"],
+                            name=r["author_name"],
+                            type="author",
+                            publication_count=int(r["pub_count"]),
+                            affiliation=None,
+                        )
+                        for r in partial_rows[:5]
+                    ]
+                    return EntityResolutionResult(
+                        status="needs_clarification",
+                        candidates=candidates,
+                        clarification_message=(
+                            f"Ditemukan {len(partial_rows)} kandidat penulis untuk '{author_query}'. "
+                            "Mohon pilih entitas yang tepat."
+                        ),
+                    )
+                elif len(partial_rows) == 1:
+                    r = partial_rows[0]
+                    return EntityResolutionResult(
+                        status="ok",
+                        resolved_author_id=r["author_id"],
+                        resolved_author_name=r["author_name"],
+                    )
+
+        # 2. Institution resolution
+        if inst_query and len(inst_query) >= 3:
+            norm_inst = normalize_text(inst_query)
+
+            # Exact match check
+            exact_insts = await conn.fetch(
+                """
+                SELECT institution_id, institution_name, country
+                FROM institutions
+                WHERE institution_name_normalized = $1
+                   OR institution_name ILIKE $2
+                LIMIT 10;
+                """,
+                norm_inst,
+                inst_query,
+            )
+
+            if len(exact_insts) == 1:
+                row = exact_insts[0]
+                return EntityResolutionResult(
+                    status="ok",
+                    resolved_institution_id=row["institution_id"],
+                    resolved_institution_name=row["institution_name"],
+                )
+            elif len(exact_insts) > 1:
+                candidate_items = []
+                for r in exact_insts[:5]:
+                    pub_count = await conn.fetchval(
+                        "SELECT COUNT(publication_id) FROM pub_institution WHERE institution_id = $1;",
+                        r["institution_id"],
+                    ) or 0
+                    candidate_items.append(
+                        CandidateItem(
+                            id=r["institution_id"],
+                            name=r["institution_name"],
+                            type="institution",
+                            publication_count=int(pub_count),
+                            affiliation=r["country"] or None,
+                        )
+                    )
+                return EntityResolutionResult(
+                    status="needs_clarification",
+                    candidates=candidate_items,
+                    clarification_message=(
+                        f"Ditemukan {len(exact_insts)} institusi yang cocok dengan '{inst_query}'. "
+                        "Silakan pilih institusi yang dimaksud."
+                    ),
+                )
+            else:
+                # Partial search
+                partial_insts = await conn.fetch(
+                    """
+                    SELECT i.institution_id, i.institution_name, i.country, COUNT(pi.publication_id) AS pub_count
+                    FROM institutions i
+                    LEFT JOIN pub_institution pi ON pi.institution_id = i.institution_id
+                    WHERE i.institution_name ILIKE $1
+                    GROUP BY i.institution_id, i.institution_name, i.country
+                    ORDER BY pub_count DESC
+                    LIMIT 10;
+                    """,
+                    f"%{inst_query}%",
+                )
+                if len(partial_insts) > 1:
+                    candidates = [
+                        CandidateItem(
+                            id=r["institution_id"],
+                            name=r["institution_name"],
+                            type="institution",
+                            publication_count=int(r["pub_count"]),
+                            affiliation=r["country"] or None,
+                        )
+                        for r in partial_insts[:5]
+                    ]
+                    return EntityResolutionResult(
+                        status="needs_clarification",
+                        candidates=candidates,
+                        clarification_message=(
+                            f"Ditemukan {len(partial_insts)} kandidat institusi untuk '{inst_query}'. "
+                            "Mohon pilih institusi yang tepat."
+                        ),
+                    )
+                elif len(partial_insts) == 1:
+                    r = partial_insts[0]
+                    return EntityResolutionResult(
+                        status="ok",
+                        resolved_institution_id=r["institution_id"],
+                        resolved_institution_name=r["institution_name"],
+                    )
+
+        # No disambiguation needed or no entities found
+        return EntityResolutionResult(status="ok")
