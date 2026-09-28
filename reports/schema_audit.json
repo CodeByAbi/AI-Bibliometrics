@@ -1,0 +1,144 @@
+{
+  "generated_at": "2026-09-28T15:43:00.686769+00:00",
+  "driver": "psycopg2",
+  "target": "postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres",
+  "db_user": "postgres",
+  "status": "MATCH",
+  "errors": [],
+  "warnings": [
+    "type drift: publications.open_access live=text spec=varchar",
+    "type drift: publications.publisher live=text spec=varchar",
+    "type drift: publications.source live=varchar spec=text",
+    "type drift: authors.author_name live=text spec=varchar",
+    "type drift: institutions.city live=text spec=varchar",
+    "type drift: institutions.country live=text spec=varchar",
+    "type drift: keywords.keyword_id live=varchar spec=bigint",
+    "type drift: keywords.keyword live=text spec=varchar",
+    "type drift: funding.funding_id live=varchar spec=bigint",
+    "type drift: funding.grant_number live=text spec=varchar",
+    "type drift: chunks.chunk_id live=varchar spec=bigint",
+    "type drift: chunks.section live=text spec=varchar"
+  ],
+  "notes": [
+    "extra column (prototype-tolerated): publications.source_title",
+    "extra column (prototype-tolerated): publications.link",
+    "extra column (prototype-tolerated): publications.issn",
+    "extra column (prototype-tolerated): publications.search_text",
+    "extra column (prototype-tolerated): funding.source_text",
+    "extra column (prototype-tolerated): chunks.source_type"
+  ],
+  "tables": {
+    "publications": {
+      "missing_columns": [],
+      "type_drift": {
+        "open_access": {
+          "live": "text",
+          "spec": "varchar"
+        },
+        "publisher": {
+          "live": "text",
+          "spec": "varchar"
+        },
+        "source": {
+          "live": "varchar",
+          "spec": "text"
+        }
+      },
+      "extra_columns": [
+        "source_title",
+        "link",
+        "issn",
+        "search_text"
+      ]
+    },
+    "authors": {
+      "missing_columns": [],
+      "type_drift": {
+        "author_name": {
+          "live": "text",
+          "spec": "varchar"
+        }
+      },
+      "extra_columns": []
+    },
+    "institutions": {
+      "missing_columns": [],
+      "type_drift": {
+        "city": {
+          "live": "text",
+          "spec": "varchar"
+        },
+        "country": {
+          "live": "text",
+          "spec": "varchar"
+        }
+      },
+      "extra_columns": []
+    },
+    "keywords": {
+      "missing_columns": [],
+      "type_drift": {
+        "keyword_id": {
+          "live": "varchar",
+          "spec": "bigint"
+        },
+        "keyword": {
+          "live": "text",
+          "spec": "varchar"
+        }
+      },
+      "extra_columns": []
+    },
+    "funding": {
+      "missing_columns": [],
+      "type_drift": {
+        "funding_id": {
+          "live": "varchar",
+          "spec": "bigint"
+        },
+        "grant_number": {
+          "live": "text",
+          "spec": "varchar"
+        }
+      },
+      "extra_columns": [
+        "source_text"
+      ]
+    },
+    "pub_author": {
+      "missing_columns": [],
+      "type_drift": {},
+      "extra_columns": []
+    },
+    "pub_institution": {
+      "missing_columns": [],
+      "type_drift": {},
+      "extra_columns": []
+    },
+    "publication_references": {
+      "missing_columns": [],
+      "type_drift": {},
+      "extra_columns": []
+    },
+    "chunks": {
+      "missing_columns": [],
+      "type_drift": {
+        "chunk_id": {
+          "live": "varchar",
+          "spec": "bigint"
+        },
+        "section": {
+          "live": "text",
+          "spec": "varchar"
+        }
+      },
+      "extra_columns": [
+        "source_type"
+      ]
+    }
+  },
+  "chunk_stats": {
+    "chunks": 40,
+    "distinct_publications": 20
+  }
+}
