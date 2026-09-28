@@ -7,6 +7,8 @@ Enforces invariants:
 - Comprehensive health check probing Silver, Gold, and pgvector readiness
 """
 
+from __future__ import annotations
+
 import asyncio
 from typing import Optional
 import asyncpg
