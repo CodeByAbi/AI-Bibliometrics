@@ -1,4 +1,4 @@
-"""Structured JSON logging for backend observibility.
+"""Structured JSON logging for backend observability.
 
 Docs Reference: docs/08 Security.md §4, docs/11 Roadmap.md §4 (Fase 2).
 """
@@ -9,7 +9,6 @@ import contextvars
 import json
 import logging
 import sys
-import time
 from typing import Any, Optional
 
 # Context variable for current request ID

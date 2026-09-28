@@ -29,7 +29,8 @@ async def test_health_endpoint_success():
         assert db["public_tables_count"] >= 11
         # Invariant: No password or connection secret leaked
         assert "password" not in str(data).lower()
-        assert "postgres.cyebuphkjrnhndcadcxk" not in str(data)
+        assert "db_url" not in str(data).lower()
+        assert "secret" not in str(data).lower()
 
         # LLM service assertions
         llm = data["llm_service"]

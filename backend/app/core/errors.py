@@ -66,7 +66,7 @@ class ASTValidationError(AppException):
         super().__init__(
             message=message,
             error_type="sql_generation_failed",
-            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             details=details,
         )
 
@@ -127,12 +127,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         error=ErrorDetail(
             error_type="validation_error",
             message=message,
-            status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             details=sanitized_errors,
         ),
     )
     return JSONResponse(
-        status_code=getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422),
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content=jsonable_encoder(payload.model_dump()),
     )
 
@@ -147,6 +147,12 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         error_type = "rate_limit_exceeded"
     elif exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
         error_type = "service_unavailable"
+    logger.info(
+        "HTTP exception: %s -> %d",
+        error_type,
+        exc.status_code,
+        extra={"request_id": req_id, "error_code": error_type, "status": exc.status_code},
+    )
 
     payload = ErrorResponse(
         request_id=req_id,
