@@ -8,6 +8,18 @@ from __future__ import annotations
 import pytest
 from backend.app.models.ask import FilterParams
 from backend.app.services.retrievers.sql_retriever import SqlRetriever
+from backend.app.services.retrievers.sql_security import SqlSecurityError
+
+
+class _FakeConn:
+    """Minimal asyncpg stub capturing fetch calls and returning zero rows."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def fetch(self, sql, *params):
+        self.calls.append((sql, params))
+        return []
 
 
 class TestSqlRetrieverGenerator:
@@ -97,3 +109,37 @@ class TestExtractLimit:
 
     def test_explicit_top_phrasing(self):
         assert SqlRetriever.extract_limit("Tampilkan top 7 publikasi terbaik") == 7
+
+
+class TestSingleRetry:
+    """One regeneration carrying AST error context before structured failure (FR3.3)."""
+
+    @pytest.mark.asyncio
+    async def test_retry_after_ast_rejection(self, monkeypatch):
+        calls = {"n": 0}
+
+        async def fake_llm(cls, question, filters=None, validation_error=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                assert validation_error is None
+                return "DROP TABLE publications;"
+            assert validation_error is not None
+            assert "SELECT" in validation_error or "select" in validation_error.lower()
+            return "SELECT publication_id, title FROM publications LIMIT 5;"
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(fake_llm))
+        conn = _FakeConn()
+        result = await SqlRetriever.retrieve(conn, "xyzzy unrelated query")
+        assert calls["n"] == 2
+        assert "DROP" not in result.sql_executed
+        assert "FROM publications" in result.sql_executed
+        assert len(conn.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_double_failure_raises_security_error(self, monkeypatch):
+        async def always_bad(cls, question, filters=None, validation_error=None):
+            return "DELETE FROM authors;"
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(always_bad))
+        with pytest.raises(SqlSecurityError):
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")

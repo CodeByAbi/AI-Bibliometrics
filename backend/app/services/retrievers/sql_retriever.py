@@ -15,7 +15,10 @@ import asyncpg
 from backend.app.core.config import get_settings
 from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
-from backend.app.services.retrievers.sql_security import validate_and_sanitize_sql
+from backend.app.services.retrievers.sql_security import (
+    SqlSecurityError,
+    validate_and_sanitize_sql,
+)
 
 
 SCHEMA_PROMPT = """
@@ -267,6 +270,7 @@ class SqlRetriever:
         cls,
         question: str,
         filters: Optional[FilterParams] = None,
+        validation_error: Optional[str] = None,
     ) -> str:
         """Call Ollama LLM to generate Text-to-SQL for arbitrary relational questions."""
         settings = get_settings()
@@ -276,7 +280,15 @@ class SqlRetriever:
             if f_dict:
                 filter_context = f"\nMetadata Filters: {f_dict}"
 
-        user_prompt = f"User Question: {question}{filter_context}\nGenerate SQL query:"
+        repair_context = ""
+        if validation_error:
+            repair_context = (
+                "\nPrevious attempt was rejected by the SQL security gate: "
+                f"{validation_error}\nRegenerate a compliant single SELECT query: "
+                "explicit allowlisted columns only, no wildcards, LIMIT at most 50."
+            )
+
+        user_prompt = f"User Question: {question}{filter_context}{repair_context}\nGenerate SQL query:"
 
         payload = {
             "model": settings.llm_model,
@@ -332,11 +344,18 @@ class SqlRetriever:
             sql_query = await cls.generate_llm_sql(question, filters=filters)
             params = []
 
-        # 3. Validate and sanitize SQL with sqlglot AST security gate
-        sanitized_sql = validate_and_sanitize_sql(
-            sql_query,
-            aggregate_intent=cls.detect_aggregate_intent(question),
-        )
+        # 3. Validate with the sqlglot AST gate; a single retry carries the
+        # AST error context back to the generator (FR3.3). Persistent
+        # failure raises SqlSecurityError, mapped to HTTP 422 upstream.
+        intent = cls.detect_aggregate_intent(question)
+        try:
+            sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
+        except SqlSecurityError as first_exc:
+            sql_query = await cls.generate_llm_sql(
+                question, filters=filters, validation_error=str(first_exc)
+            )
+            params = []
+            sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
 
         # 4. Execute query on PostgreSQL with bound parameters
         start_t = time.perf_counter()
