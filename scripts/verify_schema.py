@@ -199,6 +199,15 @@ def main() -> int:
                     warnings.append(f"chunks ratio probe failed (non-fatal): {exc}")
                     conn.rollback()
 
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.role_table_grants
+                WHERE grantee = current_user AND privilege_type = 'SELECT'
+                  AND table_schema = 'public';
+                """
+            )
+            granted = {r[0] for r in cur.fetchall()}
     # Gate 1: table + column presence (hard), type drift (warning).
     for table, expected_cols in EXPECTED.items():
         rep = {"missing_columns": [], "type_drift": {}, "extra_columns": []}
@@ -227,17 +236,6 @@ def main() -> int:
             warnings.append(f"no index covering {table}.{col} (AC-DB-3 wants it indexed)")
 
     # Gate 3: SELECT grants for the auditing role (informational, no write probes ever).
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT table_name
-                FROM information_schema.role_table_grants
-                WHERE grantee = current_user AND privilege_type = 'SELECT'
-                  AND table_schema = 'public';
-                """
-            )
-            granted = {r[0] for r in cur.fetchall()}
     for table in EXPECTED:
         if table in live and table not in granted:
             warnings.append(f"role '{db_user}' lacks SELECT on {table}")
