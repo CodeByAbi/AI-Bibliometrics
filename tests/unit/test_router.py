@@ -101,3 +101,43 @@ class TestEntityResolutionGate:
         assert normalize_text("Gumiandari, Septi!") == "gumiandari septi"
         assert normalize_text("  Universitas   Andalas. ") == "universitas andalas"
         assert normalize_text("") == ""
+
+
+class _EmptyConnStub:
+    """Minimal asyncpg.Connection stub returning zero rows for entity lookups."""
+
+    async def fetch(self, *args, **kwargs):
+        return []
+
+    async def fetchval(self, *args, **kwargs):
+        return 0
+
+
+class TestEntityResolutionNotFound:
+    """Test deterministic not_found for mentioned-but-unknown entities (FR2.4)."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_author_returns_not_found(self):
+        filters = FilterParams(author_name="Xyzzq Qwerty Tidakada")
+        result = await EntityResolutionGate.resolve_entities(
+            _EmptyConnStub(), "Berapa total publikasi?", filters
+        )
+        assert result.status == "not_found"
+        assert "Xyzzq Qwerty Tidakada" in (result.clarification_message or "")
+
+    @pytest.mark.asyncio
+    async def test_unknown_institution_returns_not_found(self):
+        filters = FilterParams(institution_name="Universitas Fiktif Belaka")
+        result = await EntityResolutionGate.resolve_entities(
+            _EmptyConnStub(), "Berapa total publikasi?", filters
+        )
+        assert result.status == "not_found"
+        assert "Universitas Fiktif Belaka" in (result.clarification_message or "")
+
+    @pytest.mark.asyncio
+    async def test_no_entities_returns_ok(self):
+        result = await EntityResolutionGate.resolve_entities(
+            _EmptyConnStub(), "Berapa total publikasi pada tahun 2025?", None
+        )
+        assert result.status == "ok"
+        assert result.candidates is None

@@ -33,7 +33,7 @@ class EntityResolutionResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    status: Literal["ok", "needs_clarification"] = "ok"
+    status: Literal["ok", "needs_clarification", "not_found"] = "ok"
     candidates: Optional[List[CandidateItem]] = None
     resolved_author_id: Optional[str] = None
     resolved_author_name: Optional[str] = None
@@ -335,6 +335,13 @@ class EntityResolutionGate:
                         resolved_author_id=r["author_id"],
                         resolved_author_name=r["author_name"],
                     )
+                # Mentioned author matches zero records -> deterministic not_found (FR2.4)
+                return EntityResolutionResult(
+                    status="not_found",
+                    clarification_message=(
+                        f"Tidak ditemukan penulis yang cocok dengan '{author_query}' dalam database."
+                    ),
+                )
 
         # 2. Institution resolution
         if inst_query and len(inst_query) >= 3:
@@ -424,6 +431,13 @@ class EntityResolutionGate:
                         resolved_institution_id=r["institution_id"],
                         resolved_institution_name=r["institution_name"],
                     )
+                # Mentioned institution matches zero records -> deterministic not_found (FR2.4)
+                return EntityResolutionResult(
+                    status="not_found",
+                    clarification_message=(
+                        f"Tidak ditemukan institusi yang cocok dengan '{inst_query}' dalam database."
+                    ),
+                )
 
         # No disambiguation needed or no entities found
         return EntityResolutionResult(status="ok")
