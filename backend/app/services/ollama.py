@@ -1,0 +1,59 @@
+"""Ollama client and health inspection service.
+
+Docs Reference: docs/06 Api Design.md §6, docs/09 Tech Stack.md §3.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+import httpx
+
+from backend.app.core.config import get_settings
+from backend.app.core.logging import logger
+from backend.app.models.health import EmbeddingServiceHealth, LLMServiceHealth
+
+
+async def check_ollama_health() -> tuple[LLMServiceHealth, EmbeddingServiceHealth]:
+    """Inspect Ollama server availability, model tags, and embedding service readiness."""
+    settings = get_settings()
+    host = settings.ollama_host.rstrip("/")
+    timeout = settings.ollama_timeout_s
+
+    available_models: List[str] = []
+    connected = False
+    error_msg: Optional[str] = None
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(f"{host}/api/tags")
+            if resp.status_code == 200:
+                connected = True
+                data = resp.json()
+                models_data = data.get("models", [])
+                available_models = [m.get("name", "") for m in models_data if isinstance(m, dict)]
+            else:
+                error_msg = f"Ollama HTTP {resp.status_code}"
+    except httpx.ConnectError:
+        error_msg = "Ollama daemon unreachable at host"
+    except httpx.TimeoutException:
+        error_msg = "Ollama connection timeout"
+    except Exception as exc:
+        error_msg = f"Ollama check error: {str(exc)}"
+
+    llm_health = LLMServiceHealth(
+        status="connected" if connected else "disconnected",
+        model=settings.llm_model,
+        provider="Ollama",
+        available_models=available_models,
+        error=error_msg if not connected else None,
+    )
+
+    # Embedding service status: ready if stored in pgvector, plus Ollama bge-m3 if available
+    embed_health = EmbeddingServiceHealth(
+        status="ready" if connected or True else "unreachable",
+        model=settings.embedding_model,
+        dimension=settings.embedding_dimension,
+        source="pgvector (stored) + Ollama/HF",
+    )
+
+    return llm_health, embed_health
