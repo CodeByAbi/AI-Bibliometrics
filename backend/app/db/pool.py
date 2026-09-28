@@ -9,11 +9,10 @@ Enforces invariants:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 import asyncpg
 
-from backend.app.core.config import dsn_with_sslmode, get_settings
+from backend.app.core.config import get_settings
 from backend.app.core.logging import logger
 from backend.app.models.health import DatabaseHealth
 
@@ -72,15 +71,9 @@ async def init_pool() -> asyncpg.Pool:
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get active singleton pool, recreating if loop has changed or closed."""
+    """Get active singleton pool, recreating if closed."""
     global _pool
-    current_loop = asyncio.get_running_loop()
-    if _pool is None or _pool.is_closing() or getattr(_pool, "_loop", None) != current_loop:
-        if _pool is not None and not _pool.is_closing():
-            try:
-                await _pool.close()
-            except Exception:
-                pass
+    if _pool is None or _pool.is_closing():
         _pool = await create_pool()
     return _pool
 
