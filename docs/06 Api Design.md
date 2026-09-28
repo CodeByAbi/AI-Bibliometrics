@@ -5,11 +5,10 @@
 **Menggantikan:** `06 Api Design.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
-> 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal.  
-> 2. **Implementasi API (PLANNED / NOT YET IMPLEMENTED):** Direktori implementasi (`backend/`, `frontend/`, `database/`, `scripts/`, `docker/`, `tests/`) belum ada di repositori. Seluruh endpoint API, skema Pydantic `EvidenceObject`, middleware, dan handler di bawah ini berstatus **PLANNED** dan mendefinisikan kontrak rekayasa normatif untuk fase implementasi (Task 2, 4, 10).
-> 3. **Sinkronisasi Progress 2026-09-27:** Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) **DONE**; generate + insert embedding/vector ke pgvector (Task 1) **PENDING** — contoh payload `health` dengan `pgvector_ready: true` / `gold_tables_ready: true` di §6 baru berlaku pasca-Task 1/8.5.
-
+> **Status Implementasi (Sinkronisasi Progress Phase 2):**  
+> 1. **Database PostgreSQL & pgvector — DONE:** Basis data PostgreSQL aktif memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, serta tabel edge `institution_collaboration` dan `author_collaboration`.  
+> 2. **Implementasi Gateway API (Fase 2 DONE):** Kerangka backend FastAPI (`backend/app/`), pool koneksi async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask` (skema Pydantic v2 `EvidenceObject` & `AskResponse`), middleware `X-Request-ID`, rate limiting, dan penanganan error terstandarisasi **sudah selesai dan terverifikasi**.  
+> 3. **NEXT (Fase 3):** Implementasi `QuestionRouter` dan `SqlRetriever` (Text-to-SQL + AST gate `sqlglot`).
 ---
 
 ## 1. Tujuan
@@ -60,8 +59,8 @@ flowchart TD
 
 | Path Endpoint | Metode HTTP | Status Implementasi | Fase Target | Deskripsi & Kesenjangan (Gap) |
 |---|---|---|---|---|
-| `/api/v1/ask` | `POST` | `PLANNED` | MVP (Task 10) | Endpoint primer RAG riset multi-rute; mendukung payload `evidence_objects`. |
-| `/api/v1/health` | `GET` | `PLANNED` | MVP (Task 2) | Endpoint pemeriksaan kesehatan & dependensi (PostgreSQL, pgvector, Ollama). |
+| `/api/v1/ask` | `POST` | `FOUNDATION DONE` | Fase 2 (Gateway) / Fase 3 (Routing) | Endpoint primer RAG riset; skema `AskRequest`, `AskResponse`, dan `EvidenceObject` aktif. |
+| `/api/v1/health` | `GET` | `DONE` | Fase 2 | Endpoint pemeriksaan kesehatan & dependensi (PostgreSQL, pgvector, Ollama) terverifikasi. |
 | `/api/query` | `POST` | `SUPERSEDED` | Historis Draft v2 | Desain awal v2; **resmi digantikan (superseded) oleh `/api/v1/ask`**. |
 | `/api/v1/ask/stream` | `POST` | `POST-MVP` | Fase 10 (Masa Depan) | Sintesis streaming SSE token-per-token; ditunda ke pasca-MVP. |
 | Endpoint Resource (`/papers`, `/authors`, `/topics`) | `GET` | `POST-MVP` | Fase 10 (Masa Depan) | Detail metadata individual; ditunda ke pasca-MVP. |

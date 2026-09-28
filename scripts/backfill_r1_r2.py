@@ -27,6 +27,14 @@ import os
 import sys
 from pathlib import Path
 
+# Load project .env so DB_URL_OWNER/DB_URL resolve without manual export.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+except ImportError:  # pragma: no cover
+    pass
+
 # Driver: prefer psycopg v3 (lockfile), fall back to psycopg2 (local dev).
 # Staging load memakai csv + executemany INSERT agar identik di kedua driver.
 try:
@@ -44,6 +52,14 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
+
+try:
+    sys.path.insert(0, str(ROOT))
+    from scripts.db import park_windows_root_crt
+except ImportError:  # pragma: no cover
+    import contextlib
+
+    park_windows_root_crt = contextlib.nullcontext  # type: ignore[no-redef]
 
 STATEMENT_TIMEOUT_MS = 10_000
 
@@ -224,7 +240,8 @@ def main() -> int:
         return 1
 
     summary: dict = {"r1": {}, "r2": {}, "grants": []}
-    conn = _driver.connect(dsn, connect_timeout=10)
+    with park_windows_root_crt():
+        conn = _driver.connect(dsn, connect_timeout=10)
     try:
         conn.autocommit = False
         with conn.cursor() as cur:

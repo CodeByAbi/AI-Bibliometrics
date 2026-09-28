@@ -9,7 +9,7 @@
 > | **Arsitektur** | Hybrid Master: Bronze → Silver (9 tabel kanonikal) → Gold (pgvector + 2 tabel edge + 3 tabel analitik) → RAG 4-Rute FastAPI |
 > | **Kontrak API** | `POST /api/v1/ask` + `GET /api/v1/health` (lihat `docs/06 Api Design.md`). `POST /api/query` versi lama berstatus **SUPERSEDED** dan tidak boleh diimplementasikan. |
 > | **Status Dok** | Consolidated Hybrid Master Blueprint · Disinkronkan: **2026-09-27** (`docs/01`–`docs/12` v3.6.0) |
-> | **Status Implementasi** | **Dokumentasi saja. PLANNED / NOT IMPLEMENTED.** Belum ada `backend/`, `frontend/`, `scripts/`, `docker/`, `tests/` di repo. Database PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`). **Pembersihan data (cleaning) Scopus + export data bersih (`data/*_cleaned.csv`, 9 file) DONE.** `chunks.embedding vector(1024)`, 2 tabel edge, dan 3 tabel analitik Gold **berstatus PLANNED — penyimpanan vector BELUM selesai (Task 1 NEXT)**. |
+> | **Status Implementasi** | **Fase 0, Fase 1 & Fase 2 DONE.** Basis data PostgreSQL memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, tabel edge kolaborasi termaterialisasi, serta kerangka gateway FastAPI (`POST /api/v1/ask` & `GET /api/v1/health`) dengan async DB pool, middleware tracing, rate limiting, dan structured logging telah terverifikasi (23 tests pass). **NEXT: Fase 3 (Irisan Vertikal QueryRouter & Text-to-SQL).** |
 
 **Daftar Isi:** [1. Ringkasan Eksekutif](#1-ringkasan-eksekutif) · [2. Kemampuan Utama](#2-kemampuan-utama--fitur) · [3. Arsitektur](#3-arsitektur-sistem-end-to-end) · [4. Tumpukan Teknologi](#4-tumpukan-teknologi) · [5. Database & Pipeline](#5-ringkasan-database--pipeline-data) · [6. Struktur Repo & Indeks Dok](#6-struktur-repositori--indeks-dokumentasi) · [7. Panduan Memulai](#7-panduan-memulai--setup) · [8. Roadmap & Status](#8-roadmap--status-implementasi) · [9. Matriks Konsistensi](#9-matriks-konsistensi-keputusan-lintas-dokumen) · [10. Keputusan Kanonikal](#10-keputusan-arsitektur-kanonikal) · [11. Riwayat Perubahan](#11-riwayat-perubahan)
 
@@ -282,16 +282,16 @@ Pre-task **DONE** (di luar penomoran Task 0–12, sinkronisasi 2026-09-27): Setu
 
 | Task | Cakupan | Status | Memblokir |
 |---|---|---|---|
-| **Task 0 — Pemeriksaan Skema** | `verify_schema.py` vs 9 tabel kanonikal | ⬜ NOT STARTED (berikutnya) | Semuanya (prompt SQL, peran, embedding, edge) |
-| **Task 1 — Pipeline Embedding** | `ALTER chunks ADD embedding vector(1024)` + batch bge-m3 + HNSW | ⬜ BLOCKED (butuh T0) | Rute Semantik + Hybrid |
-| **Task 2 — Kerangka Backend + Lapisan DB** | Tata letak FastAPI, pool `app_readonly` + timeout, `GET /api/v1/health` | ⬜ PLANNED | API + semua retriever |
-| **Task 3 — Setup Ollama** | pull `qwen2.5-coder:7b-instruct`, klien LLM terisolasi, health check | ⬜ PLANNED | Fallback router, pembuatan SQL, sintesis |
-| **Task 4 — Router + Gerbang Entitas** | Routing 4-kelas, kontrak entitas Pydantic, `needs_clarification` | ⬜ PLANNED | Task 5, 6, 7, 8 |
-| **Task 5 — Generator + Validator SQL** | Text-to-SQL pada 9 tabel, pemeriksaan `sqlglot`, 1x retry | ⬜ PLANNED | Irisan terstruktur |
-| **Task 6 — Retriever Vector** | Embed kueri + `<=>` pada `chunks` + `DISTINCT ON` + ambang $\ge 0.65$ | ⬜ PLANNED (butuh T1) | Irisan semantik |
-| **Task 7 — Unifier Lapisan Bukti** | Normalisasi seluruh output ke `EvidenceSet` + peringkat deterministik | ⬜ PLANNED (butuh T5–T6) | Mesin sintesis |
-| **Task 8 — Tabel Edge Graf** | Build 2 tabel edge + templat T1–T4 + penjepit hop/limit | ⬜ PLANNED (butuh T0+T4) | Kueri jaringan |
-| **Task 8.5 — Analitik Gold** | `topics` + `topic_evolution` + `researcher_expertise` | ⬜ PLANNED (butuh T1+T8) | Sintesis kebijakan/pakar |
+| **Task 0 — Pemeriksaan Skema** | `verify_schema.py` vs 9 tabel kanonikal | ✅ DONE | - |
+| **Task 1 — Pipeline Embedding** | `ALTER chunks ADD embedding vector(1024)` + batch bge-m3 + HNSW | ✅ DONE | - |
+| **Task 2 — Kerangka Backend + Lapisan DB** | Tata letak FastAPI, pool `app_readonly` + timeout, `GET /api/v1/health` | ✅ DONE | - |
+| **Task 3 — Setup Ollama** | pull `qwen2.5-coder:7b-instruct`, klien LLM terisolasi, health check | ✅ DONE | - |
+| **Task 4 — Router + Gerbang Entitas** | Routing 4-kelas, kontrak entitas Pydantic, `needs_clarification` | ⬜ NEXT (Fase 3) | Task 5, 6, 7, 8 |
+| **Task 5 — Generator + Validator SQL** | Text-to-SQL pada 9 tabel, pemeriksaan `sqlglot`, 1x retry | ⬜ NEXT (Fase 3) | Irisan terstruktur |
+| **Task 6 — Retriever Vector** | Embed kueri + `<=>` pada `chunks` + `DISTINCT ON` + ambang $\ge 0.65$ | ⬜ PLANNED (Fase 4) | Irisan semantik |
+| **Task 7 — Unifier Lapisan Bukti** | Normalisasi seluruh output ke `EvidenceSet` + peringkat deterministik | ⬜ PLANNED (Fase 5) | Mesin sintesis |
+| **Task 8 — Tabel Edge Graf** | Build 2 tabel edge + templat T1–T4 + penjepit hop/limit | ✅ DONE (Tabel Edge) / PLANNED (Templat T1–T4) | Kueri jaringan |
+| **Task 8.5 — Analitik Gold** | `topics` + `topic_evolution` + `researcher_expertise` | ⬜ PLANNED (Fase 6) | Sintesis kebijakan/pakar |
 | **Task 9 — Sintesis Jawaban** | Prompt grounding + `CitationVerifier` + short-circuit deterministik | ⬜ PLANNED | Jawaban ter-grounding |
 | **Task 10 — API Penuh** | wiring `POST /api/v1/ask`, `AskResponse` dengan `evidence_objects` | ⬜ PLANNED | Frontend + E2E |
 | **Task 11 — Frontend** | UI Next.js 2-panel, badge, seluruh 6 state, inspektor Dev-Mode | ⬜ PLANNED | Demo |
@@ -304,12 +304,12 @@ Pre-task **DONE** (di luar penomoran Task 0–12, sinkronisasi 2026-09-27): Setu
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Narasi & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
 | **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |

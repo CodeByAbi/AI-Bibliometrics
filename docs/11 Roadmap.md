@@ -10,24 +10,22 @@
 ## 1. Ringkasan Eksekutif & Penilaian Status Proyek
 
 ### 1.1 Posisi Saat Ini (Realitas Audit Repositori)
-Inspeksi repositori per **2026-09-27** menetapkan status tersinkronisasi berikut:
+Inspeksi repositori per **2026-09-28** menetapkan status tersinkronisasi berikut:
 - **DONE — Database:** Database PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) yang disiapkan khusus untuk validasi end-to-end. Kredensial telah diamankan secara internal.
-- **DONE — Pembersihan & Export:** Data Scopus **sudah melalui pembersihan (cleaning) dan berhasil di-export** sebagai 9 file `data/*_cleaned.csv`. Tahap ini selesai dan bukan pending.
-- **PENDING — Penyimpanan Vector (eksplisit, belum selesai):** Kolom `chunks.embedding` **belum dibuat**; belum ada embedding yang dihitung. Tahap `Data Bersih → Persiapan → Input Embedding → Pembuatan Embedding → Penyimpanan Vector → PostgreSQL + pgvector` (Task 1) adalah pekerjaan berikutnya yang eksplisit — `BLOCKED BY INFRASTRUCTURE` hingga Task 0/1a dieksekusi.
-- **PENDING:** Tabel edge turunan (`institution_collaboration`, `author_collaboration`) dan tabel Gold (`topics`, `topic_evolution`, `researcher_expertise`) **belum dimaterialisasi**.
-- Pemilihan mesin database Knowledge Graph sudah dikanonikalkan: **Recursive CTE Terparameterisasi PostgreSQL (T1–T4)** untuk MVP, dan **Apache AGE** sebagai target yang ditetapkan untuk evaluasi pasca-MVP Fase 9.
-- Belum ada API, mesin retrieval, routing, unifikasi bukti, atau UI. Status kode proyek:
-- Direktori `backend/`, `frontend/`, `database/`, `scripts/`, `docker/`, dan `tests/` **belum ada**.
-- Baik `.env.example` maupun `docker-compose.yml` belum ada.
+- **DONE — Pembersihan & Export:** Data Scopus **sudah melalui pembersihan (cleaning) dan berhasil di-export** sebagai 9 file `data/*_cleaned.csv`.
+- **DONE — Penyimpanan Vector & Indexing (Fase 1):** Kolom `chunks.embedding` **sudah dibuat dan terisi 100% (40/40 chunk)** dengan representasi 1024-dimensi `BAAI/bge-m3`. Indeks HNSW (`idx_chunks_embedding_hnsw`) dan `idx_chunks_pub_id` sudah aktif dan terverifikasi.
+- **DONE — Materialisasi Tabel Edge (Fase 1):** Tabel edge turunan `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) **sudah dimaterialisasi secara idempoten** dan diverifikasi (`CHECK (a < b)`, `via_publication_ids` valid).
+- **DONE — Kerangka Gateway API & DB Pool (Fase 2):** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.
+- **NEXT — Fase 3:** Irisan Vertikal QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`).
+- **PENDING — Pasca-Fase 3:** Retrieval Semantik (Fase 4), Evidence Layer (Fase 5), Mesin Graf & Analitik Gold (Fase 6), Sintesis Jawaban & E2E (Fase 7-8).
 
-### 1.1b Pelacak Progres (Sinkronisasi 2026-09-27)
+### 1.1b Pelacak Progres (Sinkronisasi 2026-09-28)
 
 | Status | Item |
 |---|---|
-| DONE | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) |
-| IN PROGRESS / NEXT | Persiapan embedding (Task 1a) · Pembuatan embedding (Task 1b) · Insert vector ke pgvector (Task 1c–1d) |
-| PENDING | Retrieval vector (Task 6) · Integrasi RAG (Task 7/9) · Pengujian E2E (Task 12) |
-
+| DONE | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8 (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) |
+| NEXT (Fase 3) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) · Vertical Slice E2E |
+| PENDING (Fase 4+) | VectorRetriever (Task 6) · Evidence Layer (Task 7) · Synthesizer & CitationVerifier (Task 9) · E2E 12 Queries (Task 12) |
 ### 1.2 Apa yang Harus Dibangun Terlebih Dahulu?
 Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasyarat absolut adalah:
 1. **Baseline Repositori & Infrastruktur (Fase 0)**: Bangun struktur direktori proyek, Docker Compose (FastAPI + Ollama), kontrak environment, dan jalankan skrip verifikasi skema database Task 0 terhadap 9 tabel kanonikal yang sudah ada.
@@ -152,7 +150,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ```
 
 ### Fase 0 — Baseline Repositori, Lingkungan & Arsitektur
-**Status:** `[NEXT]`  
+**Status:** `[DONE]`  
 **Tujuan:** Menyiapkan ruang kerja rekayasa konkret, definisi container Docker, kontrak environment, dan memverifikasi konsistensi skema database live terhadap 9 tabel kanonikal.
 
 - **Prasyarat:** Kredensial akses database PostgreSQL yang sudah ada.
@@ -173,7 +171,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 1 — Verifikasi Data Kanonikal & Pipeline Indexing Offline
-**Status:** `[BLOCKED]` (Terblokir oleh eksekusi Fase 0 dan penyediaan (provisioning) `chunks.embedding`)  
+**Status:** `[DONE]`  
 **Tujuan:** Menyediakan pgvector, menghitung embedding vector untuk seluruh chunk dokumen pada `chunks`, dan mematerialisasi edge relasi awal dari tabel kanonikal.
 
 - **Prasyarat:** Penyelesaian Fase 0; koneksi PostgreSQL dengan hak migrasi.
@@ -200,7 +198,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 2 — Fondasi Gateway API & Orkestrasi
-**Status:** `[PLANNED]`  
+**Status:** `[DONE]`  
 **Tujuan:** Mengimplementasikan gateway aplikasi FastAPI yang diperkeras (hardened), routing dasar, validasi request/respons Pydantic, manajemen lifecycle, dan batas keamanan.
 
 - **Prasyarat:** Penyelesaian Fase 0.
