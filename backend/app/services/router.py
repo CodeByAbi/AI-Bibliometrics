@@ -108,7 +108,9 @@ class QuestionRouter:
         """Classify user query and structured filters into target RAG route."""
         q = question.strip()
 
-        # Step 1: Check GraphRoute triggers (High specificity for collaboration & network queries)
+        # Step 1: Check GraphRoute triggers (High specificity for collaboration & network queries).
+        # Decision: collaboration specificity wins over aggregate wording, so
+        # "Berapa jumlah kolaborasi institusi ...?" routes to GraphRoute, not SQLRoute.
         for pattern in GRAPH_PATTERNS:
             if pattern.search(q):
                 return RouteDecision(
@@ -223,9 +225,11 @@ class EntityResolutionGate:
                     author_name = extracted
 
         if not institution_name:
-            # e.g., "institusi Universitas Andalas", "di ITB", "at Hasanuddin University"
+            # e.g., "institusi Universitas Andalas". Bare prepositions (di/at)
+            # are deliberately excluded: they over-match phrases like
+            # "Paper di Indonesia" or "published at ..." and poison the gate.
             inst_match = re.search(
-                r"\b(?:institusi|universitas|university|institut|at|di)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|in|with|yang|\?|$))",
+                r"\b(?:institusi|universitas|university|institut)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|in|with|yang|\?|$))",
                 question,
                 re.IGNORECASE,
             )

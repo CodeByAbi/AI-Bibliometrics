@@ -78,6 +78,12 @@ class TestQuestionRouter:
         assert decision.route == "VectorRoute"
         assert decision.answered_via_fallback is True
 
+    def test_collaboration_aggregate_prefers_graph(self):
+        """Collaboration specificity wins over aggregate wording (Graph before SQL)."""
+        decision = QuestionRouter.classify_route("Berapa jumlah kolaborasi institusi pada tahun 2023?")
+        assert decision.route == "GraphRoute"
+        assert decision.answered_via_fallback is False
+
 
 class TestEntityResolutionGate:
     """Test entity name extraction and normalization."""
