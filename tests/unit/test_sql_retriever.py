@@ -7,8 +7,15 @@ from __future__ import annotations
 
 import pytest
 from backend.app.models.ask import FilterParams
-from backend.app.services.retrievers.sql_retriever import SqlRetriever
+from backend.app.services.retrievers.sql_retriever import (
+    SqlRetrievalResult,
+    SqlRetriever,
+)
 from backend.app.services.retrievers.sql_security import SqlSecurityError
+from backend.app.services.synthesizer.answer import (
+    SqlAnswerSynthesizer,
+    format_citation,
+)
 
 
 class _FakeConn:
@@ -197,3 +204,99 @@ class TestSingleRetry:
         monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(always_bad))
         with pytest.raises(SqlSecurityError):
             await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+
+
+class TestSqlAnswerSynthesizer:
+    """Test SQL result grounding, EvidenceObjects, and zero-match short circuit."""
+
+    def test_zero_match_short_circuit(self):
+        empty_result = SqlRetrievalResult(
+            sql_executed="SELECT * FROM publications WHERE year = 1900;",
+            columns=["publication_id", "title"],
+            rows=[],
+            row_count=0,
+            execution_time_ms=5.0,
+        )
+        synth = SqlAnswerSynthesizer.synthesize("Publications in 1900", empty_result)
+        assert synth.status == "not_found"
+        assert "tidak ditemukan" in synth.answer.lower()
+        assert len(synth.evidence_objects) == 0
+        assert len(synth.sources) == 0
+
+    def test_aggregate_total_publications_synthesis(self):
+        res = SqlRetrievalResult(
+            sql_executed="SELECT COUNT(DISTINCT publication_id) AS total_publications FROM publications WHERE year = 2025;",
+            columns=["total_publications"],
+            rows=[{"total_publications": 20}],
+            row_count=1,
+            execution_time_ms=4.0,
+        )
+        synth = SqlAnswerSynthesizer.synthesize(
+            "Total publikasi 2025",
+            res,
+            filters=FilterParams(year=2025),
+        )
+        assert synth.status == "ok"
+        assert "20" in synth.answer
+        assert len(synth.evidence_objects) == 1
+        ev = synth.evidence_objects[0]
+        assert ev.metric == "publication_count"
+        assert ev.value == 20
+        assert ev.confidence == 1.0
+
+    def test_author_rankings_synthesis(self):
+        res = SqlRetrievalResult(
+            sql_executed="SELECT a.author_name, COUNT(DISTINCT pa.publication_id) AS publication_count FROM authors a ...",
+            columns=["author_name", "publication_count"],
+            rows=[
+                {"author_name": "Septi Gumiandari", "publication_count": 5},
+                {"author_name": "Eti Nurhayati", "publication_count": 4},
+            ],
+            row_count=2,
+            execution_time_ms=8.0,
+        )
+        synth = SqlAnswerSynthesizer.synthesize("Top authors", res)
+        assert synth.status == "ok"
+        assert "Septi Gumiandari" in synth.answer
+        assert len(synth.evidence_objects) == 2
+        assert synth.evidence_objects[0].value == 5
+        assert synth.evidence_objects[0].confidence == 1.0
+
+    def test_publication_list_synthesis_and_citation_formatting(self):
+        res = SqlRetrievalResult(
+            sql_executed="SELECT p.publication_id, p.title, p.year, p.doi, p.citation_count FROM publications p ...",
+            columns=["publication_id", "title", "year", "doi", "citation_count"],
+            rows=[
+                {
+                    "publication_id": "PUB001",
+                    "title": "Stem Cell Therapy",
+                    "year": 2025,
+                    "doi": "10.1016/j.cell.2025.001",
+                    "citation_count": 3,
+                },
+                {
+                    "publication_id": "PUB002",
+                    "title": "Traditional Medicine",
+                    "year": 2025,
+                    "doi": None,
+                    "citation_count": 0,
+                },
+            ],
+            row_count=2,
+            execution_time_ms=6.0,
+        )
+        synth = SqlAnswerSynthesizer.synthesize("List publications", res)
+        assert synth.status == "ok"
+        assert "[Stem Cell Therapy, 2025, 10.1016/j.cell.2025.001]" in synth.answer
+        assert "[Traditional Medicine, 2025, no-doi]" in synth.answer
+        assert len(synth.sources) == 2
+        assert len(synth.evidence_objects) == 2
+
+    def test_format_citation_helper(self):
+        assert (
+            format_citation("Article Title", 2023, "10.1234/sample.doi")
+            == "[Article Title, 2023, 10.1234/sample.doi]"
+        )
+        assert format_citation("Article Title", 2023, None) == "[Article Title, 2023, no-doi]"
+        assert format_citation("Article Title", 2023, "") == "[Article Title, 2023, no-doi]"
+        assert format_citation(None, None, None) == "[Untitled, n.d., no-doi]"
