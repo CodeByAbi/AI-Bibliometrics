@@ -1,4 +1,4 @@
-# Schema Audit — 2026-09-28T15:43:00.686769+00:00
+# Schema Audit — 2026-09-28T16:13:12.585522+00:00
 
 **Status: MATCH** · target `postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` · role `postgres`
 
