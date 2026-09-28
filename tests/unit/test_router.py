@@ -141,3 +141,69 @@ class TestEntityResolutionNotFound:
         )
         assert result.status == "ok"
         assert result.candidates is None
+
+
+class _ScriptedConnStub:
+    """asyncpg stub routing canned rows by query content."""
+
+    def __init__(self, author_exact=None, inst_exact=None):
+        self.author_exact = author_exact or []
+        self.inst_exact = inst_exact or []
+
+    async def fetch(self, sql, *args, **kwargs):
+        if "FROM authors" in sql and "author_name_normalized" in sql:
+            return self.author_exact
+        if "FROM institutions" in sql and "institution_name_normalized" in sql:
+            return self.inst_exact
+        return []
+
+    async def fetchval(self, *args, **kwargs):
+        return 3
+
+
+class TestEntityJointResolution:
+    """Both entities resolve jointly; a resolved author never masks ambiguity."""
+
+    @pytest.mark.asyncio
+    async def test_author_and_institution_resolved_jointly(self):
+        conn = _ScriptedConnStub(
+            author_exact=[{"author_id": "A1", "author_name": "Septi Gumiandari"}],
+            inst_exact=[{"institution_id": "I1", "institution_name": "Universitas Andalas"}],
+        )
+        filters = FilterParams(author_name="Septi Gumiandari", institution_name="Universitas Andalas")
+        result = await EntityResolutionGate.resolve_entities(conn, "Berapa total publikasi?", filters)
+        assert result.status == "ok"
+        assert result.resolved_author_id == "A1"
+        assert result.resolved_author_name == "Septi Gumiandari"
+        assert result.resolved_institution_id == "I1"
+        assert result.resolved_institution_name == "Universitas Andalas"
+
+    @pytest.mark.asyncio
+    async def test_author_ok_institution_ambiguous_surfaces_clarification(self):
+        conn = _ScriptedConnStub(
+            author_exact=[{"author_id": "A1", "author_name": "Septi Gumiandari"}],
+            inst_exact=[
+                {"institution_id": "I1", "institution_name": "Universitas X", "country": "indonesia"},
+                {"institution_id": "I2", "institution_name": "Universitas Y", "country": "indonesia"},
+            ],
+        )
+        filters = FilterParams(author_name="Septi Gumiandari", institution_name="Universitas")
+        result = await EntityResolutionGate.resolve_entities(conn, "Berapa total publikasi?", filters)
+        assert result.status == "needs_clarification"
+        assert result.candidates is not None
+        assert len(result.candidates) == 2
+        assert all(c.type == "institution" for c in result.candidates)
+
+    @pytest.mark.asyncio
+    async def test_author_ambiguous_takes_priority(self):
+        conn = _ScriptedConnStub(
+            author_exact=[
+                {"author_id": "A1", "author_name": "Ahmad S"},
+                {"author_id": "A2", "author_name": "Ahmad Z"},
+            ],
+            inst_exact=[{"institution_id": "I1", "institution_name": "Universitas Andalas"}],
+        )
+        filters = FilterParams(author_name="Ahmad", institution_name="Universitas Andalas")
+        result = await EntityResolutionGate.resolve_entities(conn, "Berapa total publikasi?", filters)
+        assert result.status == "needs_clarification"
+        assert all(c.type == "author" for c in result.candidates)

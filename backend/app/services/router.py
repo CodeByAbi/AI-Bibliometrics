@@ -246,6 +246,13 @@ class EntityResolutionGate:
         """Resolve author and institution entities, checking for ambiguous candidate sets."""
         author_query, inst_query = await cls.extract_candidate_names(question, filters)
 
+        # Accumulators: both entities resolve jointly so a resolved author
+        # never masks an ambiguous institution (and vice versa).
+        resolved_author_id: Optional[str] = None
+        resolved_author_name: Optional[str] = None
+        resolved_institution_id: Optional[str] = None
+        resolved_institution_name: Optional[str] = None
+
         # 1. Author resolution
         if author_query and len(author_query) >= 3:
             norm_name = normalize_text(author_query)
@@ -265,11 +272,8 @@ class EntityResolutionGate:
 
             if len(exact_rows) == 1:
                 row = exact_rows[0]
-                return EntityResolutionResult(
-                    status="ok",
-                    resolved_author_id=row["author_id"],
-                    resolved_author_name=row["author_name"],
-                )
+                resolved_author_id = row["author_id"]
+                resolved_author_name = row["author_name"]
             elif len(exact_rows) > 1:
                 # Multiple candidates found -> needs clarification
                 candidate_items: List[CandidateItem] = []
@@ -330,18 +334,16 @@ class EntityResolutionGate:
                     )
                 elif len(partial_rows) == 1:
                     r = partial_rows[0]
+                    resolved_author_id = r["author_id"]
+                    resolved_author_name = r["author_name"]
+                else:
+                    # Mentioned author matches zero records -> deterministic not_found (FR2.4)
                     return EntityResolutionResult(
-                        status="ok",
-                        resolved_author_id=r["author_id"],
-                        resolved_author_name=r["author_name"],
+                        status="not_found",
+                        clarification_message=(
+                            f"Tidak ditemukan penulis yang cocok dengan '{author_query}' dalam database."
+                        ),
                     )
-                # Mentioned author matches zero records -> deterministic not_found (FR2.4)
-                return EntityResolutionResult(
-                    status="not_found",
-                    clarification_message=(
-                        f"Tidak ditemukan penulis yang cocok dengan '{author_query}' dalam database."
-                    ),
-                )
 
         # 2. Institution resolution
         if inst_query and len(inst_query) >= 3:
@@ -362,11 +364,8 @@ class EntityResolutionGate:
 
             if len(exact_insts) == 1:
                 row = exact_insts[0]
-                return EntityResolutionResult(
-                    status="ok",
-                    resolved_institution_id=row["institution_id"],
-                    resolved_institution_name=row["institution_name"],
-                )
+                resolved_institution_id = row["institution_id"]
+                resolved_institution_name = row["institution_name"]
             elif len(exact_insts) > 1:
                 candidate_items = []
                 for r in exact_insts[:5]:
@@ -426,18 +425,22 @@ class EntityResolutionGate:
                     )
                 elif len(partial_insts) == 1:
                     r = partial_insts[0]
+                    resolved_institution_id = r["institution_id"]
+                    resolved_institution_name = r["institution_name"]
+                else:
+                    # Mentioned institution matches zero records -> deterministic not_found (FR2.4)
                     return EntityResolutionResult(
-                        status="ok",
-                        resolved_institution_id=r["institution_id"],
-                        resolved_institution_name=r["institution_name"],
+                        status="not_found",
+                        clarification_message=(
+                            f"Tidak ditemukan institusi yang cocok dengan '{inst_query}' dalam database."
+                        ),
                     )
-                # Mentioned institution matches zero records -> deterministic not_found (FR2.4)
-                return EntityResolutionResult(
-                    status="not_found",
-                    clarification_message=(
-                        f"Tidak ditemukan institusi yang cocok dengan '{inst_query}' dalam database."
-                    ),
-                )
 
-        # No disambiguation needed or no entities found
-        return EntityResolutionResult(status="ok")
+        # Joint result: either entity may be resolved while the other was unmentioned
+        return EntityResolutionResult(
+            status="ok",
+            resolved_author_id=resolved_author_id,
+            resolved_author_name=resolved_author_name,
+            resolved_institution_id=resolved_institution_id,
+            resolved_institution_name=resolved_institution_name,
+        )
