@@ -103,8 +103,8 @@ source .venv/bin/activate       # Linux/macOS
 .venv\Scripts\activate          # Windows
 
 # Install dependencies
-pip install -r backend/requirements.txt
-# or with uv: uv pip install -r backend/requirements.txt
+pip install -r requirements.txt
+# or with uv: uv pip install -r requirements.txt
 
 # Run FastAPI development server
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
