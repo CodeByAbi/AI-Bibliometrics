@@ -6,7 +6,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.1, docs/08 Security.md §2.
 from __future__ import annotations
 
 import re
-from typing import Set
+from typing import Dict, Set
 import sqlglot
 from sqlglot import exp
 from backend.app.core.errors import ASTValidationError
@@ -50,6 +50,61 @@ JUNCTION_TABLES: Set[str] = {
     "keywords",
     "funding",
     "publication_references",
+}
+
+# Canonical column whitelist. Silver + edge columns verified against the live
+# database via information_schema (2026-09-29); Gold columns follow docs/04
+# DDL (tables PLANNED, enforced identically once materialized).
+ALLOWED_COLUMNS: Dict[str, Set[str]] = {
+    "publications": {
+        "publication_id", "eid", "doi", "title", "year", "source_title",
+        "volume", "issue", "art_no", "page_start", "page_end",
+        "citation_count", "link", "abstract", "document_type",
+        "publication_stage", "open_access", "issn",
+        "language_of_original_document", "publisher", "source", "search_text",
+    },
+    "authors": {"author_id", "author_name", "author_name_normalized"},
+    "institutions": {
+        "institution_id", "institution_name", "city", "country",
+        "institution_name_normalized",
+    },
+    "keywords": {"keyword_id", "publication_id", "keyword", "keyword_type"},
+    "funding": {
+        "funding_id", "publication_id", "funding_agency", "grant_number",
+        "funding_text", "source_text", "funding_agency_normalized",
+    },
+    "pub_author": {"publication_id", "author_id", "author_order"},
+    "pub_institution": {"publication_id", "institution_id"},
+    "publication_references": {
+        "publication_id", "reference_order", "reference_text", "reference_id",
+    },
+    "chunks": {
+        "chunk_id", "publication_id", "section", "chunk_text", "source_type",
+        "embedding", "embedding_model", "embedding_version", "embedding_dimension",
+    },
+    "institution_collaboration": {
+        "institution_a", "institution_b", "weight", "via_publication_ids", "created_at",
+    },
+    "author_collaboration": {
+        "author_a", "author_b", "weight", "via_publication_ids", "created_at",
+    },
+    "topics": {
+        "topic_id", "topic_name", "topic_name_normalized", "cluster_keywords",
+        "representation_vector", "total_publications", "total_citations",
+        "first_publication_year", "latest_publication_year",
+        "created_at", "updated_at",
+    },
+    "topic_evolution": {
+        "evolution_id", "topic_id", "year", "publication_count",
+        "citation_count", "growth_score", "citation_acceleration",
+        "recency_weight", "is_emerging", "created_at",
+    },
+    "researcher_expertise": {
+        "expertise_id", "author_id", "topic_id", "expertise_score",
+        "relevance_score", "productivity_score", "impact_score",
+        "recency_score", "h_index_topic", "publication_count_topic",
+        "citation_count_topic", "coauthor_network_size", "calculated_at",
+    },
 }
 
 # Dangerous PostgreSQL functions and system procedures
@@ -114,6 +169,58 @@ def _enforce_limit(node: exp.Expression, is_aggregate: bool) -> None:
         node.set("limit", exp.Limit(expression=exp.Literal.number(50)))
 
 
+def _validate_columns(parsed: exp.Expression) -> None:
+    """Enforce the explicit column whitelist; wildcards are retryable failures."""
+    for star in parsed.find_all(exp.Star):
+        # A star nested inside an aggregate (COUNT(*) et al.) is legitimate;
+        # junction-join COUNT(*) is normalized to DISTINCT publication_id later.
+        ancestor = star.parent
+        inside_aggregate = False
+        while ancestor is not None:
+            if isinstance(ancestor, (exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max)):
+                inside_aggregate = True
+                break
+            ancestor = ancestor.parent
+        if not inside_aggregate:
+            raise SqlSecurityError(
+                "SELECT * wildcards are forbidden; project explicit allowlisted columns instead"
+            )
+
+    # Alias -> real table across the whole statement (aliases are unique
+    # in every query our templates and prompt produce).
+    alias_map: Dict[str, str] = {}
+    for tbl in parsed.find_all(exp.Table):
+        alias = tbl.args.get("alias")
+        if alias is not None and alias.alias_or_name:
+            alias_map[str(alias.alias_or_name).lower()] = tbl.name.lower()
+
+    select_aliases = {
+        str(a.alias).lower() for a in parsed.find_all(exp.Alias) if a.alias
+    }
+    union_columns: Set[str] = set()
+    for cols in ALLOWED_COLUMNS.values():
+        union_columns |= cols
+
+    for col in parsed.find_all(exp.Column):
+        col_name = col.name.lower()
+        if col_name == "*":
+            raise SqlSecurityError(
+                "Qualified wildcards (tbl.*) are forbidden; project explicit allowlisted columns instead"
+            )
+        qualifier = (col.table or "").lower()
+        if qualifier:
+            real = alias_map.get(qualifier, qualifier)
+            allowed = ALLOWED_COLUMNS.get(real)
+            if allowed is None or col_name not in allowed:
+                raise SqlSecurityError(
+                    f"Column '{qualifier}.{col.name}' is not allowlisted for table '{real}'"
+                )
+        elif col_name not in union_columns and col_name not in select_aliases:
+            raise SqlSecurityError(
+                f"Column '{col.name}' is not in the canonical schema whitelist"
+            )
+
+
 def validate_and_sanitize_sql(raw_sql: str) -> str:
     """Validate SQL query AST and enforce safety invariants.
 
@@ -121,7 +228,9 @@ def validate_and_sanitize_sql(raw_sql: str) -> str:
     1. Single statement only (no chained semicolons).
     2. Root statement must be SELECT (or UNION of SELECTs). Prohibits DDL/DML.
     3. All tables referenced must belong to ALLOWED_TABLES whitelist.
-    4. Prohibits system catalog tables and dynamic schema traversal.
+    4. All projected/filtered columns must belong to ALLOWED_COLUMNS;
+       SELECT * and tbl.* are rejected as retryable failures.
+    5. Prohibits system catalog tables and dynamic schema traversal.
     5. Prohibits dangerous or internal pg_* functions.
     6. Double-count prevention: Enforces COUNT(DISTINCT ...) when junction tables are joined.
     7. LIMIT enforcement: Injects or clamps LIMIT to at most 50 rows on the
@@ -162,6 +271,12 @@ def validate_and_sanitize_sql(raw_sql: str) -> str:
                 raise SqlSecurityError(
                     f"Access to table '{tbl_name}' is forbidden. Permitted tables: {sorted(list(ALLOWED_TABLES))}"
                 )
+
+    # Invariant: Column Whitelist Check (explicit projection only, no wildcards)
+    # NOTE: WITH/CTE aliases are rejected by the table whitelist above, so
+    # recursive-CTE graph templates must land with explicit CTE allowlisting
+    # in Phase 6 (GraphRetriever); SQLRoute stays CTE-free by design.
+    _validate_columns(parsed)
 
     # Invariant 3: Prohibited functions check
     for func in parsed.find_all(exp.Anonymous, exp.Func):

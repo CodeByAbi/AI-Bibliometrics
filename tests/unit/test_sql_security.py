@@ -24,12 +24,43 @@ class TestSqlSecurityGate:
         assert "LIMIT 10" in sanitized
 
     def test_enforce_limit_if_missing(self):
-        sql = "SELECT * FROM publications;"
+        sql = "SELECT publication_id, title FROM publications;"
         sanitized = validate_and_sanitize_sql(sql)
         assert "LIMIT 50" in sanitized
 
+    def test_reject_select_star(self):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql("SELECT * FROM publications;")
+        assert "wildcard" in str(exc_info.value.message).lower()
+
+    def test_reject_qualified_star(self):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql("SELECT p.* FROM publications p;")
+        assert "wildcard" in str(exc_info.value.message).lower()
+
+    def test_reject_unknown_column(self):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql("SELECT password FROM publications;")
+        assert "whitelist" in str(exc_info.value.message).lower()
+
+    def test_reject_unknown_qualified_column(self):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql("SELECT a.nickname FROM authors a;")
+        assert "allowlist" in str(exc_info.value.message).lower()
+
+    def test_accept_order_by_select_alias_and_placeholders(self):
+        sql = (
+            "SELECT a.author_name, COUNT(DISTINCT pa.publication_id) AS publication_count "
+            "FROM authors a JOIN pub_author pa ON pa.author_id = a.author_id "
+            "JOIN publications p ON p.publication_id = pa.publication_id "
+            "WHERE p.year = $1 GROUP BY a.author_name "
+            "ORDER BY publication_count DESC, a.author_name ASC LIMIT 5;"
+        )
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "LIMIT 5" in sanitized
+
     def test_clamp_excessive_limit(self):
-        sql = "SELECT * FROM publications LIMIT 1000;"
+        sql = "SELECT publication_id, title FROM publications LIMIT 1000;"
         sanitized = validate_and_sanitize_sql(sql)
         assert "LIMIT 50" in sanitized
 
@@ -127,7 +158,7 @@ class TestSqlSecurityGate:
         assert "prohibited function" in str(exc_info.value.message).lower()
 
     def test_reject_multiple_statements(self):
-        sql = "SELECT * FROM publications; DROP TABLE authors;"
+        sql = "SELECT publication_id FROM publications; DROP TABLE authors;"
         with pytest.raises(SqlSecurityError) as exc_info:
             validate_and_sanitize_sql(sql)
         assert "multiple statements" in str(exc_info.value.message).lower()
