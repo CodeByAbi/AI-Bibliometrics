@@ -1,6 +1,6 @@
-# Schema Audit — 2026-09-28T15:27:07.717447+00:00
+# Schema Audit — 2026-09-28T15:43:00.686769+00:00
 
-**Status: MATCH** · target `postgresql://postgres.cyebuphkjrnhndcadcxk@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` · role `postgres`
+**Status: MATCH** · target `postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` · role `postgres`
 
 ## errors (0)
 _none_

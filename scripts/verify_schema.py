@@ -101,7 +101,21 @@ def safe_label(dsn: str) -> str:
     """host/db/user only — password never leaves this function unmasked."""
     try:
         u = urlparse(dsn)
-        return f"{u.scheme}://{u.username or '?'}@{u.hostname or '?'}:{u.port or '?ht'}/{ (u.path or '/?').lstrip('/') }"
+        return f"{u.scheme}://{u.username or '?'}@{u.hostname or '?'}:{u.port or '?'}/{(u.path or '/?').lstrip('/')}"
+    except Exception:
+        return "<unparsable-dsn>"
+
+
+def public_label(dsn: str) -> str:
+    """Artifact-safe label for committed reports: role without project-ref.
+
+    Console logs may keep safe_label(); committed JSON/MD must not carry the
+    Supabase project-ref embedded in the pooler username.
+    """
+    try:
+        u = urlparse(dsn)
+        user = (u.username or "?").split(".")[0]
+        return f"{u.scheme}://{user}@{u.hostname or '?'}:{u.port or '?'}/{(u.path or '/?').lstrip('/')}"
     except Exception:
         return "<unparsable-dsn>"
 
@@ -140,8 +154,9 @@ def main() -> int:
         conn = _driver.connect(dsn, connect_timeout=10, options="-c statement_timeout=10s")
     except Exception as exc:
         print(f"ERROR: connection failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        print("HINT (no secrets shown): verify host/port (Supabase pooler normally uses "
-              "port 6543, not 5432), user format (postgres.<project-ref>), password, "
+        print("HINT (no secrets shown): verify host/port (Supabase pooler offers "
+              "session mode :5432 and transaction mode :6543), user format "
+              "(postgres.<project-ref>), password, "
               "and DB IP-allowlist for this machine.", file=sys.stderr)
         return 1
 
@@ -233,7 +248,7 @@ def main() -> int:
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "driver": _DRIVER,
-        "target": safe_label(dsn),
+        "target": public_label(dsn),
         "db_user": db_user,
         "status": "MATCH" if not errors else "MISMATCH",
         "errors": errors,
