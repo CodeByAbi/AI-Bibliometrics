@@ -206,6 +206,27 @@ class TestSingleRetry:
             await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
 
 
+class TestTimeoutMapping:
+    """Statement timeouts surface as structured 503 db_timeout (never raw errors)."""
+
+    @pytest.mark.asyncio
+    async def test_statement_timeout_maps_to_db_timeout(self):
+        import asyncpg
+
+        from backend.app.core.errors import DBTimeoutError
+
+        class _TimeoutConn:
+            async def fetch(self, *args, **kwargs):
+                raise asyncpg.QueryCanceledError(
+                    "canceling statement due to statement timeout"
+                )
+
+        with pytest.raises(DBTimeoutError) as exc_info:
+            await SqlRetriever.retrieve(_TimeoutConn(), "Berapa total publikasi pada tahun 2025?")
+        assert exc_info.value.error_type == "db_timeout"
+        assert exc_info.value.status_code == 503
+
+
 class TestSqlAnswerSynthesizer:
     """Test SQL result grounding, EvidenceObjects, and zero-match short circuit."""
 

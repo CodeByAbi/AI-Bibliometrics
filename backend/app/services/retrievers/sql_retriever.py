@@ -5,6 +5,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.1, docs/10 Implementation Pl
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import asyncpg
 from backend.app.core.config import get_settings
+from backend.app.core.errors import DBTimeoutError
 from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
 from backend.app.services.retrievers.sql_security import (
@@ -367,9 +369,13 @@ class SqlRetriever:
             params = []
             sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
 
-        # 4. Execute query on PostgreSQL with bound parameters
+        # 4. Execute query on PostgreSQL with bound parameters.
+        # Statement timeouts surface as 503 db_timeout, never raw DB errors.
         start_t = time.perf_counter()
-        raw_rows = await conn.fetch(sanitized_sql, *params)
+        try:
+            raw_rows = await conn.fetch(sanitized_sql, *params)
+        except (asyncpg.QueryCanceledError, asyncio.TimeoutError) as exc:
+            raise DBTimeoutError() from exc
         elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
 
         # 5. Extract column names and dict rows
