@@ -1,9 +1,10 @@
 """Fase 1 pre-tasks R1 + R2 (reports/RECONCILIATION.md) — OWNER session.
 
 R1: backfill kolom *_normalized yang hilang dari data/*_cleaned.csv via
-    TEMP staging + COPY STDIN + UPDATE ... FROM (faithful copy, tanpa
-    TRUNCATE/DELETE; junction tables tidak tersentuh), lalu CREATE INDEX
-    (AC-DB-3) + SET NOT NULL bila tidak ada NULL (spec docs/04).
+    TEMP staging + csv.DictReader/executemany INSERT + UPDATE ... FROM
+    (faithful copy, tanpa TRUNCATE/DELETE; junction tables tidak tersentuh),
+    lalu CREATE INDEX (AC-DB-3) + SET NOT NULL bila tidak ada NULL
+    (spec docs/04). INSERT dipilih agar driver-agnostic (psycopg v3/v2).
 R2: ALTER TABLE publication_references ADD COLUMN reference_id BIGSERIAL PK
     (auto-number existing rows server-side; CSV tidak diubah).
 Re-grant: GRANT SELECT idempoten ke app_readonly (docs/08 Security.md).
@@ -20,12 +21,26 @@ Usage:
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sys
 from pathlib import Path
 
-import psycopg2
+# Driver: prefer psycopg v3 (lockfile), fall back to psycopg2 (local dev).
+# Staging load memakai csv + executemany INSERT agar identik di kedua driver.
+try:
+    import psycopg as _driver  # type: ignore[no-redef]
+
+    _DRIVER = "psycopg3"
+except ImportError:  # pragma: no cover
+    try:
+        import psycopg2 as _driver  # type: ignore[no-redef]
+
+        _DRIVER = "psycopg2"
+    except ImportError:
+        print("ERROR: no postgres driver (install psycopg[binary] or psycopg2).", file=sys.stderr)
+        sys.exit(1)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -91,11 +106,14 @@ def backfill_one(cur, table: str, cfg: dict) -> dict:
 
     cur.execute(f"CREATE TEMP TABLE {q_ident(stg)} ({cols_sql}) ON COMMIT DROP;")
     with open(cfg["csv"], "r", encoding="utf-8-sig", newline="") as fh:
-        cur.copy_expert(
-            f"COPY {q_ident(stg)} ({', '.join(q_ident(c) for c in csvcols)})"
-            " FROM STDIN WITH (FORMAT csv, HEADER true);",
-            fh,
-        )
+        reader = csv.DictReader(fh)
+        rows = [[r.get(c, "") for c in csvcols] for r in reader]
+    placeholders = ", ".join(["%s"] * len(csvcols))
+    cur.executemany(
+        f"INSERT INTO {q_ident(stg)} ({', '.join(q_ident(c) for c in csvcols)}) "
+        f"VALUES ({placeholders});",
+        rows,
+    )
     cur.execute(f"SELECT COUNT(*) FROM {q_ident(stg)};")
     staged = cur.fetchone()[0]
 
@@ -206,7 +224,7 @@ def main() -> int:
         return 1
 
     summary: dict = {"r1": {}, "r2": {}, "grants": []}
-    conn = psycopg2.connect(dsn, connect_timeout=10)
+    conn = _driver.connect(dsn, connect_timeout=10)
     try:
         conn.autocommit = False
         with conn.cursor() as cur:

@@ -18,7 +18,15 @@ from __future__ import annotations
 import os
 import sys
 
-import psycopg2
+# Driver: prefer psycopg v3 (lockfile), fall back to psycopg2 (local dev).
+try:
+    import psycopg as _driver  # type: ignore[no-redef]
+except ImportError:  # pragma: no cover
+    try:
+        import psycopg2 as _driver  # type: ignore[no-redef]
+    except ImportError:
+        print("ERROR: no postgres driver (install psycopg[binary] or psycopg2).", file=sys.stderr)
+        sys.exit(1)
 
 CANONICAL_TABLES = [
     "publications",
@@ -39,7 +47,7 @@ def main() -> int:
         print("FATAL: set DB_URL_OWNER (fallback DB_URL) in process env.", file=sys.stderr)
         return 1
 
-    conn = psycopg2.connect(dsn, connect_timeout=10)
+    conn = _driver.connect(dsn, connect_timeout=10)
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
