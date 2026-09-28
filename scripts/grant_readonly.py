@@ -14,21 +14,14 @@ Usage:
 """
 
 from __future__ import annotations
-
-import os
+import pathlib
 import sys
 
-# Driver: prefer psycopg v3 (lockfile), fall back to psycopg2 (local dev).
-try:
-    import psycopg as _driver  # type: ignore[no-redef]
-except ImportError:  # pragma: no cover
-    try:
-        import psycopg2 as _driver  # type: ignore[no-redef]
-    except ImportError:
-        print("ERROR: no postgres driver (install psycopg[binary] or psycopg2).", file=sys.stderr)
-        sys.exit(1)
+# Ensure project root is in sys.path
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-CANONICAL_TABLES = [
+from scripts.db import get_db_connection
+ALL_PUBLIC_TABLES = [
     "publications",
     "authors",
     "institutions",
@@ -38,48 +31,56 @@ CANONICAL_TABLES = [
     "pub_institution",
     "publication_references",
     "chunks",
+    "institution_collaboration",
+    "author_collaboration",
 ]
 
 
 def main() -> int:
-    dsn = os.environ.get("DB_URL_OWNER") or os.environ.get("DB_URL")
-    if not dsn:
-        print("FATAL: set DB_URL_OWNER (fallback DB_URL) in process env.", file=sys.stderr)
-        return 1
-
-    conn = _driver.connect(dsn, connect_timeout=10)
-    conn.autocommit = True
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'app_readonly';")
-            if not cur.fetchone():
-                cur.execute("CREATE ROLE app_readonly NOLOGIN;")
-                print("role app_readonly: CREATED (NOLOGIN; LOGIN diatur saat Task 3)")
-            else:
-                print("role app_readonly: already exists")
+        with get_db_connection(autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'app_readonly';")
+                if not cur.fetchone():
+                    cur.execute("CREATE ROLE app_readonly NOLOGIN;")
+                    print("role app_readonly: CREATED (NOLOGIN; LOGIN diatur saat Task 3)")
+                else:
+                    print("role app_readonly: already exists")
 
-            cur.execute("GRANT USAGE ON SCHEMA public TO app_readonly;")
-            for t in CANONICAL_TABLES:
-                cur.execute(f'GRANT SELECT ON TABLE "{t}" TO app_readonly;')
-            cur.execute(
-                "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-                "GRANT SELECT ON TABLES TO app_readonly;"
-            )
-            print(f"grants: SELECT on {len(CANONICAL_TABLES)} tables + default privileges")
-
-            missing = []
-            for t in CANONICAL_TABLES:
+                cur.execute("GRANT USAGE ON SCHEMA public TO app_readonly;")
+                
+                # Grant on existing tables
                 cur.execute(
-                    "SELECT has_table_privilege('app_readonly', %s, 'SELECT');", (t,)
+                    """
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_type = 'BASE TABLE';
+                    """
                 )
-                if not cur.fetchone()[0]:
-                    missing.append(t)
-            if missing:
-                print(f"VERIFY FAIL: no SELECT on {missing}", file=sys.stderr)
-                return 1
-            print(f"verify: SELECT OK on all {len(CANONICAL_TABLES)} canonical tables")
-    finally:
-        conn.close()
+                live_tables = [r[0] for r in cur.fetchall()]
+                
+                for t in live_tables:
+                    cur.execute(f'GRANT SELECT ON TABLE "{t}" TO app_readonly;')
+                
+                cur.execute(
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                    "GRANT SELECT ON TABLES TO app_readonly;"
+                )
+                print(f"grants: SELECT on {len(live_tables)} tables + default privileges")
+
+                missing = []
+                for t in live_tables:
+                    cur.execute(
+                        "SELECT has_table_privilege('app_readonly', %s, 'SELECT');", (t,)
+                    )
+                    if not cur.fetchone()[0]:
+                        missing.append(t)
+                if missing:
+                    print(f"VERIFY FAIL: no SELECT on {missing}", file=sys.stderr)
+                    return 1
+                print(f"verify: SELECT OK on all {len(live_tables)} public tables")
+    except Exception as exc:
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

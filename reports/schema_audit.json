@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-28T15:43:00.686769+00:00",
-  "driver": "psycopg2",
+  "generated_at": "2026-09-28T19:42:40.442316+00:00",
+  "driver": "psycopg3",
   "target": "postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres",
   "db_user": "postgres",
   "status": "MATCH",
@@ -25,7 +25,11 @@
     "extra column (prototype-tolerated): publications.issn",
     "extra column (prototype-tolerated): publications.search_text",
     "extra column (prototype-tolerated): funding.source_text",
-    "extra column (prototype-tolerated): chunks.source_type"
+    "extra column (prototype-tolerated): chunks.source_type",
+    "extra column (prototype-tolerated): chunks.embedding",
+    "extra column (prototype-tolerated): chunks.embedding_model",
+    "extra column (prototype-tolerated): chunks.embedding_version",
+    "extra column (prototype-tolerated): chunks.embedding_dimension"
   ],
   "tables": {
     "publications": {
@@ -133,7 +137,11 @@
         }
       },
       "extra_columns": [
-        "source_type"
+        "source_type",
+        "embedding",
+        "embedding_model",
+        "embedding_version",
+        "embedding_dimension"
       ]
     }
   },

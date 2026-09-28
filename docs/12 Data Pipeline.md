@@ -5,14 +5,14 @@
 **Menggantikan:** `12 Data Pipeline.md` Draft v1 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/00` hingga `docs/11`  
 
-> **Status Implementasi & Kesiapan Basis Data (Sinkronisasi Progress 2026-09-27):**  
+> **Status Implementasi & Kesiapan Basis Data (Sinkronisasi Progress Phase 1):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal.  
-> 2. **Cleaning & Export — DONE:** Data Scopus **sudah melalui proses cleaning dan berhasil di-export** — tersedia sebagai 9 file `data/*_cleaned.csv` (`publications`, `chunks`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`). Tahap cleaning **bukan** pending.  
-> 3. **Vector Storage — PENDING (BELUM SELESAI):** Embedding **belum** di-generate dan vector **belum** dimasukkan ke database. File `data/chunks_cleaned.csv` saat ini hanya memuat kolom teks (`chunk_id, publication_id, section, chunk_text, source_type`) tanpa kolom embedding. Tahap `Cleaned Data → Preparation → Embedding Input → Embedding Generation → Vector Storage → PostgreSQL + pgvector` (Task 1) adalah prioritas implementasi berikutnya.  
-> 4. **Pemisahan Dua Fase Pipeline:**  
->    - **Fase Validasi Prototipe E2E (Current):** Data prototipe yang sudah bersih ter-load di 9 tabel Silver kanonikal menjadi input langsung untuk Task 1 (Batch Embedding `chunks.embedding`), Task 8 (Edge Materialization `institution_collaboration` & `author_collaboration`), dan Task 8.5 (Gold Analytics `topics`, `topic_evolution`, `researcher_expertise`).  
+> 2. **Cleaning & Export — DONE:** Data Scopus **sudah melalui proses cleaning dan berhasil di-export** — tersedia sebagai 9 file `data/*_cleaned.csv` (`publications`, `chunks`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`).  
+> 3. **Vector Storage & HNSW Index — DONE (Task 1):** Seluruh 40 chunk telah memiliki embedding vector 1024-dim (`BAAI/bge-m3`) di kolom `chunks.embedding` dan indeks HNSW `idx_chunks_embedding_hnsw` (`m=16, ef_construction=64`) serta `idx_chunks_pub_id` telah aktif dan diverifikasi di basis data PostgreSQL.  
+> 4. **Tabel Edge Kolaborasi — DONE (Task 8 Bagian Edge):** `institution_collaboration` (254 baris) dan `author_collaboration` (484 baris) telah berhasil dimaterialisasi secara idempoten dari tabel junction Silver.  
+> 5. **Pemisahan Dua Fase Pipeline:**  
+>    - **Fase Validasi Prototipe E2E (Current):** Data prototipe siap-vektor dan siap-graf menjadi input untuk Task 2-10 (FastAPI, Retrieval, RAG Flow, Evaluasi E2E).  
 >    - **Fase Produksi Skala Besar (Future):** Pipeline batch otomatis penuh untuk ingestion berkas mentah Scopus (Bronze), pembersihan multi-tier, dan deduplikasi skala besar.
-
 ---
 
 ## 1. Tujuan & Arsitektur Ingestion Medallion
@@ -82,19 +82,17 @@ Cleaning                           [DONE — aturan §3, output terverifikasi]
     ↓
 Cleaned / Exported Data            [DONE — 9 file data/*_cleaned.csv + ter-load di 9 tabel Silver]
     ↓
-Data Preparation / Normalization   [NEXT — Task 1a: seleksi & validasi chunk siap-embed]
+Data Preparation / Normalization   [DONE — Task 1a: seleksi & validasi 40 chunk siap-embed]
     ↓
-Embedding Input / Text Construction[DONE (desain) / NEXT (eksekusi) — format Title+Abstract terkunci §4,
-                                    konstruksi batch menyusul di Task 1a]
+Embedding Input / Text Construction[DONE — format Title+Abstract terkunci §4, dieksekusi di Task 1a]
     ↓
-Embedding Generation               [PENDING — Task 1b: BAAI/bge-m3 1024-dim, batch 32–64]
+Embedding Generation               [DONE — Task 1b: BAAI/bge-m3 1024-dim, 40 chunk terproses]
     ↓
-Vector                              [PENDING — belum ada vektor yang dihasilkan]
+Vector                             [DONE — 40 vector padat 1024-dim dihasilkan]
     ↓
-PostgreSQL + pgvector              [PENDING — Task 1c: insert ke chunks.embedding + HNSW;
-                                    kolom & indeks BELUM dibuat]
+PostgreSQL + pgvector              [DONE — Task 1c & 1d: tersimpan di chunks.embedding + HNSW index aktif]
     ↓
-RAG / Retrieval Layer              [PENDING — Task 6/7: similarity search, retrieval,
+RAG / Retrieval Layer              [NEXT (Phase 2-4) — Task 4/5/6/7: router, similarity search,
                                     context construction, LLM generation]
     ↓
 E2E Testing                        [PENDING — Task 12, setelah seluruh pipeline terhubung]
@@ -106,8 +104,8 @@ E2E Testing                        [PENDING — Task 12, setelah seluruh pipelin
 |---|---|---|---|
 | Structured data | 9 tabel Silver relasional | Seluruh kolom kanonikal `docs/04 §4` (teks + metadata + junction) | DONE (ter-load) |
 | Input embedding | `chunks.chunk_text` + `publications.title` | Teks terkonstruksi `Title: {title}\nAbstract: {abstract}` (§4); `section = 'title_abstract'` | Desain DONE, eksekusi batch NEXT |
-| Embedding / vector | `chunks.embedding vector(1024)` + metadata (`embedding_model`, `embedding_version`, `embedding_dimension`) | `BAAI/bge-m3`, `v1.0`, `1024` | PENDING (kolom belum dibuat) |
-| Kaitan vector ↔ artikel asal | `chunks.publication_id FK → publications.publication_id` + `chunk_id` | Join existing, tidak ada kolom baru | Desain DONE, populasi NEXT |
+| Embedding / vector | `chunks.embedding vector(1024)` + metadata (`embedding_model`, `embedding_version`, `embedding_dimension`) | `BAAI/bge-m3`, `v1.0`, `1024` | DONE (40/40 terisi) |
+| Kaitan vector ↔ artikel asal | `chunks.publication_id FK → publications.publication_id` + `chunk_id` | Join existing, tidak ada kolom baru | DONE (100% terhubung) |
 | Konsumsi retrieval/RAG | `VectorRoute` (§5 docs/05) + `HybridRoute` | Cosine `<=>` HNSW, gate $\ge 0.65$, `DISTINCT ON (publication_id) LIMIT 8` | PENDING (menunggu vector terisi) |
 
 - **Kapan embedding dibuat:** pekerjaan (job) batch offline Task 1b (`scripts/embed_chunks.py`), setelah Task 0 (verifikasi skema) dan Task 1a (preparation). Bukan waktu-nyata (real-time).
@@ -140,7 +138,7 @@ Pembersihan (cleaning) dilakukan pada **lapisan transformasi Python** sebelum da
 
 ## 4. Pipeline Batch Embedding & Indeks HNSW (Lapisan Vector)
 
-> **Status tahap: PENDING / BELUM SELESAI (Task 1).** Spesifikasi di bawah adalah desain terkunci, bukan hasil yang sudah berjalan. `chunks.embedding` belum dibuat, belum ada vektor yang di-generate, dan indeks HNSW belum dibangun. Sub-tahap normatif: **(1a)** Data Preparation — seleksi/validasi chunk siap-embed dari `chunks` → **(1b)** Embedding Generation — batch `BAAI/bge-m3` → **(1c)** Vector Storage — insert ke `chunks.embedding` + metadata → **(1d)** HNSW index + `ANALYZE` → **(1e)** validasi (`COUNT WHERE embedding IS NULL = 0`).
+> **Status tahap: DONE (Task 1).** Sub-tahap normatif telah dieksekusi dan tervalidasi: **(1a)** Data Preparation (40 chunk siap-embed) → **(1b)** Embedding Generation (`BAAI/bge-m3`, 1024 dimensi) → **(1c)** Vector Storage (insert ke `chunks.embedding` + metadata) → **(1d)** HNSW index `idx_chunks_embedding_hnsw` (`m=16, ef_construction=64`) + `ANALYZE` → **(1e)** validasi (`COUNT WHERE embedding IS NULL = 0`, 0 orphan records).
 
 - **Model:** `BAAI/bge-m3` (Hugging Face / sentence-transformers).
 - **Dimensi Vektor:** $1024$ dimensi (*vector padat (dense) Float32*).

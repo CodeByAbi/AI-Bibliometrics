@@ -142,7 +142,7 @@ flowchart TD
 
 ## 5. Lapisan Vector: Spesifikasi pgvector (Tabel `chunks`)
 
-> **Status: PENDING / BELUM SELESAI (Task 1).** DDL di bawah adalah spesifikasi terkunci yang belum dieksekusi — kolom `embedding`, kolom metadata, dan indeks HNSW belum ada di database. Setelah Task 1 selesai, rantai linkage yang berlaku: **article/research record (`publications`) → embedding input (`chunks.chunk_text` dari `Title + Abstract`) → embedding/vector (`chunks.embedding`) → database record (`chunks` ↔ `publications` via `publication_id`) → retrieval (`VectorRoute`)**.
+> **Status: DONE (Task 1).** DDL di bawah sudah dieksekusi dan diverifikasi — kolom `embedding vector(1024)`, kolom metadata (`embedding_model`, `embedding_version`, `embedding_dimension`), indeks HNSW (`idx_chunks_embedding_hnsw`), dan indeks FK (`idx_chunks_pub_id`) telah aktif di basis data PostgreSQL. Seluruh 40 chunk dokumen telah memiliki representasi vector lengkap 1024-dimensi model `BAAI/bge-m3`. Rantai linkage yang aktif: **article/research record (`publications`) → embedding input (`chunks.chunk_text` dari `Title + Abstract`) → embedding/vector (`chunks.embedding`) → database record (`chunks` ↔ `publications` via `publication_id`) → retrieval (`VectorRoute`)**.
 
 Tabel `chunks` bertindak sebagai indeks semantik berdimensi tinggi:
 
@@ -172,7 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_pub_id ON chunks (publication_id);
 Dua tabel edge dimaterialisasi secara idempoten dari tabel junction Silver (`pub_author` dan `pub_institution`):
 
 ```sql
--- Edge 1: Kolaborasi Antar-Institusi (PLANNED, Task 8)
+-- Edge 1: Kolaborasi Antar-Institusi (DONE, Task 8)
 CREATE TABLE IF NOT EXISTS institution_collaboration (
     institution_a       VARCHAR(64) NOT NULL REFERENCES institutions(institution_id) ON DELETE CASCADE,
     institution_b       VARCHAR(64) NOT NULL REFERENCES institutions(institution_id) ON DELETE CASCADE,
@@ -187,7 +187,7 @@ CREATE INDEX idx_inst_collab_a ON institution_collaboration (institution_a);
 CREATE INDEX idx_inst_collab_b ON institution_collaboration (institution_b);
 CREATE INDEX idx_inst_collab_weight ON institution_collaboration (weight DESC);
 
--- Edge 2: Co-Authorship Antar-Penulis (PLANNED, Task 8)
+-- Edge 2: Co-Authorship Antar-Penulis (DONE, Task 8)
 CREATE TABLE IF NOT EXISTS author_collaboration (
     author_a            VARCHAR(64) NOT NULL REFERENCES authors(author_id) ON DELETE CASCADE,
     author_b            VARCHAR(64) NOT NULL REFERENCES authors(author_id) ON DELETE CASCADE,

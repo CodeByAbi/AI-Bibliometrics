@@ -1,4 +1,4 @@
-# Schema Audit — 2026-09-28T15:43:00.686769+00:00
+# Schema Audit — 2026-09-28T19:42:40.442316+00:00
 
 **Status: MATCH** · target `postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` · role `postgres`
 
@@ -19,11 +19,15 @@ _none_
 - type drift: chunks.chunk_id live=varchar spec=bigint
 - type drift: chunks.section live=text spec=varchar
 
-## notes (6)
+## notes (10)
 - extra column (prototype-tolerated): publications.source_title
 - extra column (prototype-tolerated): publications.link
 - extra column (prototype-tolerated): publications.issn
 - extra column (prototype-tolerated): publications.search_text
 - extra column (prototype-tolerated): funding.source_text
 - extra column (prototype-tolerated): chunks.source_type
+- extra column (prototype-tolerated): chunks.embedding
+- extra column (prototype-tolerated): chunks.embedding_model
+- extra column (prototype-tolerated): chunks.embedding_version
+- extra column (prototype-tolerated): chunks.embedding_dimension
 

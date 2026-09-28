@@ -15,6 +15,7 @@ psycopg[binary]==3.3.6 # Kandidat #2 + driver sync scripts/verify_schema.py (imp
 sqlglot==30.20.0       # Validator whitelist 9 tabel kanonikal, root Select, LIMIT 50, COUNT(DISTINCT publication_id)
 
 # Utilities
+httpx==0.28.1           # Klien HTTP async untuk Ollama service & testing API
 python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose nilai dari env_file (.env tak pernah di-commit)
 
 # ---------------------------------------------------------------------------

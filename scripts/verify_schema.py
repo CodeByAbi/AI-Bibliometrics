@@ -17,9 +17,30 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import sys
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+
+# Load project .env so DB_URL resolves without manual export (python-dotenv
+# is pinned in requirements.txt). Silent no-op if package missing.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(pathlib.Path(__file__).resolve().parent.parent / ".env", override=False)
+except ImportError:  # pragma: no cover
+    pass
+
+# Windows libpq quirk: a stray %APPDATA%/postgresql/root.crt forces
+# verify-ca against the Supabase pooler's private CA and fails even with
+# sslmode=require. Reuse the parking helper from scripts/db.py when available.
+try:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    from scripts.db import park_windows_root_crt
+except ImportError:  # pragma: no cover — fallback: connect without parking
+    import contextlib
+
+    park_windows_root_crt = contextlib.nullcontext  # type: ignore[no-redef]
 
 # Driver: prefer psycopg v3 (docker image), fall back to psycopg2 (local dev).
 try:
@@ -151,7 +172,8 @@ def main() -> int:
 
     print(f"[verify_schema] driver={_DRIVER} target={safe_label(dsn)}")
     try:
-        conn = _driver.connect(dsn, connect_timeout=10, options="-c statement_timeout=10s")
+        with park_windows_root_crt():
+            conn = _driver.connect(dsn, connect_timeout=10, options="-c statement_timeout=10s")
     except Exception as exc:
         print(f"ERROR: connection failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         print("HINT (no secrets shown): verify host/port (Supabase pooler offers "
@@ -199,6 +221,15 @@ def main() -> int:
                     warnings.append(f"chunks ratio probe failed (non-fatal): {exc}")
                     conn.rollback()
 
+            cur.execute(
+                """
+                SELECT table_name
+                FROM information_schema.role_table_grants
+                WHERE grantee = current_user AND privilege_type = 'SELECT'
+                  AND table_schema = 'public';
+                """
+            )
+            granted = {r[0] for r in cur.fetchall()}
     # Gate 1: table + column presence (hard), type drift (warning).
     for table, expected_cols in EXPECTED.items():
         rep = {"missing_columns": [], "type_drift": {}, "extra_columns": []}
@@ -227,17 +258,6 @@ def main() -> int:
             warnings.append(f"no index covering {table}.{col} (AC-DB-3 wants it indexed)")
 
     # Gate 3: SELECT grants for the auditing role (informational, no write probes ever).
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT table_name
-                FROM information_schema.role_table_grants
-                WHERE grantee = current_user AND privilege_type = 'SELECT'
-                  AND table_schema = 'public';
-                """
-            )
-            granted = {r[0] for r in cur.fetchall()}
     for table in EXPECTED:
         if table in live and table not in granted:
             warnings.append(f"role '{db_user}' lacks SELECT on {table}")
