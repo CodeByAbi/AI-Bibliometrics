@@ -33,6 +33,42 @@ class TestSqlSecurityGate:
         sanitized = validate_and_sanitize_sql(sql)
         assert "LIMIT 50" in sanitized
 
+    def test_single_row_aggregate_exempt_from_limit(self):
+        """FR3.4: scalar aggregates must not gain an injected LIMIT."""
+        sql = "SELECT COUNT(DISTINCT p.publication_id) AS total_publications FROM publications p WHERE p.year = 2025;"
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "LIMIT" not in sanitized.upper()
+
+    def test_grouped_aggregate_keeps_limit_enforcement(self):
+        sql = """
+        SELECT a.author_name, COUNT(pa.publication_id) AS publication_count
+        FROM authors a
+        JOIN pub_author pa ON pa.author_id = a.author_id
+        GROUP BY a.author_name;
+        """
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "LIMIT 50" in sanitized
+
+    def test_union_inner_branch_limits_clamped(self):
+        sql = """
+        SELECT publication_id FROM publications LIMIT 1000
+        UNION ALL
+        SELECT publication_id FROM publications LIMIT 5;
+        """
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "LIMIT 1000" not in sanitized
+        assert "LIMIT 50" in sanitized
+        assert "LIMIT 5" in sanitized
+
+    def test_union_of_aggregates_stays_limit_free(self):
+        sql = """
+        SELECT COUNT(*) AS c FROM publications
+        UNION ALL
+        SELECT COUNT(*) AS c FROM authors;
+        """
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "LIMIT" not in sanitized.upper()
+
     def test_double_count_prevention_on_junction_join(self):
         """Verify COUNT is automatically upgraded to DISTINCT when junction tables are joined."""
         sql = """

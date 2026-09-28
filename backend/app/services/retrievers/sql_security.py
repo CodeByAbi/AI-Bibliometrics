@@ -76,6 +76,44 @@ PROHIBITED_FUNCTIONS: Set[str] = {
 }
 
 
+def _is_single_row_aggregate(select: exp.Select) -> bool:
+    """Detect scalar aggregate queries (pure COUNT/SUM/AVG/MIN/MAX, no GROUP BY)."""
+    if select.args.get("group") is not None:
+        return False
+    projections = select.expressions
+    if not projections:
+        return False
+    agg_funcs = (exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max)
+    for proj in projections:
+        inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
+        if not isinstance(inner, agg_funcs):
+            return False
+    return True
+
+
+def _limit_value(node: exp.Expression) -> int | None:
+    """Parse a LIMIT clause value, returning None when unparsable."""
+    try:
+        clause = node.args.get("limit")
+        if clause is None or clause.expression is None:
+            return None
+        return int(str(clause.expression.this))
+    except Exception:
+        return None
+
+
+def _enforce_limit(node: exp.Expression, is_aggregate: bool) -> None:
+    """Clamp LIMIT to at most 50 rows, exempting single-row aggregates (FR3.4)."""
+    current = _limit_value(node)
+    if is_aggregate:
+        # Single-row aggregates carry no LIMIT; only an excessive one is clamped.
+        if current is not None and current > 50:
+            node.set("limit", exp.Limit(expression=exp.Literal.number(50)))
+        return
+    if current is None or current > 50 or current <= 0:
+        node.set("limit", exp.Limit(expression=exp.Literal.number(50)))
+
+
 def validate_and_sanitize_sql(raw_sql: str) -> str:
     """Validate SQL query AST and enforce safety invariants.
 
@@ -86,7 +124,9 @@ def validate_and_sanitize_sql(raw_sql: str) -> str:
     4. Prohibits system catalog tables and dynamic schema traversal.
     5. Prohibits dangerous or internal pg_* functions.
     6. Double-count prevention: Enforces COUNT(DISTINCT ...) when junction tables are joined.
-    7. LIMIT enforcement: Injects or clamps LIMIT to at most 50 rows.
+    7. LIMIT enforcement: Injects or clamps LIMIT to at most 50 rows on the
+       outer statement and every UNION branch; single-row aggregates are
+       exempt from injection (FR3.4).
     """
     if not raw_sql or not raw_sql.strip():
         raise SqlSecurityError("SQL query string is empty")
@@ -141,20 +181,25 @@ def validate_and_sanitize_sql(raw_sql: str) -> str:
             # Enforce distinct on COUNT(...) when junction tables are joined
             if count_expr.this is not None and not isinstance(count_expr.this, exp.Distinct):
                 count_expr.set("this", exp.Distinct(expressions=[count_expr.this]))
-    # Invariant 5: LIMIT 50 Enforcement
-    # Apply limit to root select if not present or exceeds 50
-    limit_clause = parsed.args.get("limit")
-    if limit_clause is None:
-        parsed = parsed.limit(50)
-    else:
-        try:
-            limit_val_expr = limit_clause.expression
-            if limit_val_expr is not None:
-                limit_val = int(str(limit_val_expr.this))
-                if limit_val > 50 or limit_val <= 0:
-                    parsed = parsed.limit(50)
-        except Exception:
-            parsed = parsed.limit(50)
+    # Invariant 5: LIMIT 50 Enforcement (FR3.4)
+    # Clamp the outer statement and every UNION branch. Nested subqueries
+    # keep their own limits; the table whitelist still applies to them.
+    if isinstance(parsed, exp.Select):
+        _enforce_limit(parsed, _is_single_row_aggregate(parsed))
+    for union in parsed.find_all(exp.Union):
+        # Enforce on direct SELECT sides only; nested subqueries keep their
+        # own limits while the table whitelist still applies to them.
+        for side in (union.this, union.expression):
+            if isinstance(side, exp.Select):
+                _enforce_limit(side, _is_single_row_aggregate(side))
+        subtree = [s for s in union.find_all(exp.Select)]
+        if subtree and all(_is_single_row_aggregate(s) for s in subtree):
+            # UNION of pure aggregates: clamp only, never inject (FR3.4).
+            current = _limit_value(union)
+            if current is not None and current > 50:
+                union.set("limit", exp.Limit(expression=exp.Literal.number(50)))
+        else:
+            _enforce_limit(union, False)
 
     # Generate sanitized postgres SQL
     sanitized_sql = parsed.sql(dialect="postgres")
