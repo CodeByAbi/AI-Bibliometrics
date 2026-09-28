@@ -48,9 +48,10 @@ async def check_ollama_health() -> tuple[LLMServiceHealth, EmbeddingServiceHealt
         error=error_msg if not connected else None,
     )
 
-    # Embedding service status: ready if stored in pgvector, plus Ollama bge-m3 if available
+    # Embedding service status: ready if Ollama reachable (bge-m3), else unreachable.
+    # Stored pgvector rows are probed separately by check_db_health().pgvector_ready.
     embed_health = EmbeddingServiceHealth(
-        status="ready" if connected or True else "unreachable",
+        status="ready" if connected else "unreachable",
         model=settings.embedding_model,
         dimension=settings.embedding_dimension,
         source="pgvector (stored) + Ollama/HF",
