@@ -53,8 +53,9 @@ def create_app() -> FastAPI:
     # 2. Add HTTP Middlewares (Starlette executes last-added outermost,
     # so add inner-most first: RateLimit -> Tracing -> CORS gives
     # CORS -> Tracing -> RateLimit execution, keeping X-Request-ID on 429s)
-    # Rate limiting: 60 requests/min per IP (innermost, runs inside tracing)
-    app.add_middleware(RateLimitingMiddleware, requests_per_minute=60)
+    # Rate limiting: 20 requests/min per IP per docs/08 section 3
+    # (innermost, runs inside tracing)
+    app.add_middleware(RateLimitingMiddleware, requests_per_minute=20)
 
     # Tracing: UUIDv4 request_id generation & latency measurement
     app.add_middleware(RequestTracingMiddleware)

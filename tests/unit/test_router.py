@@ -103,6 +103,20 @@ class TestEntityResolutionGate:
         assert auth is not None
         assert "Septi Gumiandari" in auth
 
+    @pytest.mark.asyncio
+    async def test_query_phrasing_is_not_a_name(self):
+        auth, inst = await EntityResolutionGate.extract_candidate_names(
+            "Siapa 5 penulis paling produktif tahun 2025?"
+        )
+        assert auth is None
+
+    @pytest.mark.asyncio
+    async def test_institution_phrasing_is_not_a_name(self):
+        _, inst = await EntityResolutionGate.extract_candidate_names(
+            "Tampilkan institusi paling produktif tahun 2025?"
+        )
+        assert inst is None
+
     def test_normalize_text(self):
         assert normalize_text("Gumiandari, Septi!") == "gumiandari septi"
         assert normalize_text("  Universitas   Andalas. ") == "universitas andalas"

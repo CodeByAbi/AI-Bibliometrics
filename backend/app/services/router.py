@@ -96,6 +96,26 @@ def normalize_text(text: str) -> str:
     return " ".join(clean.split())
 
 
+# Tokens that mark a regex capture as query phrasing rather than a person or
+# institution name (e.g. "penulis paling produktif" is not a person).
+_NON_NAME_TOKENS = frozenset({
+    "top", "most", "paling", "terbanyak", "teratas", "terbaik", "utama",
+    "produktif", "prolific", "productive", "active", "aktif", "cited",
+    "sitasi", "publikasi", "paper", "papers", "artikel", "tahun", "total",
+    "jumlah", "berapa", "siapa", "daftar", "tampilkan", "sebutkan",
+    "penulis", "author", "authors", "peneliti", "institusi", "institution",
+    "kolaborasi", "collaboration", "jaringan", "network", "tren", "trend",
+    "indonesia", "scopus", "database", "yang", "dan", "dari", "dengan",
+    "tentang", "mengenai", "terkait",
+})
+
+
+def _looks_like_name(captured: str) -> bool:
+    """Reject captures containing query phrasing instead of a real name."""
+    tokens = normalize_text(captured).split()
+    return bool(tokens) and not any(t in _NON_NAME_TOKENS for t in tokens)
+
+
 class QuestionRouter:
     """Rule-based question intent classifier mapping queries to one of 4 RAG routes."""
 
@@ -220,8 +240,8 @@ class EntityResolutionGate:
             )
             if auth_match:
                 extracted = auth_match.group(1).strip()
-                # Exclude common query words
-                if extracted.lower() not in {"top", "most", "paling", "terbanyak", "teratas", "indonesia"}:
+                # Exclude captures that are query phrasing, not person names
+                if _looks_like_name(extracted):
                     author_name = extracted
 
         if not institution_name:
@@ -235,7 +255,7 @@ class EntityResolutionGate:
             )
             if inst_match:
                 extracted = inst_match.group(1).strip()
-                if extracted.lower() not in {"indonesia", "tahun", "scopus", "database"}:
+                if _looks_like_name(extracted):
                     institution_name = extracted
 
         return author_name, institution_name
