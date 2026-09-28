@@ -21,3 +21,7 @@ Thumbs.db
 
 # Local tooling
 *.log
+
+# Frontend / local indexes (never commit installs or caches)
+node_modules/
+.codegraph/
