@@ -169,6 +169,18 @@ def _enforce_limit(node: exp.Expression, is_aggregate: bool) -> None:
         node.set("limit", exp.Limit(expression=exp.Literal.number(50)))
 
 
+def _alias_table_map(parsed: exp.Expression) -> Dict[str, str]:
+    """Map every table alias (and bare name) to its real table across the statement."""
+    mapping: Dict[str, str] = {}
+    for tbl in parsed.find_all(exp.Table):
+        name = tbl.name.lower()
+        mapping.setdefault(name, name)
+        alias = tbl.args.get("alias")
+        if alias is not None and alias.alias_or_name:
+            mapping[str(alias.alias_or_name).lower()] = name
+    return mapping
+
+
 def _validate_columns(parsed: exp.Expression) -> None:
     """Enforce the explicit column whitelist; wildcards are retryable failures."""
     for star in parsed.find_all(exp.Star):
@@ -188,11 +200,7 @@ def _validate_columns(parsed: exp.Expression) -> None:
 
     # Alias -> real table across the whole statement (aliases are unique
     # in every query our templates and prompt produce).
-    alias_map: Dict[str, str] = {}
-    for tbl in parsed.find_all(exp.Table):
-        alias = tbl.args.get("alias")
-        if alias is not None and alias.alias_or_name:
-            alias_map[str(alias.alias_or_name).lower()] = tbl.name.lower()
+    alias_map = _alias_table_map(parsed)
 
     select_aliases = {
         str(a.alias).lower() for a in parsed.find_all(exp.Alias) if a.alias
@@ -221,7 +229,7 @@ def _validate_columns(parsed: exp.Expression) -> None:
             )
 
 
-def validate_and_sanitize_sql(raw_sql: str) -> str:
+def validate_and_sanitize_sql(raw_sql: str, aggregate_intent: bool = False) -> str:
     """Validate SQL query AST and enforce safety invariants.
 
     Invariants enforced:
@@ -236,6 +244,8 @@ def validate_and_sanitize_sql(raw_sql: str) -> str:
     7. LIMIT enforcement: Injects or clamps LIMIT to at most 50 rows on the
        outer statement and every UNION branch; single-row aggregates are
        exempt from injection (FR3.4).
+    8. Aggregate-shape gate (FR3.5): with aggregate_intent=True the query
+       must contain an aggregate function or GROUP BY.
     """
     if not raw_sql or not raw_sql.strip():
         raise SqlSecurityError("SQL query string is empty")
@@ -286,16 +296,54 @@ def validate_and_sanitize_sql(raw_sql: str) -> str:
         ):
             raise SqlSecurityError(f"Execution of prohibited function '{func_name}' is forbidden")
 
-    # Invariant 4: Double-Count Prevention on Junction Joins
-    # If any junction table is referenced in FROM/JOIN, enforce DISTINCT in COUNT expressions
+    # Invariant 4: Double-Count Prevention on Junction Joins (FR3.6)
+    # Every COUNT over a junction join is normalized to the publication
+    # grain: COUNT(DISTINCT <junction-alias>.publication_id).
     referenced_tables = {tbl.name.lower() for tbl in tables_found}
     has_junction_join = any(j in referenced_tables for j in JUNCTION_TABLES)
 
     if has_junction_join:
+        alias_map = _alias_table_map(parsed)
+        grains = [
+            a for a, real in alias_map.items()
+            if real in JUNCTION_TABLES and a != real
+        ] or [
+            a for a, real in alias_map.items() if real in JUNCTION_TABLES
+        ]
+        grain = grains[0] if grains else None
         for count_expr in parsed.find_all(exp.Count):
-            # Enforce distinct on COUNT(...) when junction tables are joined
-            if count_expr.this is not None and not isinstance(count_expr.this, exp.Distinct):
-                count_expr.set("this", exp.Distinct(expressions=[count_expr.this]))
+            arg = count_expr.this
+            if isinstance(arg, exp.Distinct):
+                inner = arg.expressions[0] if arg.expressions else None
+                if (
+                    isinstance(inner, exp.Column)
+                    and inner.name.lower() == "publication_id"
+                ):
+                    continue
+            if grain is not None:
+                count_expr.set(
+                    "this",
+                    exp.Distinct(
+                        expressions=[
+                            exp.column("publication_id", table=grain),
+                        ]
+                    ),
+                )
+            elif arg is not None and not isinstance(arg, exp.Distinct):
+                count_expr.set("this", exp.Distinct(expressions=[arg]))
+
+    # Invariant: Aggregate-Shape Check (FR3.5)
+    # Aggregate-intent questions must produce COUNT/SUM/AVG/MIN/MAX or GROUP BY.
+    if aggregate_intent:
+        has_agg = any(
+            parsed.find_all(exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max)
+        )
+        has_group = any(parsed.find_all(exp.Group))
+        if not has_agg and not has_group:
+            raise SqlSecurityError(
+                "Aggregate-intent question produced a non-aggregate query; "
+                "regenerate with COUNT/SUM/AVG or GROUP BY"
+            )
     # Invariant 5: LIMIT 50 Enforcement (FR3.4)
     # Clamp the outer statement and every UNION branch. Nested subqueries
     # keep their own limits; the table whitelist still applies to them.

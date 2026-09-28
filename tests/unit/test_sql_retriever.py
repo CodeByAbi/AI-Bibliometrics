@@ -70,6 +70,22 @@ class TestSqlRetrieverGenerator:
         assert "A1'; DROP TABLE authors; --" in params
 
 
+class TestAggregateIntent:
+    """Aggregate-intent detection must fire on computed numbers, not rankings."""
+
+    def test_count_question_is_aggregate(self):
+        assert SqlRetriever.detect_aggregate_intent("Berapa total publikasi pada tahun 2025?") is True
+
+    def test_average_question_is_aggregate(self):
+        assert SqlRetriever.detect_aggregate_intent("Berapa rata-rata sitasi per tahun?") is True
+
+    def test_ranked_list_is_not_aggregate(self):
+        assert SqlRetriever.detect_aggregate_intent("Tampilkan top 5 publikasi dengan sitasi terbanyak") is False
+
+    def test_conceptual_question_is_not_aggregate(self):
+        assert SqlRetriever.detect_aggregate_intent("Paper tentang stres oksidatif") is False
+
+
 class TestExtractLimit:
     """Years must never be mistaken for result limits."""
 

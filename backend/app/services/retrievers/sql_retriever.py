@@ -90,6 +90,20 @@ class SqlRetriever:
                 return val
         return default
 
+    #: Keywords signalling a computed-number question (FR3.5). Pure ranking
+    #: phrasing ("top N ... terbanyak") is excluded: ranked lists over stored
+    #: columns need no aggregate function.
+    AGGREGATE_INTENT_RE = re.compile(
+        r"\b(berapa|jumlah|total|hitung|count|how\s+many|rata|rerata|average|mean|"
+        r"distribusi|distribution|per\s*tahun|grouped)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def detect_aggregate_intent(cls, question: str) -> bool:
+        """Detect whether the question asks for a computed aggregate number."""
+        return cls.AGGREGATE_INTENT_RE.search(question.strip()) is not None
+
     @classmethod
     def generate_deterministic_sql(
         cls,
@@ -319,7 +333,10 @@ class SqlRetriever:
             params = []
 
         # 3. Validate and sanitize SQL with sqlglot AST security gate
-        sanitized_sql = validate_and_sanitize_sql(sql_query)
+        sanitized_sql = validate_and_sanitize_sql(
+            sql_query,
+            aggregate_intent=cls.detect_aggregate_intent(question),
+        )
 
         # 4. Execute query on PostgreSQL with bound parameters
         start_t = time.perf_counter()

@@ -111,6 +111,44 @@ class TestSqlSecurityGate:
         sanitized = validate_and_sanitize_sql(sql)
         assert "COUNT(DISTINCT pa.publication_id)" in sanitized or "COUNT(DISTINCT" in sanitized
 
+    def test_junction_count_normalized_to_publication_grain(self):
+        sql = """
+        SELECT COUNT(a.author_id) AS c
+        FROM authors a
+        JOIN pub_author pa ON pa.author_id = a.author_id;
+        """
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "COUNT(DISTINCT pa.publication_id)" in sanitized
+
+    def test_junction_count_star_normalized_to_publication_grain(self):
+        sql = "SELECT COUNT(*) AS c FROM publications p JOIN pub_author pa ON pa.publication_id = p.publication_id;"
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "COUNT(DISTINCT pa.publication_id)" in sanitized
+
+    def test_plain_count_star_untouched_without_junction(self):
+        sql = "SELECT COUNT(*) AS c FROM publications;"
+        sanitized = validate_and_sanitize_sql(sql)
+        assert "COUNT(*)" in sanitized
+        assert "LIMIT" not in sanitized.upper()
+
+    def test_aggregate_intent_rejects_plain_list(self):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql(
+                "SELECT title FROM publications;",
+                aggregate_intent=True,
+            )
+        assert "aggregate" in str(exc_info.value.message).lower()
+
+    def test_aggregate_intent_accepts_grouped_query(self):
+        sql = """
+        SELECT a.author_name, COUNT(DISTINCT pa.publication_id) AS publication_count
+        FROM authors a
+        JOIN pub_author pa ON pa.author_id = a.author_id
+        GROUP BY a.author_name;
+        """
+        sanitized = validate_and_sanitize_sql(sql, aggregate_intent=True)
+        assert "GROUP BY" in sanitized
+
     @pytest.mark.parametrize(
         "destructive_sql,expected_msg",
         [
