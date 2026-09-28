@@ -111,6 +111,60 @@ class TestExtractLimit:
         assert SqlRetriever.extract_limit("Tampilkan top 7 publikasi terbaik") == 7
 
 
+class TestYearRangeAndGrouping:
+    """Year ranges, normalized GROUP BY, and ignored-filter reporting."""
+
+    def test_year_between_filter(self):
+        sql, params = SqlRetriever.generate_deterministic_sql(
+            "Berapa total publikasi?",
+            filters=FilterParams(year_from=2020, year_to=2023),
+        )
+        assert sql is not None
+        assert "BETWEEN" in sql
+        assert params[:2] == [2020, 2023]
+
+    def test_year_from_only(self):
+        sql, params = SqlRetriever.generate_deterministic_sql(
+            "Berapa total publikasi?",
+            filters=FilterParams(year_from=2021),
+        )
+        assert "p.year >=" in sql
+        assert 2021 in params
+
+    def test_explicit_year_beats_free_text_year(self):
+        sql, params = SqlRetriever.generate_deterministic_sql(
+            "Berapa total publikasi pada tahun 2025?",
+            filters=FilterParams(year=2022),
+        )
+        assert params[0] == 2022
+        assert 2025 not in params
+
+    def test_rankings_group_by_normalized_keys(self):
+        sql, _ = SqlRetriever.generate_deterministic_sql("Siapa 5 penulis paling produktif tahun 2025?")
+        assert "GROUP BY a.author_id, a.author_name_normalized" in sql
+        sql, _ = SqlRetriever.generate_deterministic_sql("Tampilkan top 5 institusi teratas")
+        assert "GROUP BY i.institution_id, i.institution_name_normalized" in sql
+
+    @pytest.mark.asyncio
+    async def test_unused_filters_reported(self):
+        result = await SqlRetriever.retrieve(
+            _FakeConn(),
+            "Berapa total publikasi pada tahun 2025?",
+            filters=FilterParams(year=2025, topic_name="Stem Cell", country="indonesia"),
+        )
+        assert "topic_name" in result.filters_ignored
+        assert "country" in result.filters_ignored
+
+    @pytest.mark.asyncio
+    async def test_consumed_filters_not_reported(self):
+        result = await SqlRetriever.retrieve(
+            _FakeConn(),
+            "Berapa total publikasi pada tahun 2025?",
+            filters=FilterParams(year=2025, author_name="Gumiandari"),
+        )
+        assert result.filters_ignored == []
+
+
 class TestSingleRetry:
     """One regeneration carrying AST error context before structured failure (FR3.3)."""
 

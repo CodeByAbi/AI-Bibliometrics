@@ -59,6 +59,10 @@ class SqlRetrievalResult(BaseModel):
     rows: List[Dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
     execution_time_ms: float = 0.0
+    filters_ignored: List[str] = Field(
+        default_factory=list,
+        description="Filter names set by the caller but unused by the executed template",
+    )
 
     @property
     def is_empty(self) -> bool:
@@ -130,20 +134,30 @@ class SqlRetriever:
             params.append(value)
             return f"${len(params)}"
 
-        # Extract year from question or filters
-        year_filter: Optional[int] = None
-        if filters and filters.year:
-            year_filter = filters.year
+        # Year scoping honors explicit filters first, free-text year second.
+        # Operator enums (gt/between/...) are deferred to Fase 7 Hybrid.
+        year_clauses: List[str] = []
+        f_year = filters.year if filters else None
+        f_from = filters.year_from if filters else None
+        f_to = filters.year_to if filters else None
+        if f_year is not None:
+            year_clauses.append(f"p.year = {_ph(f_year)}")
         else:
-            year_match = re.search(r"\b(20\d\d|19\d\d)\b", q)
-            if year_match:
-                year_filter = int(year_match.group(1))
+            if f_from is not None and f_to is not None:
+                year_clauses.append(f"p.year BETWEEN {_ph(f_from)} AND {_ph(f_to)}")
+            elif f_from is not None:
+                year_clauses.append(f"p.year >= {_ph(f_from)}")
+            elif f_to is not None:
+                year_clauses.append(f"p.year <= {_ph(f_to)}")
+            else:
+                year_match = re.search(r"\b(20\d\d|19\d\d)\b", q)
+                if year_match:
+                    year_clauses.append(f"p.year = {_ph(int(year_match.group(1)))}")
 
         # 1. Top productive authors
         if any(term in q for term in ["penulis paling produktif", "most productive author", "top author", "penulis teratas", "author paling produktif", "most prolific author"]):
             where_clauses = []
-            if year_filter:
-                where_clauses.append(f"p.year = {_ph(year_filter)}")
+            where_clauses.extend(year_clauses)
             if filters and filters.country:
                 where_clauses.append(f"i.country ILIKE '%' || {_ph(filters.country)} || '%'")
 
@@ -159,7 +173,7 @@ class SqlRetriever:
                 JOIN pub_institution pi ON pi.publication_id = p.publication_id
                 JOIN institutions i ON i.institution_id = pi.institution_id
                 {where_str}
-                GROUP BY a.author_name
+                GROUP BY a.author_id, a.author_name_normalized
                 ORDER BY publication_count DESC, a.author_name ASC
                 LIMIT {limit};
                 """, params
@@ -170,7 +184,7 @@ class SqlRetriever:
                 JOIN pub_author pa ON pa.author_id = a.author_id
                 JOIN publications p ON p.publication_id = pa.publication_id
                 {where_str}
-                GROUP BY a.author_name
+                GROUP BY a.author_id, a.author_name_normalized
                 ORDER BY publication_count DESC, a.author_name ASC
                 LIMIT {limit};
                 """, params
@@ -178,8 +192,7 @@ class SqlRetriever:
         # 2. Most cited publications
         if any(term in q for term in ["sitasi terbanyak", "most cited", "highest citation", "paling banyak disitasi"]):
             where_clauses = []
-            if year_filter:
-                where_clauses.append(f"p.year = {_ph(year_filter)}")
+            where_clauses.extend(year_clauses)
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
             SELECT p.publication_id, p.title, p.year, p.doi, p.citation_count
@@ -192,8 +205,7 @@ class SqlRetriever:
         # 3. Total publications / count
         if any(term in q for term in ["berapa jumlah publikasi", "total publikasi", "how many publications", "count of publications", "total paper", "jumlah paper"]):
             where_clauses = []
-            if year_filter:
-                where_clauses.append(f"p.year = {_ph(year_filter)}")
+            where_clauses.extend(year_clauses)
             if resolved_author_id:
                 where_clauses.append(f"pa.author_id = {_ph(resolved_author_id)}")
             if resolved_institution_id:
@@ -223,8 +235,7 @@ class SqlRetriever:
         # 4. Top institutions
         if any(term in q for term in ["top institusi", "institusi teratas", "top institutions", "most productive institution", "institusi paling produktif"]):
             where_clauses = []
-            if year_filter:
-                where_clauses.append(f"p.year = {_ph(year_filter)}")
+            where_clauses.extend(year_clauses)
             if filters and filters.country:
                 where_clauses.append(f"i.country ILIKE '%' || {_ph(filters.country)} || '%'")
 
@@ -235,7 +246,7 @@ class SqlRetriever:
             JOIN pub_institution pi ON pi.institution_id = i.institution_id
             JOIN publications p ON p.publication_id = pi.publication_id
             {where_str}
-            GROUP BY i.institution_name
+            GROUP BY i.institution_id, i.institution_name_normalized
             ORDER BY publication_count DESC, i.institution_name ASC
             LIMIT {limit};
             """, params
@@ -244,8 +255,7 @@ class SqlRetriever:
         if any(term in q for term in ["daftar publikasi", "list publications", "show publications", "tampilkan publikasi", "artikel pada tahun", "paper in year"]):
             where_clauses = []
             joins = ""
-            if year_filter:
-                where_clauses.append(f"p.year = {_ph(year_filter)}")
+            where_clauses.extend(year_clauses)
             if resolved_author_id:
                 joins += " JOIN pub_author pa ON pa.publication_id = p.publication_id"
                 where_clauses.append(f"pa.author_id = {_ph(resolved_author_id)}")
@@ -375,4 +385,41 @@ class SqlRetriever:
             rows=rows,
             row_count=len(rows),
             execution_time_ms=elapsed_ms,
+            filters_ignored=cls.unused_filters(sql_query, filters, resolved_author_id, resolved_institution_id),
         )
+
+    @classmethod
+    def unused_filters(
+        cls,
+        sql_query: str,
+        filters: Optional[FilterParams] = None,
+        resolved_author_id: Optional[str] = None,
+        resolved_institution_id: Optional[str] = None,
+    ) -> List[str]:
+        """List caller-set filters the executed template did not consume."""
+        if not filters:
+            return []
+        lowered = sql_query.lower()
+        ignored: List[str] = []
+        # topic_name / document_type have no Phase 3 SQL template yet.
+        if filters.topic_name:
+            ignored.append("topic_name")
+        if filters.document_type:
+            ignored.append("document_type")
+        # A name/country filter counts as consumed only via an ILIKE predicate
+        # or a resolved canonical binding; bare SELECT/GROUP BY mentions do not count.
+        if filters.country and "country ilike" not in lowered:
+            ignored.append("country")
+        if (
+            filters.author_name
+            and "author_name ilike" not in lowered
+            and not resolved_author_id
+        ):
+            ignored.append("author_name")
+        if (
+            filters.institution_name
+            and "institution_name ilike" not in lowered
+            and not resolved_institution_id
+        ):
+            ignored.append("institution_name")
+        return ignored
