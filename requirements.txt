@@ -30,8 +30,8 @@ python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose n
 #   sudah DONE server-side; paket Python baru dibutuhkan saat skrip embedding ada.
 # Task 3/6/9 (TBD-3/TBD-5): httpx — klien HTTP standar ke Ollama (Qwen2.5-Coder-7B)
 #   dan test API. Docs hanya mengunci "klien HTTP standar", bukan library-nya.
-# Task 2/12 (TBD-3): pytest + pytest-asyncio (+ pytest-cov/pytest-mock sesuai
-#   AGENTS.md) — tests/ saat ini hanya berisi .gitkeep, belum ada kode uji.
+# Task 2/12: pytest + pytest-asyncio + pytest-mock ter-install dan dipakai
+#   tests/unit + tests/integration (gate coverage pytest-cov menyusul Fase 8).
 # Task 8.5: pandas / scikit-learn / networkx / bertopic untuk Gold analytics
 #   (topics, topic_evolution, researcher_expertise) — docs/09 §8 menulis
 #   "BERTopic/co-word + Pandas/sklearn/NetworkX" sebagai alternatif, belum final.
