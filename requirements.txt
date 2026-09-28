@@ -1,0 +1,43 @@
+# AI-Bibliometrics — backend dependencies (Phase 0 lock, 2026-09-28)
+
+# API / Backend 
+fastapi==0.141.1       # POST /api/v1/ask + GET /api/v1/health; validasi Pydantic v2, X-Request-ID
+uvicorn==0.54.0        # ASGI server; dipakai docker/backend.Dockerfile CMD
+pydantic==2.13.5       # Skema AskRequest/AskResponse/EvidenceObject (docs/05 §4.1, docs/06 §5)
+
+# Database — PostgreSQL / Supabase, role app_readonly 
+# Pilihan driver async (asyncpg vs psycopg3) 
+# pool async siap tanpa menebak — BUKAN duplikasi, dan tidak menambah keputusan baru.
+asyncpg==0.31.0        # Kandidat pool async #1 untuk runtime FastAPI (statement_timeout 10s)
+psycopg[binary]==3.3.6 # Kandidat #2 + driver sync scripts/verify_schema.py (import psycopg)
+
+# RAG / Retrieval — SQL AST gate 
+sqlglot==30.20.0       # Validator whitelist 9 tabel kanonikal, root Select, LIMIT 50, COUNT(DISTINCT publication_id)
+
+# Utilities
+python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose nilai dari env_file (.env tak pernah di-commit)
+
+# ---------------------------------------------------------------------------
+# TBD / FUTURE — SENGAJA TIDAK DI-INSTALL. Jangan uncomment sebelum Task terkait
+# (docs/09 §9). Mencantumkan di sini sebagai komentar agar tidak ada technical
+# decision baru yang tersembunyi di lockfile.
+# ---------------------------------------------------------------------------
+# Task 1 (TBD-4/TBD-5): sentence-transformers (+ torch sebagai transitive) untuk
+#   batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py (BELUM ADA).
+#   Path online query-embedding (lokal vs endpoint Ollama) masih TBD-5.
+# Task 1c: pgvector (paket PyPI, helper insert vector) — ekstensi DB `vector`
+#   sudah DONE server-side; paket Python baru dibutuhkan saat skrip embedding ada.
+# Task 3/6/9 (TBD-3/TBD-5): httpx — klien HTTP standar ke Ollama (Qwen2.5-Coder-7B)
+#   dan test API. Docs hanya mengunci "klien HTTP standar", bukan library-nya.
+# Task 2/12 (TBD-3): pytest + pytest-asyncio (+ pytest-cov/pytest-mock sesuai
+#   AGENTS.md) — tests/ saat ini hanya berisi .gitkeep, belum ada kode uji.
+# Task 8.5: pandas / scikit-learn / networkx / bertopic untuk Gold analytics
+#   (topics, topic_evolution, researcher_expertise) — docs/09 §8 menulis
+#   "BERTopic/co-word + Pandas/sklearn/NetworkX" sebagai alternatif, belum final.
+# DITOLAK / DITUNDA eksplisit per docs (jangan ajukan ulang tanpa ADR):
+#   langchain, llama-index (ditolak docs/09 §5); celery, redis (Fase 10);
+#   apache-age / ext graf mandiri (evaluasi Fase 9); supabase-py (akses via
+#   driver Postgres langsung); openpyxl/numpy langsung (cleaning DONE, tanpa
+#   kode xlsx; numpy datang transitif via stack ML bila Task 1/8.5 dimulai).
+# Secret/credential (DB_URL, password, API key, isi .env) TIDAK PERNAH masuk file ini.
+
