@@ -9,9 +9,7 @@ import contextlib
 from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
-from backend.app.core.config import get_settings
 from backend.app.core.errors import register_error_handlers
 from backend.app.core.logging import logger
 from backend.app.core.middleware import RateLimitingMiddleware, RequestTracingMiddleware
@@ -38,7 +36,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Application factory configuring middleware, routes, and security boundaries."""
-    settings = get_settings()
 
     app = FastAPI(
         title="AI-Bibliometrics Research Intelligence API",
@@ -53,12 +50,14 @@ def create_app() -> FastAPI:
     # 1. Register global exception handlers (sanitizes error outputs)
     register_error_handlers(app)
 
-    # 2. Add HTTP Middlewares (outer to inner execution order)
+    # 2. Add HTTP Middlewares (Starlette executes last-added outermost,
+    # so add inner-most first: RateLimit -> Tracing -> CORS gives
+    # CORS -> Tracing -> RateLimit execution, keeping X-Request-ID on 429s)
+    # Rate limiting: 60 requests/min per IP (innermost, runs inside tracing)
+    app.add_middleware(RateLimitingMiddleware, requests_per_minute=60)
+
     # Tracing: UUIDv4 request_id generation & latency measurement
     app.add_middleware(RequestTracingMiddleware)
-
-    # Rate limiting: 60 requests/min per IP
-    app.add_middleware(RateLimitingMiddleware, requests_per_minute=60)
 
     # CORS: Restricted origins
     origins = [

@@ -70,7 +70,7 @@ def materialize_institution_edges(cur) -> dict:
     duration = time.perf_counter() - start
     logger.info("institution_collaboration materialized: %d edges in %.2f seconds (invalid_order=%d, empty_prov=%d)", count, duration, invalid_order, empty_prov)
     if top_edge:
-        logger.info("Top institution edge: %s <-> %s (weight=%d, pubs=%s)", top_edge[0], top_edge[1], top_edge[2], top_edge[3][:3])
+        logger.info("Top institution edge: %s <-> %s (weight=%d, pubs=%s)", top_edge[0], top_edge[1], top_edge[2], (top_edge[3] or [])[:3])
 
     return {
         "count": count,
@@ -119,7 +119,7 @@ def materialize_author_edges(cur) -> dict:
     duration = time.perf_counter() - start
     logger.info("author_collaboration materialized: %d edges in %.2f seconds (invalid_order=%d, empty_prov=%d)", count, duration, invalid_order, empty_prov)
     if top_edge:
-        logger.info("Top author edge: %s <-> %s (weight=%d, pubs=%s)", top_edge[0], top_edge[1], top_edge[2], top_edge[3][:3])
+        logger.info("Top author edge: %s <-> %s (weight=%d, pubs=%s)", top_edge[0], top_edge[1], top_edge[2], (top_edge[3] or [])[:3])
 
     return {
         "count": count,
@@ -131,6 +131,8 @@ def materialize_author_edges(cur) -> dict:
 
 def main() -> int:
     logger.info("Starting graph edge materialization...")
+    inst_res = None
+    auth_res = None
     with get_db_connection(autocommit=False) as conn:
         try:
             with conn.cursor() as cur:
@@ -150,6 +152,10 @@ def main() -> int:
     grant_rc = grant_main()
     if grant_rc != 0:
         logger.warning("Grant script returned non-zero code %d", grant_rc)
+
+    if inst_res is None or auth_res is None:
+        logger.error("Materialization did not complete (DB connection failed before queries).")
+        return 1
 
     if inst_res["invalid_order"] > 0 or inst_res["empty_provenance"] > 0:
         logger.error("Institution edge validation failed: %s", inst_res)

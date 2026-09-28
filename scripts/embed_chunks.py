@@ -106,9 +106,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--resume",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Resume embedding, skipping already embedded chunks (default: True)",
+        help="Resume embedding, skipping already embedded chunks (default: True; use --no-resume to disable)",
+    )
+    parser.add_argument(
+        "--allow-ollama-fallback",
+        action="store_true",
+        default=False,
+        help="Allow silent fallback to Ollama embeddings if SentenceTransformer load fails (default: False, fail fast)",
     )
     parser.add_argument(
         "--force",
@@ -260,6 +266,18 @@ def _persist_batch(
     _with_retry("persist_batch", _do, max_retries=max_retries, backoff=backoff)
 
 
+def _ollama_base() -> str:
+    """Ollama base URL honoring OLLAMA_HOST (Docker service name) over localhost."""
+    import os
+
+    try:
+        from backend.app.core.config import get_settings
+
+        return get_settings().ollama_host.rstrip("/")
+    except Exception:
+        return os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+
+
 def _embed_batch_ollama(
     *,
     ollama_model: str,
@@ -268,13 +286,14 @@ def _embed_batch_ollama(
     max_retries: int,
     backoff: float,
 ) -> list[list[float]]:
-    """Embed one batch via Ollama with per-item retry (localhost, WiFi-independent)."""
+    """Embed one batch via Ollama with per-item retry (honors OLLAMA_HOST)."""
+    base = _ollama_base()
     vectors: list[list[float]] = []
     for i, text in enumerate(texts):
         def _do_single() -> list[float]:
             req_data = json.dumps({"model": ollama_model, "prompt": text}).encode("utf-8")
             req = urllib.request.Request(
-                "http://127.0.0.1:11434/api/embeddings",
+                f"{base}/api/embeddings",
                 data=req_data,
                 headers={"Content-Type": "application/json"},
             )
@@ -378,13 +397,21 @@ def main() -> int:
         st_model = SentenceTransformer(args.model, device=args.device)
         logger.info("SentenceTransformer loaded successfully.")
     except Exception as exc:
+        if not args.allow_ollama_fallback:
+            logger.error(
+                "SentenceTransformer load failed (%s). Refusing silent backend switch "
+                "(embeddings would mix models). Re-run with --allow-ollama-fallback to use Ollama '%s'.",
+                exc,
+                ollama_model,
+            )
+            return 1
         logger.warning(
             "SentenceTransformer load encountered issue (%s). Using Ollama backend '%s'...",
             exc,
             ollama_model,
         )
         use_ollama = True
-        logger.info("Connecting to Ollama at http://127.0.0.1:11434 with model '%s'...", ollama_model)
+        logger.info("Connecting to Ollama at %s with model '%s'...", _ollama_base(), ollama_model)
 
     # 3. Encode + persist loop with keyset pagination and per-batch commit.
     last_id: Any | None = None
@@ -471,11 +498,12 @@ def main() -> int:
                     len(input_texts),
                 )
                 return 1
-            if len(batch_embeddings[0]) != args.dimension:
+            bad_dims = [len(v) for v in batch_embeddings if len(v) != args.dimension]
+            if bad_dims:
                 logger.error(
-                    "Embedding dimension mismatch: expected %d, got %d (batch %d). Aborting.",
+                    "Embedding dimension mismatch: expected %d, got %s (batch %d). Aborting.",
                     args.dimension,
-                    len(batch_embeddings[0]),
+                    bad_dims[:5],
                     batch_no,
                 )
                 return 1

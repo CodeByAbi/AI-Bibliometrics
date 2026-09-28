@@ -10,6 +10,7 @@ Contract: ``.env.example`` (DB_URL, OLLAMA_HOST, model IDs, timeouts).
 
 from __future__ import annotations
 
+import os
 import pathlib
 from functools import lru_cache
 from urllib.parse import urlparse
@@ -45,17 +46,23 @@ class Settings(BaseModel):
     ollama_timeout_s: int = Field(default=8, ge=1, le=120)
 
 
-def _from_env() -> Settings:
-    import os
+def _parse_int_env(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"Environment variable {name}={raw!r} is not a valid integer")
 
+
+def _from_env() -> Settings:
     return Settings(
         db_url=(os.environ.get("DB_URL", "") or "").strip().strip("'\""),
-        db_statement_timeout_ms=int(os.environ.get("DB_STATEMENT_TIMEOUT_MS", "10000")),
+        db_statement_timeout_ms=_parse_int_env("DB_STATEMENT_TIMEOUT_MS", "10000"),
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip(),
         llm_model=os.environ.get("LLM_MODEL", "qwen2.5-coder:7b-instruct").strip(),
         embedding_model=os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3").strip(),
-        embedding_dimension=int(os.environ.get("EMBEDDING_DIMENSION", "1024")),
-        ollama_timeout_s=int(os.environ.get("OLLAMA_TIMEOUT_S", "8")),
+        embedding_dimension=_parse_int_env("EMBEDDING_DIMENSION", "1024"),
+        ollama_timeout_s=_parse_int_env("OLLAMA_TIMEOUT_S", "8"),
     )
 
 

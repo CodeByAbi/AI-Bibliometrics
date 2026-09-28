@@ -83,9 +83,20 @@ def park_windows_root_crt() -> Iterator[None]:
 
     parked = False
     if crt_path.exists():
+        # Another concurrent run may have already parked (parked_path exists):
+        # skip rename to avoid clobbering instead of overwriting user files.
+        if parked_path.exists():
+            pass
+        else:
+            try:
+                crt_path.rename(parked_path)
+                parked = True
+            except OSError:
+                pass
+    elif parked_path.exists():
+        # Heal stale state from a previous crash (SIGKILL between rename/restore).
         try:
-            crt_path.rename(parked_path)
-            parked = True
+            parked_path.rename(crt_path)
         except OSError:
             pass
 
@@ -131,6 +142,12 @@ def get_db_connection(
         else:
             conn = driver.connect(dsn, connect_timeout=10)
             conn.autocommit = autocommit
+            # Mirror psycopg3 options="-c statement_timeout=..." (10s invariant).
+            try:
+                with conn.cursor() as _cur:  # type: ignore[union-attr]
+                    _cur.execute(f"SET statement_timeout = '{int(statement_timeout_ms)}ms'")  # type: ignore[arg-type]
+            except Exception:
+                pass
             if register_vec and _HAS_PGVECTOR and register_vector is not None:
                 try:
                     register_vector(conn)
