@@ -17,6 +17,9 @@ SNAPSHOT_DIR = (
     / "5617a9f61b028005a4858fdac845db406aefb181"
 )
 TARGET = SNAPSHOT_DIR / "pytorch_model.bin"
+PART = SNAPSHOT_DIR / "pytorch_model.bin.part"
+
+
 def download():
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
     if TARGET.exists() and TARGET.stat().st_size == 2271145830:
@@ -84,10 +87,6 @@ def download():
             time.sleep(2)
 
     return 1
-    print(f"Download complete: {downloaded} bytes.")
-    PART.rename(TARGET)
-    print("Renamed part to target.")
-    return 0
 
 
 if __name__ == "__main__":
