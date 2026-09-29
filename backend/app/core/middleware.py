@@ -135,7 +135,7 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
                 request_id=req_id,
                 error=ErrorDetail(
                     error_type="rate_limit_exceeded",
-                    message="Batas laju permintaan terlampaui (maksimal 60 request/menit). Silakan coba kembali beberapa saat lagi.",
+                    message=f"Batas laju permintaan terlampaui (maksimal {self.rpm} request/menit). Silakan coba kembali beberapa saat lagi.",
                     status_code=429,
                 ),
             )
