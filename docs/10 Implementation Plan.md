@@ -1,6 +1,6 @@
 # Rencana Implementasi — Urutan Build Menuju End-to-End (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
 **Menggantikan:** `10 Implementation Plan.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/00` hingga `docs/12`  
@@ -9,10 +9,10 @@
 > 1. **Database PostgreSQL & Vector Storage — DONE:** Basis data PostgreSQL aktif memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, serta tabel edge `institution_collaboration` dan `author_collaboration`.  
 > 2. **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`.  
 > 3. **Kerangka FastAPI & DB Pool (Task 2 & 3 / Phase 2) — DONE:** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi dengan 23 passing tests.  
-> 4. **IN PROGRESS (Phase 3):** `QuestionRouter` (Task 4) dan `SqlRetriever` tervalidasi AST `sqlglot` (Task 5) sudah terimplementasi sebagai irisan vertikal pertama dan hijau di `develop`; sign-off E2E penuh menyusul Task 12.
+> 4. **IN PROGRESS (Phase 3):** `QuestionRouter` (Task 4) dan `SqlRetriever` tervalidasi AST `sqlglot` (Task 5) sudah terimplementasi sebagai vertical slice pertama dan hijau di `develop`; sign-off E2E penuh menyusul Task 12.
 >
 > ### Progress Tracker (Sinkronisasi Phase 2 Selesai)
-> **DONE:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a-1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8 (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health) · Task 4 (QuestionRouter & EntityResolutionGate, slice hijau) · Task 5 (SqlRetriever & sqlglot AST gate, slice hijau).  
+> **DONE:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a-1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8 (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health) · Task 4 (QuestionRouter & EntityResolutionGate, green slice) · Task 5 (SqlRetriever & sqlglot AST gate, green slice).  
 > **NEXT:** Vertical Slice sign-off → Fase 4 (VectorRetriever, Task 6).
 ---
 
@@ -24,15 +24,15 @@
 | **Pembersihan Data (Cleaning) Scopus** | `DONE` | Baseline Prototipe | Data Scopus sudah dibersihkan sesuai aturan `docs/12 §3`; bukan pending |
 | **Kerangka FastAPI** | `DONE` | MVP | Kerangka FastAPI, `/api/v1/health`, `POST /api/v1/ask` contract, middleware `X-Request-ID`, rate limiting, error handling (Task 2) |
 | **Kontrak API v1** | `FOUNDATION DONE` | MVP | Kontrak `POST /api/v1/ask` dengan skema Pydantic v2 `EvidenceObject`, `AskResponse`, dan error envelope terstandarisasi (Task 2 & 10) |
-| **Router Pertanyaan** | `LIVE (Fase 3 slice)` | MVP | Router 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) + Gerbang Resolusi Entitas (Task 4) |
+| **Question Router** | `LIVE (Fase 3 slice)` | MVP | Router 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) + Entity Resolution Gate (Task 4) |
 | **SqlRetriever** | `LIVE (Fase 3 slice)` | MVP | Text-to-SQL + validasi AST `sqlglot` pada 9 tabel kanonikal + peran `app_readonly` (Task 5) |
 | **VectorRetriever** | `READY FOR RETRIEVER DEV` | MVP | `chunks.embedding` terisi 40/40 (1024-dim) + indeks HNSW aktif; siap untuk implementasi `VectorRetriever` (Task 6) |
-| **Lapisan Bukti (Evidence Layer)** | `NOT IMPLEMENTED` | MVP | `EvidenceUnifier` + `EvidenceRanker` + penegakan (enforcement) `EvidenceObject` (Task 7 & 9) |
+| **Evidence Layer** | `NOT IMPLEMENTED` | MVP | `EvidenceUnifier` + `EvidenceRanker` + `EvidenceObject` enforcement (Task 7 & 9) |
 | **Materialisasi Graf**| `DONE` (Tabel Edge) | MVP | `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) termaterialisasi idempoten (Task 8) |
 | **GraphRetriever** | `NOT IMPLEMENTED` | MVP | GraphRetriever + 4 templat Recursive CTE terparameterisasi T1–T4 (Task 8) |
-| **Mesin Analitik Gold**| `NOT IMPLEMENTED` | MVP | Komputasi `topics`, `topic_evolution`, dan `researcher_expertise` dari Silver kanonikal (Task 8.5) |
-| **Sintesiser Jawaban** | `NOT IMPLEMENTED` | MVP | Sintesiser LLM Analitik + `CitationVerifier` (`[Title, Year, DOI/no-doi]`) + not_found deterministik (Task 9) |
-| **UI Next.js** | `NOT IMPLEMENTED` | MVP | Tata letak padat Notion/Linear + sumber collapsible + inspektor Dev Mode (Task 11) |
+| **Mesin Gold Analytics**| `NOT IMPLEMENTED` | MVP | Komputasi `topics`, `topic_evolution`, dan `researcher_expertise` dari Silver kanonikal (Task 8.5) |
+| **Answer Synthesizer** | `NOT IMPLEMENTED` | MVP | LLM Analytics Synthesizer + `CitationVerifier` (`[Title, Year, DOI/no-doi]`) + deterministic not_found (Task 9) |
+| **UI Next.js** | `NOT IMPLEMENTED` | MVP | dense layout Notion/Linear + collapsible sources + Dev Mode inspector (Task 11) |
 | **Verifikasi E2E** | `NOT IMPLEMENTED` | MVP | Pengujian 12 kueri end-to-end pada dataset prototipe + baseline latensi (Task 12) |
 
 ---
@@ -73,12 +73,12 @@
 ### Task 3 — Setup Ollama & Model Qwen2.5-Coder-7B (DONE)
 - Client async Ollama untuk health probe model dan embedding service.
 - Model `bge-m3` dan `qwen2.5-coder:7b-instruct` terintegrasi pada endpoint health check.
-### Task 4 — Router Pertanyaan & Gerbang Resolusi Entitas
+### Task 4 — Question Router & Entity Resolution Gate
 - Implementasi `QuestionRouter` untuk klasifikasi 4 rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`).
 - Implementasi `EntityResolutionGate` untuk validasi nama penulis/institusi (`needs_clarification` jika >1 kandidat).
 
 ### Task 5 — SqlRetriever (Relasional Silver)
-- Pembuat (generator) Text-to-SQL + validasi AST multi-lapis via `sqlglot` + penegakan `LIMIT 50` pada 9 tabel kanonikal.
+- Text-to-SQL Generator + multi-layer AST validation via `sqlglot` + `LIMIT 50` enforcement over 9 canonical tables.
 
 ### Task 6 — VectorRetriever (Silver Semantic `chunks`)
 - Embed kueri + pencarian kemiripan kosinus dengan klausa `DISTINCT ON (p.publication_id) LIMIT 8` pada `chunks` dengan threshold similarity $\ge 0.65$.
@@ -92,7 +92,7 @@
 - Implementasi 4 templat recursive CTE (T1–T4).
 - Materialisasi tabel Gold Layer: `topics`, `topic_evolution`, dan `researcher_expertise` ($\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$).
 
-### Task 9 — Sintesiser Jawaban & CitationVerifier
+### Task 9 — Answer Synthesizer & CitationVerifier
 - Sintesiser LLM analitik yang mengonsumsi nilai terverifikasi dan menghasilkan `evidence_objects`.
 - `CitationVerifier` post-hoc berbasis regex untuk format `[Judul, Tahun, DOI]` dan `[Judul, Tahun, no-doi]`, memangkas sitasi fiktif ke `unverified_citations`.
 - Short-circuit deterministik pada 0 item bukti (`status: not_found`, < 200ms).
@@ -113,16 +113,16 @@
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Vector Storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
 | **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
 | **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
@@ -132,11 +132,11 @@
 
 ## 3. Keputusan Arsitektur Kanonikal
 
-1. **Keputusan Sitasi Tanpa DOI:**
+1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
-2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
-   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
-3. **Keputusan Mesin Graf Pasca-MVP:**
+2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
 ---
@@ -145,6 +145,7 @@
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/10 Implementation Plan.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Question Router`, `Entity Resolution Gate`, `green slice`, `Evidence Layer`, `Answer Synthesizer`, `Vector Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/10 Implementation Plan.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/10 Implementation Plan.md` v3.5.0 | Menandai DB setup + cleaning + cleaned export sebagai DONE; memecah Task 1 menjadi 1a–1d (prepare input → generate → store pgvector → validate); menambah Progress Tracker NEXT 1–7 | Sinkronisasi progress aktual 2026-09-27 |
 | `docs/10 Implementation Plan.md` v3.4.0 | Mengembalikan seluruh target build task (Task 0–12) ke nama tabel kanonikal tanpa akhiran `_cleaned` | Penyelarasan format penamaan sesuai instruksi project |

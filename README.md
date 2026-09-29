@@ -347,6 +347,7 @@ Pre-task **DONE** (outside Task 0–12 numbering, synced 2026-09-27): Database s
 
 | Document | Changes | Rationale |
 |---|---|---|
+| `README.md` v3.6.2 | Sync `docs/01`–`docs/12` v3.6.2 language rule (narasi Indonesia, teknis Inggris, tanpa duplikasi bilingual) | Tetapkan aturan bahasa di semua docs; README tetap English canonical |
 | `README.md` v3.6.1 | Restore canonical English technical terms (Tech Stack, Entity Resolution Gate, Aggregate-Shape Check, Double-Count Check, Source-of-Truth, Evidence Normalization, Zero-Hallucination, Edge Tables, Vertical Slice, etc.); update File Tree + Getting Started to Phase 0–2 DONE reality; sync Phase 3 IN PROGRESS | Fix awkward ID translations of EN canonical terms; align README with actual repo state 2026-09-29 |
 | `README.md` v3.6.0 | Full Bahasa Indonesia sync; no technical decision changes | Language alignment 2026-09-27 |
 | `README.md` v3.5.0 | Progress sync: cleaning + cleaned export DONE, vector storage PENDING explicit; bump `docs/01`–`docs/12` to v3.5.0 | Actual progress sync 2026-09-27 |

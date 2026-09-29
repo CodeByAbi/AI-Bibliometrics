@@ -1,16 +1,16 @@
 # Skema Database — Arsitektur Data & Spesifikasi Skema Kanonikal (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
 **Menggantikan:** `04 Database Schema.md` Draft v1 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi & Sumber Kebenaran (Sinkronisasi Progress 2026-09-27):**  
-> 1. **PostgreSQL Database — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**. Tim tidak perlu membuat database baru dari nol, dan seluruh kredensial koneksi telah diamankan secara internal (tidak diekspos di dokumentasi).  
-> 2. **Dataset Prototipe (Validasi E2E) — DONE:** Database saat ini memuat **dataset prototipe kecil** (~20 naskah, 40 chunk, 138 author, 107 institusi, 22 kolom metadata naskah pada `publications`) yang disiapkan secara spesifik untuk memvalidasi alur end-to-end (retrieval 4 rute, unifikasi bukti, sintesis LLM, verifikasi sitasi, API, dan UI).  
-> 3. **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan hasilnya ter-export sebagai 9 file `data/*_cleaned.csv`; 9 tabel relasional kanonikal Silver (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) sudah terisi data bersih tersebut.  
-> 4. **Vector Storage — PENDING / BELUM SELESAI (Task 1):** `pgvector` akan digunakan untuk menyimpan embedding pada kolom `chunks.embedding vector(1024)` + indeks HNSW sesuai DDL §5, tetapi kolom, data vektor, dan indeks tersebut **belum dibuat/diisi**. Keputusan skema vektor di bawah dipertahankan apa adanya — tidak ada skema baru. Dimensi embedding tidak dikarang: terkunci `1024` mengikuti model `BAAI/bge-m3` yang sudah diputuskan.  
-> 5. **Komponen Turunan Lain (PLANNED / NOT YET IMPLEMENTED):** 2 tabel edge kolaborasi `institution_collaboration` dan `author_collaboration` (Task 8), serta 3 tabel Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) berstatus **PLANNED** dan akan dimaterialisasi secara idempoten dari tabel relasional Silver.  
+> **Status Implementasi & Source of Truth (Sinkronisasi Progress 2026-09-29):**  
+> 1. **PostgreSQL Database — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**. Seluruh kredensial koneksi telah diamankan secara internal (tidak diekspos di dokumentasi).  
+> 2. **Dataset Prototipe (Validasi E2E) — DONE:** Database memuat **dataset prototipe kecil** (~20 naskah, 40 chunk, 138 author, 107 institusi, 22 kolom metadata naskah pada `publications`) untuk validasi alur end-to-end.  
+> 3. **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan ter-export sebagai 9 file `data/*_cleaned.csv`; 9 tabel relasional kanonikal Silver sudah terisi data bersih.  
+> 4. **Vector Storage — DONE (Task 1):** Kolom `chunks.embedding vector(1024)` + data vektor + indeks HNSW sesuai DDL §5 sudah dibuat dan terverifikasi. Dimensi embedding terkunci `1024` mengikuti model `BAAI/bge-m3`.  
+> 5. **Edge Tables — DONE (Task 8):** 2 edge tables `institution_collaboration` dan `author_collaboration` sudah dimaterialisasi secara idempoten dari Silver. 3 tabel Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) masih PLANNED (Task 8.5).  
 > 6. **Pembedaan Fase:** Dokumentasi membedakan secara tegas antara **Fase Validasi Prototipe E2E** (menggunakan 9 tabel kanonikal saat ini) dan **Fase Produksi Skala Besar** (pipeline ingestion otomatis untuk ratusan ribu record Scopus).
 
 ---
@@ -21,7 +21,7 @@ Dokumen ini mendefinisikan arsitektur database relasional, representasi vector (
 
 Arsitektur data mengadopsi pola **Medallion Data Architecture**:
 1. **Bronze Layer (Raw Staging - Future/Production)**: Arsip berkas mentah Scopus (CSV/JSON/BibTeX) yang immutable untuk reproduktibilitas data dan audit log (`docs/12 Data Pipeline.md`).
-2. **Silver Layer (Canonical Relational Storage - 9 Tabel Prototipe + 2 Edge Tables)**: Sumber kebenaran terstruktur (*canonical source of truth*) yang telah dibersihkan, dinormalisasi, dan di-deduplikasi:
+2. **Silver Layer (Canonical Relational Storage - 9 Tabel Prototipe + 2 Edge Tables)**: canonical source of truth terstruktur yang telah dibersihkan, dinormalisasi, dan di-deduplikasi:
    - 9 Tabel Relasional: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, dan `chunks`.
    - 2 Derived Edge Tables (PLANNED, Task 8): `institution_collaboration` dan `author_collaboration` yang dimaterialisasi secara idempoten dari `pub_institution` dan `pub_author`.
 3. **Gold Layer (Advanced Bibliometrics & Policy Intelligence - 3 Tabel - PLANNED, Task 8.5)**: Tabel analitik derivatif berkinerja tinggi yang menyimpan klaster topik naskah (`topics`), metrik akselerasi tren waktu (`topic_evolution`), serta pemeringkatan kepakaran peneliti multi-dimensi (`researcher_expertise`).
@@ -83,9 +83,9 @@ flowchart TD
 | `pub_institution` | Silver (Junction) | `CURRENT` (di PostgreSQL) | Phase 0 | Relasi publikasi-institusi. |
 | `publication_references` | Silver (1:N) | `CURRENT` (di PostgreSQL) | Phase 0 | String sitasi mentah (`reference_text`); status *unlinked*. |
 | `chunks` (Teks) | Silver (1:N) | `CURRENT` (di PostgreSQL) | Phase 0 | Teks judul & abstrak untuk semantic search. Sumber load: `data/chunks_cleaned.csv` (export DONE). |
-| `chunks.embedding` | Silver (Vector) | `PLANNED / NOT IMPLEMENTED` | Phase 3 (Task 1) | `vector(1024)` BAAI/bge-m3; HNSW (`m=16, ef=64`). |
-| `institution_collaboration` | Derived Edge | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8) | Edge table kolaborasi institusi dengan `via_publication_ids`. |
-| `author_collaboration` | Derived Edge | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8) | Edge table co-authorship dengan `via_publication_ids`. |
+| `chunks.embedding` | Silver (Vector) | `DONE` (Task 1) | Phase 1 | `vector(1024)` BAAI/bge-m3; HNSW (`m=16, ef=64`). |
+| `institution_collaboration` | Derived Edge | `DONE` (Task 8) | Phase 1 | Edge table kolaborasi institusi dengan `via_publication_ids`. |
+| `author_collaboration` | Derived Edge | `DONE` (Task 8) | Phase 1 | Edge table co-authorship dengan `via_publication_ids`. |
 | `topics` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Klaster topik BERTopic, kata kunci representatif, & centroid vector. |
 | `topic_evolution` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Time-series tahunan, growth score, dan citation acceleration. |
 | `researcher_expertise` | Gold (Analytics) | `PLANNED / NOT IMPLEMENTED` | Phase 6 (Task 8.5) | Skor kepakaran terbobot multi-faktor ($w_1, w_2, w_3, w_4$). |
@@ -444,16 +444,16 @@ ORDER BY table_name, ordinal_position;
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Vector Storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
 | **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
 | **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
@@ -463,11 +463,11 @@ ORDER BY table_name, ordinal_position;
 
 ## 12. Keputusan Arsitektur Kanonikal
 
-1. **Keputusan Sitasi Tanpa DOI:**
+1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
-2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
-   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
-3. **Keputusan Mesin Graf Pasca-MVP:**
+2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
 ---
@@ -476,6 +476,7 @@ ORDER BY table_name, ordinal_position;
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/04 Database Schema.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Source of Truth`, `Vector Storage`, `Dynamic 4-Route`, `Vector Similarity Gate`, dll); sync status Task 1 + Task 8 DONE | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/04 Database Schema.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/04 Database Schema.md` v3.5.0 | Menandai DB + prototype + cleaning/cleaned-export sebagai DONE; menandai vector storage (kolom, data, HNSW) sebagai PENDING eksplisit; menambah rantai linkage article → embedding input → vector → record | Sinkronisasi progress aktual 2026-09-27 |
 | `docs/04 Database Schema.md` v3.4.0 | Mengembalikan seluruh nama 9 tabel Silver ke nama standar tanpa akhiran `_cleaned` pada DDL, ERD, dan kueri | Penyelarasan format penamaan sesuai instruksi project |
