@@ -117,7 +117,7 @@ class EvidenceSourceRef(BaseModel):
 
 class EvidenceObject(BaseModel):
     claim: str = Field(..., description="Pernyataan faktual spesifik yang disintesis")
-    metric: str = Field(..., description="Jenis metrik: publication_count | citation_count | expertise_score | growth_score | citation_acceleration")
+    metric: str = Field(..., description="Jenis metrik: publication_count | citation_count | expertise_score | growth_score | citation_acceleration | similarity_score")
     value: Union[float, int, str] = Field(..., description="Nilai numerik eksak dari database")
     period: str = Field(..., description="Rentang waktu observasi, misal: '2020-2023' atau 'all-time'")
     sources: List[EvidenceSourceRef] = Field(..., description="Daftar publikasi bukti pendukung")
