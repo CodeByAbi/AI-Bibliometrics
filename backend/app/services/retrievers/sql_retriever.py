@@ -48,6 +48,8 @@ RULES:
 6. Order results logically (e.g. publication_count DESC, citation_count DESC).
 7. Non-aggregate queries must have LIMIT <= 50.
 8. Output ONLY the raw SQL query.
+9. NEVER emit $1/$2 placeholders — inline literals only (the deterministic
+   template path uses bound params; the LLM path executes with no params).
 """
 
 
@@ -284,7 +286,12 @@ class SqlRetriever:
         filters: Optional[FilterParams] = None,
         validation_error: Optional[str] = None,
     ) -> str:
-        """Call Ollama LLM to generate Text-to-SQL for arbitrary relational questions."""
+        """Call Ollama LLM to generate Text-to-SQL for arbitrary relational questions.
+
+        Raises SqlSecurityError (→ HTTP 422 sql_generation_failed) when the
+        LLM is unreachable or returns non-200, instead of answering with an
+        unrelated generic query (Phase 3 fix P0-3: never hallucinate scope).
+        """
         settings = get_settings()
         filter_context = ""
         if filters:
@@ -297,7 +304,7 @@ class SqlRetriever:
             repair_context = (
                 "\nPrevious attempt was rejected by the SQL security gate: "
                 f"{validation_error}\nRegenerate a compliant single SELECT query: "
-                "explicit allowlisted columns only, no wildcards, LIMIT at most 50."
+                "explicit allowlisted columns only, no wildcards, no $n placeholders, LIMIT at most 50."
             )
 
         user_prompt = f"User Question: {question}{filter_context}{repair_context}\nGenerate SQL query:"
@@ -324,14 +331,39 @@ class SqlRetriever:
                     # Strip any markdown code fence if returned
                     raw_text = re.sub(r"^```(?:sql)?\s*", "", raw_text, flags=re.MULTILINE)
                     raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE).strip()
+                    if not raw_text:
+                        raise SqlSecurityError(
+                            "LLM Text-to-SQL returned an empty response"
+                        )
                     return raw_text
                 else:
                     logger.warning("Ollama Text-to-SQL call returned HTTP %s", resp.status_code)
+                    raise SqlSecurityError(
+                        f"LLM Text-to-SQL unavailable (HTTP {resp.status_code})"
+                    )
+        except SqlSecurityError:
+            raise
         except Exception as exc:
             logger.warning("Ollama Text-to-SQL invocation failed: %s", exc)
+            raise SqlSecurityError(
+                "LLM Text-to-SQL unavailable; cannot answer non-canonical relational question"
+            ) from exc
 
-        # Fallback default query if Ollama is unreachable
-        return "SELECT p.publication_id, p.title, p.year, p.doi, p.citation_count FROM publications p ORDER BY p.citation_count DESC LIMIT 10;"
+    @classmethod
+    def _reject_bare_placeholders(cls, sql_query: str, params: List[Any]) -> None:
+        """Reject LLM output with $n placeholders but no bound values (P1-1).
+
+        Deterministic templates travel with bound params; the LLM path
+        executes with params=[] so any $n would fail in asyncpg with a
+        raw driver error. Fail fast with a retryable SqlSecurityError
+        instead (→ single retry with repair context, else HTTP 422).
+        """
+        if params:
+            return
+        if re.search(r"\$\d+", sql_query):
+            raise SqlSecurityError(
+                "LLM must inline literals; $n placeholders without bound values are forbidden"
+            )
 
     @classmethod
     async def retrieve(
@@ -361,12 +393,14 @@ class SqlRetriever:
         # failure raises SqlSecurityError, mapped to HTTP 422 upstream.
         intent = cls.detect_aggregate_intent(question)
         try:
+            cls._reject_bare_placeholders(sql_query, params)
             sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
         except SqlSecurityError as first_exc:
             sql_query = await cls.generate_llm_sql(
                 question, filters=filters, validation_error=str(first_exc)
             )
             params = []
+            cls._reject_bare_placeholders(sql_query, params)
             sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
 
         # 4. Execute query on PostgreSQL with bound parameters.
@@ -407,11 +441,14 @@ class SqlRetriever:
             return []
         lowered = sql_query.lower()
         ignored: List[str] = []
-        # topic_name / document_type have no Phase 3 SQL template yet.
+        # topic_name / document_type / keyword have no Phase 3 SQL template yet.
+        # Surfaced honestly instead of silently dropped (FR0.2).
         if filters.topic_name:
             ignored.append("topic_name")
         if filters.document_type:
             ignored.append("document_type")
+        if filters.keyword and "keyword" not in lowered:
+            ignored.append("keyword")
         # A name/country filter counts as consumed only via an ILIKE predicate
         # or a resolved canonical binding; bare SELECT/GROUP BY mentions do not count.
         if filters.country and "country ilike" not in lowered:
