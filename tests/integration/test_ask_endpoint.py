@@ -213,7 +213,7 @@ async def test_ask_endpoint_unknown_entity_not_found():
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_non_sql_route_not_found():
-    """Phase 3 serves SQL only: semantic queries answer honest not_found."""
+    """Semantic query with similarity below threshold (< 0.65) returns honest not_found."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/v1/ask",
@@ -226,6 +226,19 @@ async def test_ask_endpoint_non_sql_route_not_found():
         assert data["evidence_objects"] == []
 
 
+@pytest.mark.asyncio
+async def test_ask_endpoint_pending_graph_route_not_found():
+    """GraphRoute answers honest not_found until Task 8 lands."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Siapa saja yang berkolaborasi dengan ITB?"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["route"] == "GraphRoute"
+        assert data["status"] == "not_found"
+        assert data["evidence_objects"] == []
 @pytest.mark.asyncio
 async def test_ask_endpoint_filters_ignored_surfaced():
     """Unconsumed structured filters are reported, not silently dropped."""
