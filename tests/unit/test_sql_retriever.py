@@ -321,3 +321,81 @@ class TestSqlAnswerSynthesizer:
         assert format_citation("Article Title", 2023, None) == "[Article Title, 2023, no-doi]"
         assert format_citation("Article Title", 2023, "") == "[Article Title, 2023, no-doi]"
         assert format_citation(None, None, None) == "[Untitled, n.d., no-doi]"
+
+
+class TestLlmFailureHardening:
+    """P0-3/P1-1: LLM failures and placeholders must 422, never hallucinate scope."""
+
+    @pytest.mark.asyncio
+    async def test_llm_unavailable_raises_not_generic(self, monkeypatch):
+        async def boom(cls, question, filters=None, validation_error=None):
+            raise SqlSecurityError("LLM Text-to-SQL unavailable")
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(boom))
+        with pytest.raises(SqlSecurityError):
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+
+    def test_bare_placeholders_rejected_without_params(self):
+        with pytest.raises(SqlSecurityError):
+            SqlRetriever._reject_bare_placeholders(
+                "SELECT publication_id FROM publications WHERE year = $1;", []
+            )
+
+    def test_placeholders_allowed_with_params(self):
+        SqlRetriever._reject_bare_placeholders(
+            "SELECT publication_id FROM publications WHERE year = $1;", [2025]
+        )
+
+    @pytest.mark.asyncio
+    async def test_llm_placeholders_trigger_retry_then_422(self, monkeypatch):
+        async def placeholder_llm(cls, question, filters=None, validation_error=None):
+            return "SELECT publication_id, title FROM publications WHERE year = $1 LIMIT 5;"
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(placeholder_llm))
+        with pytest.raises(SqlSecurityError):
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+
+    @pytest.mark.asyncio
+    async def test_keyword_filter_reported_ignored(self):
+        result = await SqlRetriever.retrieve(
+            _FakeConn(),
+            "Berapa total publikasi pada tahun 2025?",
+            filters=FilterParams(year=2025, keyword="stem cell"),
+        )
+        assert "keyword" in result.filters_ignored
+
+
+class TestSynthesizerPeriodAndGeneric:
+    """P1-5 period ranges + P1-3 generic Case E evidence (AC-RAG-2)."""
+
+    def test_period_range_format(self):
+        res = SqlRetrievalResult(
+            sql_executed="SELECT COUNT(DISTINCT p.publication_id) AS total_publications FROM publications p;",
+            columns=["total_publications"],
+            rows=[{"total_publications": 7}],
+            row_count=1,
+            execution_time_ms=3.0,
+        )
+        synth = SqlAnswerSynthesizer.synthesize(
+            "Total publikasi",
+            res,
+            filters=FilterParams(year_from=2020, year_to=2023),
+        )
+        assert synth.status == "ok"
+        assert synth.evidence_objects[0].period == "2020-2023"
+
+    def test_generic_case_emits_row_count_evidence(self):
+        res = SqlRetrievalResult(
+            sql_executed="SELECT publisher, source_title FROM publications LIMIT 2;",
+            columns=["publisher", "source_title"],
+            rows=[
+                {"publisher": "elsevier", "source_title": "cell"},
+                {"publisher": "springer", "source_title": "nature"},
+            ],
+            row_count=2,
+            execution_time_ms=3.0,
+        )
+        synth = SqlAnswerSynthesizer.synthesize("Generic query", res)
+        assert synth.status == "ok"
+        assert len(synth.evidence_objects) == 1
+        assert synth.evidence_objects[0].value == 2

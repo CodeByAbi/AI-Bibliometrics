@@ -285,3 +285,41 @@ async def test_ask_endpoint_validation_invalid_year_range():
         assert resp.status_code == 422
         data = resp.json()
         assert data["error"]["error_type"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_sql_llm_failure_maps_to_422(monkeypatch):
+    """P0-3/P1-2: SQLRoute forcing the LLM path surfaces 422, never ok-hallucination."""
+    from backend.app.services.retrievers.sql_retriever import SqlRetriever
+    from backend.app.services.retrievers.sql_security import SqlSecurityError
+
+    async def boom(cls, question, filters=None, validation_error=None):
+        raise SqlSecurityError("LLM Text-to-SQL unavailable")
+
+    monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(boom))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # "rata-rata" hits SQLRoute intent but no deterministic template → LLM path.
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Berapa rata-rata sitasi per tahun?"},
+        )
+        assert resp.status_code == 422
+        data = resp.json()
+        assert data["error"]["error_type"] == "sql_generation_failed"
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_keyword_filter_surfaced_not_dropped():
+    """P1-4: keyword filter is reported in filters_ignored, not silently dropped."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={
+                "question": "Berapa total publikasi pada tahun 2025?",
+                "filters": {"year": 2025, "keyword": "stem cell"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "keyword" in data["filters_ignored"]
