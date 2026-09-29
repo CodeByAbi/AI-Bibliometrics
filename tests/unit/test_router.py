@@ -10,6 +10,9 @@ from backend.app.models.ask import FilterParams
 from backend.app.services.router import (
     EntityResolutionGate,
     QuestionRouter,
+    YearFilter,
+    build_extracted_entities,
+    build_year_filter,
     normalize_text,
 )
 
@@ -227,3 +230,93 @@ class TestEntityJointResolution:
         result = await EntityResolutionGate.resolve_entities(conn, "Berapa total publikasi?", filters)
         assert result.status == "needs_clarification"
         assert all(c.type == "author" for c in result.candidates)
+
+
+class TestYearFilterContract:
+    """FR2.3: typed YearFilter with allowlisted op enum (P0-1)."""
+
+    def test_explicit_year_maps_to_eq(self):
+        yf = build_year_filter("Berapa total publikasi?", FilterParams(year=2025))
+        assert yf is not None
+        assert yf.op == "eq"
+        assert yf.year == 2025
+
+    def test_explicit_range_maps_to_between(self):
+        yf = build_year_filter("Berapa total publikasi?", FilterParams(year_from=2020, year_to=2023))
+        assert yf is not None
+        assert yf.op == "between"
+        assert yf.year_from == 2020
+        assert yf.year_to == 2023
+
+    def test_explicit_from_maps_to_gte(self):
+        yf = build_year_filter("Berapa total publikasi?", FilterParams(year_from=2021))
+        assert yf is not None
+        assert yf.op == "gte"
+
+    def test_free_text_year_maps_to_eq(self):
+        yf = build_year_filter("Siapa 5 penulis paling produktif tahun 2025?")
+        assert yf is not None
+        assert yf.op == "eq"
+        assert yf.year == 2025
+
+    def test_free_text_setelah_maps_to_gte(self):
+        yf = build_year_filter("Publikasi setelah 2020")
+        assert yf is not None
+        assert yf.op == "gte"
+        assert yf.year == 2020
+
+    def test_free_text_range_maps_to_between(self):
+        yf = build_year_filter("Publikasi 2020-2023")
+        assert yf is not None
+        assert yf.op == "between"
+        assert yf.year_from == 2020
+        assert yf.year_to == 2023
+
+    def test_no_year_returns_none(self):
+        assert build_year_filter("Paper tentang stres oksidatif") is None
+
+    def test_invalid_op_rejected(self):
+        with pytest.raises(Exception):
+            YearFilter(op="eq")  # type: ignore[arg-type]
+
+    def test_extracted_entities_populated(self):
+        entities = build_extracted_entities(
+            "Berapa total publikasi?",
+            FilterParams(year=2025, keyword="stem cell"),
+        )
+        assert entities["year_filter"] == {"op": "eq", "year": 2025}
+        assert entities["keyword"] == "stem cell"
+
+    def test_classify_route_carries_entities(self):
+        decision = QuestionRouter.classify_route(
+            "Siapa 5 penulis paling produktif tahun 2025?"
+        )
+        assert decision.route == "SQLRoute"
+        assert decision.extracted_entities.get("year_filter") == {"op": "eq", "year": 2025}
+
+
+class TestInstitutionIndonesiaFix:
+    """P0-2: geographic tokens must not poison entity extraction."""
+
+    @pytest.mark.asyncio
+    async def test_universitas_indonesia_extracted(self):
+        _, inst = await EntityResolutionGate.extract_candidate_names(
+            "Berapa publikasi dari institusi Universitas Indonesia pada tahun 2025?"
+        )
+        assert inst is not None
+        assert "Indonesia" in inst
+
+    @pytest.mark.asyncio
+    async def test_terminator_in_does_not_cut_indonesia(self):
+        _, inst = await EntityResolutionGate.extract_candidate_names(
+            "Institusi mana yang berkolaborasi dengan Universitas Indonesia?"
+        )
+        assert inst is not None
+        assert "Indonesia" in inst
+
+    @pytest.mark.asyncio
+    async def test_bare_di_still_ignored(self):
+        _, inst = await EntityResolutionGate.extract_candidate_names(
+            "Paper di Indonesia?"
+        )
+        assert inst is None
