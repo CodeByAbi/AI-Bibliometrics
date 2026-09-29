@@ -53,6 +53,9 @@ class VectorRetrievalResult(BaseModel):
 class VectorRetriever:
     """Semantic vector search retriever over publication chunks in PostgreSQL/pgvector."""
 
+    DEFAULT_THRESHOLD: float = 0.65
+    DEFAULT_LIMIT: int = 8
+
     @classmethod
     async def retrieve(
         cls,
@@ -61,6 +64,8 @@ class VectorRetriever:
         filters: Optional[FilterParams] = None,
         resolved_author_id: Optional[str] = None,
         resolved_institution_id: Optional[str] = None,
+        threshold: float = DEFAULT_THRESHOLD,
+        limit: int = DEFAULT_LIMIT,
         query_vector: Optional[List[float]] = None,
     ) -> VectorRetrievalResult:
         """Execute semantic search over chunks joined to publications with deduplication.
@@ -77,6 +82,10 @@ class VectorRetriever:
             Canonical author_id if resolved by EntityResolutionGate.
         resolved_institution_id : Optional[str]
             Canonical institution_id if resolved by EntityResolutionGate.
+        threshold : float
+            Cosine similarity threshold (canonical: >= 0.65).
+        limit : int
+            Maximum distinct publications to return (canonical: 8).
         query_vector : Optional[List[float]]
             Precomputed query embedding vector; if None, generated on-the-fly.
         """
@@ -90,10 +99,10 @@ class VectorRetriever:
         # 2. Build parameterized filter conditions
         where_clauses: List[str] = [
             "c.embedding IS NOT NULL",
-            "(1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector)) >= 0.65",
+            f"(1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector)) >= $1",
         ]
-        params: List[Any] = []
-        param_idx = 1
+        params: List[Any] = [threshold]
+        param_idx = 2
         filters_ignored: List[str] = []
 
         if filters:
@@ -148,6 +157,8 @@ class VectorRetriever:
             param_idx += 1
 
         where_sql = "\n              AND ".join(where_clauses)
+        params.append(limit)
+        limit_param_idx = param_idx
 
         # 3. Construct deterministic deduplicated CTE SQL
         sql = f"""
@@ -170,7 +181,7 @@ class VectorRetriever:
         SELECT *
         FROM scored_chunks
         ORDER BY similarity_score DESC
-        LIMIT 8;
+        LIMIT ${limit_param_idx};
         """.strip()
 
         # 4. Execute query
@@ -196,7 +207,7 @@ class VectorRetriever:
 
         return VectorRetrievalResult(
             matches=matches,
-            threshold=0.65,
-            filters_ignored=[],
+            threshold=threshold,
+            filters_ignored=filters_ignored,
             sql_executed=debug_sql,
         )
