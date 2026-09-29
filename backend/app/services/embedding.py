@@ -91,6 +91,8 @@ async def generate_query_embedding(query: str) -> List[float]:
     Attempts local SentenceTransformer first, falling back to Ollama endpoint.
     """
     clean_query = query.strip()
+    if not clean_query:
+        raise EmbeddingError("Cannot embed empty query text.")
 
     settings = get_settings()
     expected_dim = settings.embedding_dimension
@@ -133,6 +135,13 @@ async def generate_query_embedding(query: str) -> List[float]:
                 f"Failed to generate query embedding: local error '{local_err}', Ollama error '{ollama_exc}'",
                 details={"local_error": str(local_err), "ollama_error": str(ollama_exc)},
             ) from ollama_exc
+
+    # 3. Validate dimension
+    if len(vector) != expected_dim:
+        raise EmbeddingError(
+            f"Embedding dimension mismatch: expected {expected_dim}, got {len(vector)}",
+            details={"expected": expected_dim, "actual": len(vector)},
+        )
 
     return vector
 
