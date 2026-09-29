@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import string
 from typing import Any, Dict, List, Literal, Optional, Tuple
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import asyncpg
 from backend.app.models.ask import CandidateItem, FilterParams
@@ -40,6 +40,138 @@ class EntityResolutionResult(BaseModel):
     resolved_institution_id: Optional[str] = None
     resolved_institution_name: Optional[str] = None
     clarification_message: Optional[str] = None
+
+
+YearOp = Literal["eq", "gt", "gte", "lt", "lte", "between"]
+
+
+class YearFilter(BaseModel):
+    """Typed year constraint with allowlisted operator (FR2.3, docs/08 §2.2).
+
+    Operators are enumerated as Literal so raw strings can never be
+    concatenated into SQL — SqlRetriever maps each op to a bound-param
+    predicate (=, >, >=, <, <=, BETWEEN).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    op: YearOp
+    year: Optional[int] = Field(None, ge=1900, le=2026)
+    year_from: Optional[int] = Field(None, ge=1900, le=2026)
+    year_to: Optional[int] = Field(None, ge=1900, le=2026)
+
+    @model_validator(mode="after")
+    def _check_op_fields(self):
+        if self.op == "eq" and self.year is None:
+            raise ValueError("YearFilter op='eq' requires year")
+        if self.op in ("gt", "gte", "lt", "lte") and self.year is None:
+            raise ValueError(f"YearFilter op={self.op!r} requires year")
+        if self.op == "between" and (self.year_from is None or self.year_to is None):
+            raise ValueError("YearFilter op='between' requires year_from and year_to")
+        return self
+
+
+def build_year_filter(
+    question: str,
+    filters: Optional[FilterParams] = None,
+) -> Optional[YearFilter]:
+    """Derive a typed year constraint: explicit filters win, free text second.
+
+    Free-text coverage (ID/EN, deterministic):
+    - between: "antara 2020 dan 2023", "2020-2023", "2020 sampai 2023",
+      "between 2020 and 2023", "dari 2020 hingga 2023"
+    - gte: "setelah 2020", "sejak 2020", "after/since 2020", "> 2020"
+    - lte: "sebelum 2020", "before 2020", "< 2020"
+    - eq: bare year "tahun 2023", "in 2023"
+    """
+    if filters is not None:
+        if filters.year is not None:
+            return YearFilter(op="eq", year=filters.year)
+        if filters.year_from is not None and filters.year_to is not None:
+            return YearFilter(
+                op="between",
+                year_from=filters.year_from,
+                year_to=filters.year_to,
+            )
+        if filters.year_from is not None:
+            return YearFilter(
+                op="gte", year=filters.year_from, year_from=filters.year_from
+            )
+        if filters.year_to is not None:
+            return YearFilter(
+                op="lte", year=filters.year_to, year_to=filters.year_to
+            )
+
+    ql = question.strip().lower()
+
+    between_match = re.search(
+        r"\b(?:antara\s+)?(19\d\d|20\d\d)\s*(?:-|–|—|sampai|hingga|to|dan|s/d)\s*(19\d\d|20\d\d)\b"
+        r"|\b(?:between|dari)\s+(19\d\d|20\d\d)\s+(?:and|dan|hingga|sampai)\s+(19\d\d|20\d\d)\b",
+        ql,
+    )
+    if between_match:
+        years = [int(g) for g in between_match.groups() if g is not None]
+        if len(years) >= 2 and 1900 <= years[0] <= 2026 and 1900 <= years[1] <= 2026:
+            lo, hi = (years[0], years[1]) if years[0] <= years[1] else (years[1], years[0])
+            return YearFilter(op="between", year_from=lo, year_to=hi)
+
+    after_match = re.search(
+        r"\b(?:setelah(?:\s+tahun)?|sejak|setelah\s+tahun|after|since)\s+(?:tahun\s+)?(19\d\d|20\d\d)\b"
+        r"|\b>\s*(19\d\d|20\d\d)\b",
+        ql,
+    )
+    if after_match:
+        year = next(int(g) for g in after_match.groups() if g is not None)
+        if 1900 <= year <= 2026:
+            return YearFilter(op="gte", year=year, year_from=year)
+
+    before_match = re.search(
+        r"\b(?:sebelum(?:\s+tahun)?|before)\s+(?:tahun\s+)?(19\d\d|20\d\d)\b"
+        r"|\b<\s*(19\d\d|20\d\d)\b",
+        ql,
+    )
+    if before_match:
+        year = next(int(g) for g in before_match.groups() if g is not None)
+        if 1900 <= year <= 2026:
+            return YearFilter(op="lte", year=year, year_to=year)
+
+    year_match = re.search(r"\b(19\d\d|20\d\d)\b", ql)
+    if year_match:
+        year = int(year_match.group(1))
+        if 1900 <= year <= 2026:
+            return YearFilter(op="eq", year=year)
+
+    return None
+
+
+def build_extracted_entities(
+    question: str,
+    filters: Optional[FilterParams] = None,
+) -> Dict[str, Any]:
+    """Build the typed entity contract for RouterOutput (FR2.3).
+
+    Sources: explicit FilterParams first, free-text YearFilter second.
+    Keys: year_filter, country, author_name, institution_name, keyword,
+    topic_name, document_type (only when present).
+    """
+    entities: Dict[str, Any] = {}
+    year_filter = build_year_filter(question, filters)
+    if year_filter is not None:
+        entities["year_filter"] = year_filter.model_dump(exclude_none=True)
+    if filters is not None:
+        if filters.country:
+            entities["country"] = filters.country
+        if filters.author_name:
+            entities["author_name"] = filters.author_name
+        if filters.institution_name:
+            entities["institution_name"] = filters.institution_name
+        if filters.keyword:
+            entities["keyword"] = filters.keyword
+        if filters.topic_name:
+            entities["topic_name"] = filters.topic_name
+        if filters.document_type:
+            entities["document_type"] = filters.document_type
+    return entities
 
 
 # --- Regex Pattern Definitions for 4 Routes (ID & EN) ---
@@ -98,6 +230,9 @@ def normalize_text(text: str) -> str:
 
 # Tokens that mark a regex capture as query phrasing rather than a person or
 # institution name (e.g. "penulis paling produktif" is not a person).
+# NOTE (Phase 3 fix P0-2): geographic/entity tokens such as "indonesia"
+# must NOT be stoplisted — "Universitas Indonesia" is a real institution.
+# Only query verbs/adjectives/rank words are rejected here.
 _NON_NAME_TOKENS = frozenset({
     "top", "most", "paling", "terbanyak", "teratas", "terbaik", "utama",
     "produktif", "prolific", "productive", "active", "aktif", "cited",
@@ -105,8 +240,9 @@ _NON_NAME_TOKENS = frozenset({
     "jumlah", "berapa", "siapa", "daftar", "tampilkan", "sebutkan",
     "penulis", "author", "authors", "peneliti", "institusi", "institution",
     "kolaborasi", "collaboration", "jaringan", "network", "tren", "trend",
-    "indonesia", "scopus", "database", "yang", "dan", "dari", "dengan",
+    "yang", "dan", "dari", "dengan",
     "tentang", "mengenai", "terkait",
+    "mana", "apa", "bagaimana", "apakah", "kapan", "dimana", "kenapa", "mengapa",
 })
 
 
@@ -127,6 +263,7 @@ class QuestionRouter:
     ) -> RouteDecision:
         """Classify user query and structured filters into target RAG route."""
         q = question.strip()
+        entities = build_extracted_entities(question, filters)
 
         # Step 1: Check GraphRoute triggers (High specificity for collaboration & network queries).
         # Decision: collaboration specificity wins over aggregate wording, so
@@ -137,6 +274,7 @@ class QuestionRouter:
                     route="GraphRoute",
                     reasoning=f"Matched GraphRoute pattern '{pattern.pattern}' for collaboration/network intent",
                     answered_via_fallback=False,
+                    extracted_entities=entities,
                 )
 
         # Step 2: Check HybridRoute triggers (Trends, evolution, expertise scoring)
@@ -146,6 +284,7 @@ class QuestionRouter:
                     route="HybridRoute",
                     reasoning=f"Matched HybridRoute pattern '{pattern.pattern}' for trend/evolution/expertise intent",
                     answered_via_fallback=False,
+                    extracted_entities=entities,
                 )
 
         # If filters explicitly specify topic_name combined with general query
@@ -156,6 +295,7 @@ class QuestionRouter:
                     route="HybridRoute",
                     reasoning="Query combines topic_name filter with trend/expertise keywords",
                     answered_via_fallback=False,
+                    extracted_entities=entities,
                 )
 
         # Step 3: Check SQLRoute triggers (Counting, aggregation, ranking, top-N, explicit stats)
@@ -165,6 +305,7 @@ class QuestionRouter:
                     route="SQLRoute",
                     reasoning=f"Matched SQLRoute pattern '{pattern.pattern}' for aggregation/ranking/relational intent",
                     answered_via_fallback=False,
+                    extracted_entities=entities,
                 )
 
         # Check if structured filters strongly imply SQL relational search
@@ -176,6 +317,7 @@ class QuestionRouter:
             or filters.institution_name
             or filters.country
             or filters.document_type
+            or filters.keyword
         ):
             # If the question asks for lists or counts with filters
             if any(term in q.lower() for term in ["siapa", "who", "berapa", "how many", "daftar", "list", "tampilkan", "show", "publikasi", "papers"]):
@@ -183,6 +325,7 @@ class QuestionRouter:
                     route="SQLRoute",
                     reasoning="Query specifies structured metadata filters and listing/counting intent",
                     answered_via_fallback=False,
+                    extracted_entities=entities,
                 )
 
         # Step 4: Check VectorRoute triggers (Conceptual, abstract exploration)
@@ -192,6 +335,7 @@ class QuestionRouter:
                     route="VectorRoute",
                     reasoning=f"Matched VectorRoute pattern '{pattern.pattern}' for semantic/conceptual intent",
                     answered_via_fallback=False,
+                    extracted_entities=entities,
                 )
 
         # Step 5: Fallback handling
@@ -201,6 +345,7 @@ class QuestionRouter:
                 route="HybridRoute",
                 reasoning="Fallback to HybridRoute due to present topic_name filter",
                 answered_via_fallback=True,
+                extracted_entities=entities,
             )
 
         # Default fallback to VectorRoute with answered_via_fallback = True
@@ -208,6 +353,7 @@ class QuestionRouter:
             route="VectorRoute",
             reasoning="No definitive rule pattern matched; defaulting to semantic VectorRoute fallback",
             answered_via_fallback=True,
+            extracted_entities=entities,
         )
 
 
@@ -233,30 +379,32 @@ class EntityResolutionGate:
         # If not in filters, try regex heuristics on the query
         if not author_name:
             # e.g., "penulis Dr. Ahmad", "author John Doe", "oleh Septi Gumiandari", "by Septi Gumiandari"
-            auth_match = re.search(
-                r"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|di|in|with|pada|yang|\?|$))",
+            # Terminators carry \b so "in" never cuts "Indonesia"/"Informatika".
+            # Iterate all matches: "penulis mana ..." must not block a later real name.
+            for auth_match in re.finditer(
+                r"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|di|in|with|yang)\b|\?|$)",
                 question,
                 re.IGNORECASE,
-            )
-            if auth_match:
+            ):
                 extracted = auth_match.group(1).strip()
                 # Exclude captures that are query phrasing, not person names
                 if _looks_like_name(extracted):
                     author_name = extracted
+                    break
 
         if not institution_name:
             # e.g., "institusi Universitas Andalas". Bare prepositions (di/at)
             # are deliberately excluded: they over-match phrases like
             # "Paper di Indonesia" or "published at ..." and poison the gate.
-            inst_match = re.search(
-                r"\b(?:institusi|universitas|university|institut)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|in|with|yang|\?|$))",
+            for inst_match in re.finditer(
+                r"\b(?:institusi|universitas|university|institut)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|in|with|yang)\b|\?|$)",
                 question,
                 re.IGNORECASE,
-            )
-            if inst_match:
+            ):
                 extracted = inst_match.group(1).strip()
                 if _looks_like_name(extracted):
                     institution_name = extracted
+                    break
 
         return author_name, institution_name
 
