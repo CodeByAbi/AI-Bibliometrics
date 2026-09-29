@@ -143,6 +143,7 @@ class DebugInfo(BaseModel):
     sql_executed: Optional[str]
     route_reasoning: Optional[str]
     latency_breakdown_ms: Dict[str, float]
+    scored_chunks: Optional[List[Dict[str, Any]]]  # VectorRoute saja: publication_id, title, year, doi, chunk_id, similarity_score
 
 class AskResponse(BaseModel):
     request_id: str = Field(..., description="UUIDv4 pelacakan request yang unik")

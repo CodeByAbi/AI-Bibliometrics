@@ -8,14 +8,14 @@
 > **Catatan Audit (2026-09-29 — wajib dibaca sebelum eksekusi):**
 > 1. **Hierarki sumber kebenaran:** Level 1 (kode + migration/schema + tests + runtime terverifikasi) > Level 2 (`docs/03`, `docs/05`, `docs/06`, `docs/04`, `docs/08`) > Level 3 (`docs/11`, `docs/10`) > Level 4 (snapshot status lama).
 > 2. **Legenda status baku:** `[DONE — VERIFIED]` (kode + test + evidence runtime ada) · `[IMPLEMENTED — VERIFICATION PENDING]` (kode + sebagian test ada, verifikasi runtime/E2E belum lengkap) · `[IN PROGRESS]` (sedang dikerjakan aktif) · `[NEXT]` (tugas berikutnya yang siap dikerjakan, preconditions terpenuhi) · `[BLOCKED]` (menunggu dependency) · `[PLANNED]` (terjadwal, preconditions belum terpenuhi) · `[POST-MVP]` · `[FUTURE]`. Label `[DONE]` tanpa evidence tidak digunakan.
-> 3. **Rekonsiliasi Phase 4 / Task 6 vs downstream:** `VectorRetriever`, `CitationVerifier`, dan `VectorAnswerSynthesizer` sudah ada di kode dan hijau pada 177 tests (lihat Task 6 + Task 9a). Ini adalah **shared early component berlingkup Vector-only**, bukan penyelesaian Phase 5 (`EvidenceUnifier`) atau Phase 7 (`Unified AnswerSynthesizer`). Tidak ada renumbering task. Bedakan: component exists ≠ component integrated (semua route) ≠ phase complete ≠ E2E complete.
+> 3. **Rekonsiliasi Phase 4 / Task 6 vs downstream:** `VectorRetriever`, `CitationVerifier`, dan `VectorAnswerSynthesizer` sudah ada di kode dan hijau pada 200 tests (lihat Task 6 + Task 9a). Ini adalah **shared early component berlingkup Vector-only**, bukan penyelesaian Phase 5 (`EvidenceUnifier`) atau Phase 7 (`Unified AnswerSynthesizer`). Tidak ada renumbering task. Bedakan: component exists ≠ component integrated (semua route) ≠ phase complete ≠ E2E complete.
 > 4. **Stale yang diketahui di luar dokumen ini (tidak diperbaiki di sini, hanya direferensikan):** `README.md` dan `docs/11 Roadmap.md` masih menyatakan Task 6 `PLANNED` / Phase 3 `IN PROGRESS` dengan 23 tests — stale terhadap realitas 177 tests. `docs/09 §5` masih menyatakan `chunks.embedding` + HNSW `PENDING` dan `VectorRoute BLOCKED` — stale dan bertentangan dengan matriksnya sendiri. `docs/11 §2` dan `docs/12 §3` masih memuat baris `NEXT/PENDING Task 1a–1c/Task 8` yang bertentangan dengan klaim `DONE 40/40 + 254/484 edges` di dokumen yang sama.
 
 > **Status Implementasi & Kesiapan Basis Data (sinkronisasi Level 1, 2026-09-29):**
 > 1. **Database PostgreSQL & Vector Storage — `[DONE — VERIFIED]`:** 9 tabel relasional kanonikal + 40 chunk ber-embedding `vector(1024)` `BAAI/bge-m3` + indeks HNSW aktif + tabel edge `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge). Lihat Task 0, 1, 8-edge.
 > 2. **Cleaning & Cleaned Export — `[DONE — VERIFIED]`:** 9 file `data/*_cleaned.csv` + load Silver (lihat `docs/12 §3`).
 > 3. **Kerangka FastAPI & DB Pool + Ollama (Task 2 & 3) — `[DONE — VERIFIED]`:** `backend/app/`, pool async, `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, Ollama client.
-> 4. **Slice Router + SQL + Vector (Task 4 + 5 + 6 + 9a) — `[IMPLEMENTED — VERIFICATION PENDING]`:** `QuestionRouter` + `EntityResolutionGate`, `SqlRetriever` tervalidasi AST `sqlglot`, `VectorRetriever` + `VectorAnswerSynthesizer` + `CitationVerifier` sudah terintegrasi untuk `SQLRoute`/`VectorRoute` dan hijau pada unit + integration (koleksi 177 tests). Verifikasi runtime terhadap live DB + sign-off E2E (Task 12) masih pending. `GraphRoute`/`HybridRoute` masih stub jujur `not_found`.
+> 4. **Slice Router + SQL + Vector (Task 4 + 5 + 6 + 9a) — `[IMPLEMENTED — VERIFICATION PENDING]`:** `QuestionRouter` + `EntityResolutionGate`, `SqlRetriever` tervalidasi AST `sqlglot`, `VectorRetriever` + `VectorAnswerSynthesizer` + `CitationVerifier` sudah terintegrasi untuk `SQLRoute`/`VectorRoute` dan hijau pada unit + integration (koleksi 200 tests). Verifikasi runtime terhadap live DB + sign-off E2E (Task 12) masih pending. `GraphRoute`/`HybridRoute` masih stub jujur `not_found`.
 >
 > ### Progress Tracker
 > **DONE — VERIFIED:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a–1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8-edge (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health).
@@ -78,7 +78,7 @@
 - **Data / Database Dependency:** Tabel `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` (kolom teks). Role baca saja cukup.
 - **API / Contract Dependency:** Tidak ada.
 - **Security / Guardrails:** Koneksi read-only; tidak ada DDL/DML dari script audit.
-- **Test & Verification:** Unit: `pytest tests/` terkait schema (bagian koleksi 177); runtime: `python scripts/verify_schema.py` → `0 errors` (MATCH).
+- **Test & Verification:** Unit: `pytest tests/` terkait schema (bagian koleksi 200); runtime: `python scripts/verify_schema.py` → `0 errors` (MATCH).
 - **Acceptance Criteria:** Audit melaporkan MATCH dengan 0 errors terhadap `docs/04`.
 - **Evidence of Completion:** Output `verify_schema.py` (0 errors); 9 tabel terkonfirmasi di `information_schema`.
 - **Downstream Impact:** Unlock Task 1 (kolom `chunks` sebagai input embedding) dan Task 2 (pool + health).
@@ -100,7 +100,7 @@
 - **Data / Database Dependency:** `chunks(chunk_id, publication_id, chunk_text, section='title_abstract', embedding, embedding_model/version/dimension)`; indeks `idx_chunks_embedding_hnsw USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)`; `ANALYZE chunks` pasca-index.
 - **API / Contract Dependency:** Tidak ada (offline job).
 - **Security / Guardrails:** Job offline memakai role bermigrasi; runtime read path tetap `app_readonly`; re-`GRANT SELECT` setelah DDL (lihat `docs/08 §1.1`, `scripts/grant_readonly.py`).
-- **Test & Verification:** Unit/integration: `tests/test_phase1_validation.py` (10 tests) + bagian koleksi 177; runtime: `SELECT COUNT(*)` NULL = 0 + uji `<=>` mengembalikan ranking.
+- **Test & Verification:** Unit/integration: `tests/test_phase1_validation.py` (10 tests) + bagian koleksi 200; runtime: `SELECT COUNT(*)` NULL = 0 + uji `<=>` mengembalikan ranking.
 - **Acceptance Criteria:** 40/40 chunk terisi; HNSW + `idx_chunks_pub_id` ada di `\di`; kueri `<=>` valid.
 - **Evidence of Completion:** Migrasi 001 teraplikasi; 40 vektor + indeks terverifikasi; `embed_chunks.py --resume` idempoten.
 - **Downstream Impact:** Unlock Task 6 (`VectorRetriever` online). Tidak unlock Graph/Gold.
@@ -118,7 +118,7 @@
 - **Data / Database Dependency:** Pool ke 9 tabel Silver via `app_readonly` (SELECT-only); `SET search_path=public`; `statement_timeout='10s'` ganda (server-side pool + `asyncio.wait_for` di retriever).
 - **API / Contract Dependency:** `AskRequest{question[3..1000], filters{year/year_from/year_to[1900..2026], country, author_name, institution_name, topic_name, document_type, keyword}, developer_mode}`; `AskResponse{request_id, status: ok|not_found|needs_clarification|error, route: SQLRoute|VectorRoute|GraphRoute|HybridRoute, answer, evidence_objects, sources, candidates?, filters_ignored, answered_via_fallback, unverified_citations, debug?}`; `EvidenceObject{claim, metric, value, period, sources[], confidence[0..1]}` (frozen); `EvidenceSourceRef{publication_id, doi?, eid?, title?, year?}`. Lihat `docs/06 §5`.
 - **Security / Guardrails:** `app_readonly` (tanpa INSERT/UPDATE/DELETE/TRUNCATE/CREATE/ALTER); parameterized queries (tidak ada konkatenasi string user); `search_path=public`; timeout 10s; sanitized error (`error_type` saja); log `request_id` tanpa secrets (`docs/08 §1–§4`).
-- **Test & Verification:** Unit/integration: `test_middleware_and_errors.py` (3) + `integration/test_health_endpoint.py` (2) + `integration/test_db_pool.py` (3, permission + timeout) dalam koleksi 177; runtime: `GET /api/v1/health` melaporkan `database{connected, app_readonly, silver/gold/pgvector_ready}`.
+- **Test & Verification:** Unit/integration: `test_middleware_and_errors.py` (3) + `integration/test_health_endpoint.py` (2) + `integration/test_db_pool.py` (3, permission + timeout) dalam koleksi 200; runtime: `GET /api/v1/health` melaporkan `database{connected, app_readonly, silver/gold/pgvector_ready}`.
 - **Acceptance Criteria:** Health + pool + tracing + rate-limit + envelope error bekerja; `POST /api/v1/ask` skeleton tervalidasi Pydantic.
 - **Evidence of Completion:** File di atas ada; tests pool/health/middleware hijau.
 - **Downstream Impact:** Unlock Task 3 (Ollama health) dan Task 4–6 (wiring retriever).
@@ -136,7 +136,7 @@
 - **Data / Database Dependency:** Tidak ada.
 - **API / Contract Dependency:** `GET /api/v1/health` menampilkan status LLM + embedding (lihat `docs/06 §6`).
 - **Security / Guardrails:** Timeout eksplisit; tidak membocorkan raw error Ollama ke klien (envelope saja).
-- **Test & Verification:** Bagian koleksi 177 (health + embedding fallback dual-path); runtime: health melaporkan model siap.
+- **Test & Verification:** Bagian koleksi 200 (health + embedding fallback dual-path); runtime: health melaporkan model siap.
 - **Acceptance Criteria:** Health check mendeteksi Ollama + model; fallback embedding path teruji.
 - **Evidence of Completion:** File client + config + health fields ada; test fallback hijau.
 - **Downstream Impact:** Unlock Task 6 (fallback path) dan Task 9 (synthesis path).
@@ -230,7 +230,7 @@
 - **Data / Database Dependency:** Sumber `pub_institution`/`pub_author`; hasil 254 + 484 edges; `via_publication_ids TEXT[]` provenance.
 - **API / Contract Dependency:** Tidak langsung (konsumsi via 8-retriever).
 - **Security / Guardrails:** Job offline idempoten (`TRUNCATE+INSERT` terkontrol); runtime read via `app_readonly`.
-- **Test & Verification:** Bagian koleksi 177 (edge validation) + runtime: `CHECK` + `via_publication_ids` valid + count 254/484.
+- **Test & Verification:** Bagian koleksi 200 (edge validation) + runtime: `CHECK` + `via_publication_ids` valid + count 254/484.
 - **Acceptance Criteria:** Idempoten rerun sama; `CHECK (a<b)` lolos; provenance valid.
 - **Evidence of Completion:** Migrasi 002 + `build_edges.py` + counts terverifikasi.
 - **Downstream Impact:** Unlock Task 8-retriever.
@@ -355,7 +355,7 @@
 - **Preconditions / Dependencies:** Dataset prototipe (~20 publikasi, 40 chunk, 138 authors, 107 institusi — lihat §2); Task 4–10-full; `docs/02` (FR0–FR7, NFR1–NFR6) + `docs/01 §5` (sukses MVP: Top-N benar, Top-8 unik, `needs_clarification` untuk `j. wang`, 0 unverified, no destructive SQL, `not_found` saat kosong, e2e ≤15s CPU).
 - **Scope:** 12-query gate (`tests/e2e/test_e2e_12_queries.py` — direncanakan, belum ada); latensi breakdown per route; `pytest tests/e2e/` + `pytest -v --cov=backend/app` (target ≥80% pada router/retriever/security).
 - **Out of Scope:** Dataset >100K (FUTURE); tuning performa skala produksi.
-- **Implementation Surface (rencana):** `tests/e2e/test_e2e_12_queries.py`; `tests/unit|integration` yang ada sebagai prasyarat (177). Perintah: `pytest`, `pytest -v --cov=backend/app --cov-report=term-missing tests/`, `pytest tests/unit/test_sql_security.py`, `pytest tests/unit/test_router.py`, `pytest tests/e2e/test_e2e_12_queries.py`.
+- **Implementation Surface (rencana):** `tests/e2e/test_e2e_12_queries.py`; `tests/unit|integration` yang ada sebagai prasyarat (200). Perintah: `pytest`, `pytest -v --cov=backend/app --cov-report=term-missing tests/`, `pytest tests/unit/test_sql_security.py`, `pytest tests/unit/test_router.py`, `pytest tests/e2e/test_e2e_12_queries.py`.
 - **Data / Database Dependency:** Live DB prototipe + HNSW + edges (+ Gold saat tersedia).
 - **API / Contract Dependency:** Verifikasi `AskResponse` penuh per route (termasuk `filters_ignored`, `unverified_citations`, `answered_via_fallback`, `debug`).
 - **Security / Guardrails:** 100% lolos AST + read-only; 0 evidence → `<200ms not_found` tanpa LLM; 0 unverified citations di jawaban final.

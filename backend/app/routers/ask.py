@@ -228,6 +228,17 @@ async def ask_question(
                     sql_executed=vector_result.sql_executed,
                     route_reasoning=decision.reasoning,
                     latency_breakdown_ms=latencies,
+                    scored_chunks=[
+                        {
+                            "publication_id": m.publication_id,
+                            "title": m.title,
+                            "year": m.year,
+                            "doi": m.doi,
+                            "chunk_id": m.chunk_id,
+                            "similarity_score": round(m.similarity_score, 4),
+                        }
+                        for m in vector_result.matches
+                    ],
                 )
 
             return AskResponse(
