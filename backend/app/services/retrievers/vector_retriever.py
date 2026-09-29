@@ -6,6 +6,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.2, docs/10 Implementation Pl
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import Any, List, Optional
 import asyncpg
@@ -15,7 +16,7 @@ from backend.app.core.config import get_settings
 from backend.app.core.errors import DBTimeoutError
 from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
-from backend.app.services.embedding import generate_query_embedding
+from backend.app.services.embedding import EmbeddingError, generate_query_embedding
 
 
 class VectorMatchItem(BaseModel):
@@ -98,7 +99,33 @@ class VectorRetriever:
         if query_vector is None:
             query_vector = await generate_query_embedding(question)
 
-        # Format pgvector string safely (array of floats only)
+        # Defense-in-depth: query_vector may be injected directly (tests,
+        # callers). Reject wrong dimensions and NaN/Inf before interpolating
+        # into the pgvector literal — generate_query_embedding already
+        # validates its own output, this covers the precomputed path.
+        expected_dim = get_settings().embedding_dimension
+        if len(query_vector) != expected_dim:
+            raise EmbeddingError(
+                f"Precomputed query embedding dimension mismatch: "
+                f"expected {expected_dim}, got {len(query_vector)}.",
+                details={"expected": expected_dim, "actual": len(query_vector)},
+            )
+        for v in query_vector:
+            if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+                raise EmbeddingError(
+                    "Precomputed query embedding contains non-finite value; refusing SQL build."
+                )
+
+        # Format pgvector string safely (finite floats only, no user text).
+        # NOTE: the vector is interpolated rather than bound as $N because
+        # asyncpg has no native pgvector codec here; interpolation is safe
+        # de facto since every element is a validated finite float rendered
+        # with a fixed numeric format. Threshold/filters/IDs/limit stay
+        # parameterized ($N). The `extensions.` schema qualification assumes
+        # the `vector` extension lives in the `extensions` schema
+        # (Supabase layout); for local installs in `public`, install the
+        # extension into `extensions` or adjust the qualifier — never inject
+        # user text into this literal.
         vec_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
 
         # 2. Build parameterized filter conditions

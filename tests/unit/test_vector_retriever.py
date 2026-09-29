@@ -176,3 +176,66 @@ def test_vector_answer_synthesizer_successful_synthesis():
 
     assert "[Indo-Wdsimplequad2.0 Benchmark, 2024, 10.1016/j.kgqa.2024]" in synth.answer
     assert len(synth.unverified_citations) == 0
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_rejects_non_finite_precomputed_vector():
+    """Precomputed NaN/Inf vectors must raise before any SQL is executed."""
+    import math
+
+    from backend.app.services.embedding import EmbeddingError
+
+    mock_conn = AsyncMock()
+    bad_vector = [0.01] * 1023 + [math.nan]
+
+    with pytest.raises(EmbeddingError, match="non-finite"):
+        await VectorRetriever.retrieve(
+            conn=mock_conn,
+            question="test",
+            query_vector=bad_vector,
+        )
+    assert not mock_conn.fetch.called
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_threshold_and_dedup_sql_shape():
+    """Threshold is bound as $1 and dedup uses DISTINCT ON before LIMIT 8."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    dummy_vector = [0.01] * 1024
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="test threshold",
+        threshold=0.65,
+        limit=8,
+        query_vector=dummy_vector,
+    )
+
+    assert result.is_empty is True
+    call_args = mock_conn.fetch.call_args[0]
+    sql_text = call_args[0]
+    params = call_args[1:]
+
+    assert params[0] == 0.65
+    assert "DISTINCT ON (p.publication_id)" in sql_text
+    assert "ORDER BY similarity_score DESC" in sql_text
+    assert sql_text.strip().endswith("LIMIT $2;")
+
+
+def test_vector_answer_synthesizer_zero_match_under_200ms():
+    """Zero-evidence short-circuit must be deterministic and fast (<200ms)."""
+    import time
+
+    empty_result = VectorRetrievalResult(
+        matches=[],
+        threshold=0.65,
+        filters_ignored=[],
+        sql_executed="SELECT 1",
+    )
+    t0 = time.perf_counter()
+    synth = VectorAnswerSynthesizer.synthesize("test question", empty_result)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    assert synth.status == "not_found"
+    assert elapsed_ms < 200.0
