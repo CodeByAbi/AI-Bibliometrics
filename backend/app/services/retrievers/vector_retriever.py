@@ -5,10 +5,15 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.2, docs/10 Implementation Pl
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any, List, Optional
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.core.config import get_settings
+from backend.app.core.errors import DBTimeoutError
+from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
 from backend.app.services.embedding import generate_query_embedding
 
@@ -160,7 +165,7 @@ class VectorRetriever:
         params.append(limit)
         limit_param_idx = param_idx
 
-        # 3. Construct deterministic deduplicated CTE SQL
+        # 3. Construct deterministic Deduplicated CTE SQL
         sql = f"""
         WITH scored_chunks AS (
             SELECT DISTINCT ON (p.publication_id)
@@ -184,8 +189,33 @@ class VectorRetriever:
         LIMIT ${limit_param_idx};
         """.strip()
 
-        # 4. Execute query
-        rows = await conn.fetch(sql, *params)
+        # 4. Execute query with statement timeout protection
+        settings = get_settings()
+        timeout_s = settings.db_statement_timeout_ms / 1000.0
+
+        t0 = time.perf_counter()
+        try:
+            rows = await asyncio.wait_for(
+                conn.fetch(sql, *params),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.error(
+                "Vector retrieval query timed out after %.2fs",
+                timeout_s,
+                extra={"endpoint": "/api/v1/ask", "route": "VectorRoute"},
+            )
+            raise DBTimeoutError(
+                f"Vector retrieval query timed out after {settings.db_statement_timeout_ms}ms.",
+            ) from exc
+
+        query_ms = (time.perf_counter() - t0) * 1000.0
+        logger.info(
+            "Vector retrieval executed in %.2fms: %d distinct matches found (threshold=%.2f)",
+            query_ms,
+            len(rows),
+            threshold,
+        )
 
         matches = [
             VectorMatchItem(
