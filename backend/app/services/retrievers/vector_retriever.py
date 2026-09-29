@@ -58,6 +58,9 @@ class VectorRetriever:
         cls,
         conn: asyncpg.Connection,
         question: str,
+        filters: Optional[FilterParams] = None,
+        resolved_author_id: Optional[str] = None,
+        resolved_institution_id: Optional[str] = None,
         query_vector: Optional[List[float]] = None,
     ) -> VectorRetrievalResult:
         """Execute semantic search over chunks joined to publications with deduplication.
@@ -68,6 +71,12 @@ class VectorRetriever:
             Active PostgreSQL connection.
         question : str
             Natural language user query.
+        filters : Optional[FilterParams]
+            Metadata filters (year, country, doc_type, etc.).
+        resolved_author_id : Optional[str]
+            Canonical author_id if resolved by EntityResolutionGate.
+        resolved_institution_id : Optional[str]
+            Canonical institution_id if resolved by EntityResolutionGate.
         query_vector : Optional[List[float]]
             Precomputed query embedding vector; if None, generated on-the-fly.
         """
@@ -78,7 +87,69 @@ class VectorRetriever:
         # Format pgvector string safely (array of floats only)
         vec_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
 
-        # 2. Construct deterministic deduplicated CTE SQL
+        # 2. Build parameterized filter conditions
+        where_clauses: List[str] = [
+            "c.embedding IS NOT NULL",
+            "(1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector)) >= 0.65",
+        ]
+        params: List[Any] = []
+        param_idx = 1
+        filters_ignored: List[str] = []
+
+        if filters:
+            if filters.year is not None:
+                where_clauses.append(f"p.year = ${param_idx}")
+                params.append(filters.year)
+                param_idx += 1
+            if filters.year_from is not None:
+                where_clauses.append(f"p.year >= ${param_idx}")
+                params.append(filters.year_from)
+                param_idx += 1
+            if filters.year_to is not None:
+                where_clauses.append(f"p.year <= ${param_idx}")
+                params.append(filters.year_to)
+                param_idx += 1
+            if filters.document_type:
+                where_clauses.append(f"p.document_type ILIKE ${param_idx}")
+                params.append(f"%{filters.document_type.strip()}%")
+                param_idx += 1
+            if filters.country:
+                where_clauses.append(
+                    f"p.publication_id IN ("
+                    f"SELECT pi.publication_id FROM pub_institution pi "
+                    f"JOIN institutions i ON i.institution_id = pi.institution_id "
+                    f"WHERE i.country ILIKE ${param_idx})"
+                )
+                params.append(f"%{filters.country.strip()}%")
+                param_idx += 1
+
+            # Track ignored filters
+            if filters.topic_name:
+                filters_ignored.append("topic_name")
+            if filters.keyword:
+                filters_ignored.append("keyword")
+            if filters.author_name and not resolved_author_id:
+                filters_ignored.append("author_name")
+            if filters.institution_name and not resolved_institution_id:
+                filters_ignored.append("institution_name")
+
+        if resolved_author_id:
+            where_clauses.append(
+                f"p.publication_id IN (SELECT publication_id FROM pub_author WHERE author_id = ${param_idx})"
+            )
+            params.append(resolved_author_id)
+            param_idx += 1
+
+        if resolved_institution_id:
+            where_clauses.append(
+                f"p.publication_id IN (SELECT publication_id FROM pub_institution WHERE institution_id = ${param_idx})"
+            )
+            params.append(resolved_institution_id)
+            param_idx += 1
+
+        where_sql = "\n              AND ".join(where_clauses)
+
+        # 3. Construct deterministic deduplicated CTE SQL
         sql = f"""
         WITH scored_chunks AS (
             SELECT DISTINCT ON (p.publication_id)
@@ -93,8 +164,7 @@ class VectorRetriever:
                 1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector) AS similarity_score
             FROM chunks c
             JOIN publications p ON p.publication_id = c.publication_id
-            WHERE c.embedding IS NOT NULL
-              AND (1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector)) >= 0.65
+            WHERE {where_sql}
             ORDER BY p.publication_id, (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector) ASC
         )
         SELECT *
@@ -103,8 +173,8 @@ class VectorRetriever:
         LIMIT 8;
         """.strip()
 
-        # 3. Execute query
-        rows = await conn.fetch(sql)
+        # 4. Execute query
+        rows = await conn.fetch(sql, *params)
 
         matches = [
             VectorMatchItem(
