@@ -7,7 +7,7 @@
 
 > **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` yang sudah hijau di `develop` dengan 177 tests passing.  
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` yang sudah hijau di `develop` dengan 200 tests passing.  
 > 3. **NEXT (belum tersedia):** `GraphRoute` dan `HybridRoute` berstatus **BLOCKED** sampai Task 8 (templat T1–T4) / Task 8.5 selesai. Modul router, SQL retriever, vector retriever, synthesizer, dan citation verifier sudah berjalan; unifier, graph/hybrid retriever, dan UI belum.  
 > 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding` kini aktif dan tervalidasi.
 
@@ -159,22 +159,31 @@ class EvidenceObject(BaseModel):
 - **Model**: `BAAI/bge-m3` (Dense 1024 dimensi, Float32).
 > **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
 - **Cosine Similarity Gate**: $\ge 0.65$.
-- **Kueri SQL Terparameterisasi**:
+- **Kueri SQL Terparameterisasi** (bentuk CTE — deduplikasi SEBELUM limit, FR4.4):
   ```sql
-  SELECT DISTINCT ON (p.publication_id)
-      p.publication_id,
-      p.title,
-      p.year,
-      p.doi,
-      p.citation_count,
-      c.chunk_text,
-      1 - (c.embedding <=> $1) AS similarity_score
-  FROM chunks c
-  JOIN publications p ON p.publication_id = c.publication_id
-  WHERE 1 - (c.embedding <=> $1) >= 0.65
-  ORDER BY p.publication_id, (c.embedding <=> $1) ASC
-  LIMIT 8;
+  WITH scored_chunks AS (
+      SELECT DISTINCT ON (p.publication_id)
+          p.publication_id,
+          p.eid,
+          p.doi,
+          p.title,
+          p.year,
+          p.citation_count,
+          c.chunk_id,
+          c.chunk_text,
+          1 - (c.embedding OPERATOR(extensions.<=>) '<vector_1024d>'::extensions.vector) AS similarity_score
+      FROM chunks c
+      JOIN publications p ON p.publication_id = c.publication_id
+      WHERE c.embedding IS NOT NULL
+        AND (1 - (c.embedding OPERATOR(extensions.<=>) '<vector_1024d>'::extensions.vector)) >= $1  -- $1 = ambang 0.65
+      ORDER BY p.publication_id, (c.embedding OPERATOR(extensions.<=>) '<vector_1024d>'::extensions.vector) ASC
+  )
+  SELECT *
+  FROM scored_chunks
+  ORDER BY similarity_score DESC
+  LIMIT $2;  -- $2 = 8 publikasi unik
   ```
+  > Catatan implementasi: literal vektor diinterpolasi (bukan `$N`) karena `asyncpg` tidak memiliki codec pgvector — aman de facto karena setiap elemen adalah float finite tervalidasi dengan format tetap (`f"{v:.8f}"`), tanpa teks pengguna, dan diredaksi menjadi `[vector_1024d]` pada debug. Ambang, filter, ID, dan limit tetap terparameterisasi (`$N`). Kualifikasi `extensions.` mengikuti layout Supabase. CTE dalam tidak ber-`LIMIT` sehingga `LIMIT 8` luar = 8 publikasi unik (bukan 8 baris chunk).
 
 ### 5.3 `GraphRoute` — Jaringan Kolaborasi
 - **Eksekusi**: Menggunakan 4 templat terparameterisasi (T1–T4) pada edge table `institution_collaboration` dan `author_collaboration`.
