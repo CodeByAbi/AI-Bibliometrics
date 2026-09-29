@@ -15,10 +15,26 @@ from backend.app.models.ask import (
     SourceItem,
 )
 from backend.app.services.retrievers.sql_retriever import SqlRetrievalResult
-
+from backend.app.services.retrievers.vector_retriever import (
+    VectorMatchItem,
+    VectorRetrievalResult,
+)
+from backend.app.services.synthesizer.citation import CitationVerifier
 
 class SynthesizedSqlResponse(BaseModel):
     """Output of SQL grounded answer synthesis."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+    answer: str
+    evidence_objects: List[EvidenceObject] = Field(default_factory=list)
+    sources: List[SourceItem] = Field(default_factory=list)
+    unverified_citations: List[str] = Field(default_factory=list)
+
+
+class SynthesizedVectorResponse(BaseModel):
+    """Output of Vector semantic search grounded answer synthesis."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -211,4 +227,93 @@ class SqlAnswerSynthesizer:
             evidence_objects=evidence_objects,
             sources=sources,
             unverified_citations=[],
+        )
+
+
+class VectorAnswerSynthesizer:
+    """Deterministic grounded synthesizer for Vector semantic search results."""
+
+    @classmethod
+    def synthesize(
+        cls,
+        question: str,
+        vector_result: VectorRetrievalResult,
+        filters: Optional[FilterParams] = None,
+    ) -> SynthesizedVectorResponse:
+        """Synthesize grounded narrative answer and EvidenceObjects from Vector search matches."""
+        # 1. Zero-match short circuit
+        if vector_result.is_empty:
+            return SynthesizedVectorResponse(
+                status="not_found",
+                answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                evidence_objects=[],
+                sources=[],
+                unverified_citations=[],
+            )
+
+        matches = vector_result.matches
+        period_str = _format_period(filters)
+
+        evidence_objects: List[EvidenceObject] = []
+        sources: List[SourceItem] = []
+        answer_paragraphs: List[str] = []
+
+        answer_paragraphs.append(
+            f"Berdasarkan pencarian semantik (ambang similaritas kosinus >= {vector_result.threshold:.2f}), "
+            f"ditemukan {len(matches)} publikasi yang relevan dengan kriteria pencarian:"
+        )
+
+        for idx, m in enumerate(matches, 1):
+            cite_tag = format_citation(m.title, m.year, m.doi)
+            snippet = m.chunk_text.strip()
+            if len(snippet) > 200:
+                snippet = snippet[:197] + "..."
+
+            item_line = (
+                f"{idx}. **{m.title}** ({m.year or 'n.d.'}) "
+                f"— Skor Kemiripan: {m.similarity_score:.2f} {cite_tag}\n"
+                f"   > *Ringkasan Abstrak:* {snippet}"
+            )
+            answer_paragraphs.append(item_line)
+
+            src_ref = EvidenceSourceRef(
+                publication_id=m.publication_id,
+                doi=m.doi,
+                eid=m.eid,
+                title=m.title,
+                year=m.year,
+            )
+
+            evidence_objects.append(
+                EvidenceObject(
+                    claim=f"Publikasi '{m.title}' teridentifikasi relevan dengan topik kueri (skor kemiripan kosinus: {m.similarity_score:.2f})",
+                    metric="similarity_score",
+                    value=round(m.similarity_score, 4),
+                    period=str(m.year) if m.year is not None else period_str,
+                    sources=[src_ref],
+                    confidence=min(1.0, max(0.0, round(m.similarity_score, 4))),
+                )
+            )
+
+            sources.append(
+                SourceItem(
+                    publication_id=m.publication_id,
+                    title=m.title,
+                    year=m.year,
+                    doi=m.doi,
+                    source_type="vector",
+                    relevance_score=round(m.similarity_score, 4),
+                    provenance=f"chunk_id:{m.chunk_id}",
+                )
+            )
+
+        raw_answer = "\n\n".join(answer_paragraphs)
+        verified_res = CitationVerifier.verify(raw_answer, matches)
+
+        return SynthesizedVectorResponse(
+            status="ok",
+            answer=verified_res.cleaned_text,
+            evidence_objects=evidence_objects,
+            sources=sources,
+            unverified_citations=verified_res.unverified_citations,
         )

@@ -144,6 +144,8 @@ flowchart TD
 
 > **Status: DONE (Task 1).** DDL di bawah sudah dieksekusi dan diverifikasi — kolom `embedding vector(1024)`, kolom metadata (`embedding_model`, `embedding_version`, `embedding_dimension`), indeks HNSW (`idx_chunks_embedding_hnsw`), dan indeks FK (`idx_chunks_pub_id`) telah aktif di basis data PostgreSQL. Seluruh 40 chunk dokumen telah memiliki representasi vector lengkap 1024-dimensi model `BAAI/bge-m3`. Rantai linkage yang aktif: **article/research record (`publications`) → embedding input (`chunks.chunk_text` dari `Title + Abstract`) → embedding/vector (`chunks.embedding`) → database record (`chunks` ↔ `publications` via `publication_id`) → retrieval (`VectorRoute`)**.
 
+> **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
+
 Tabel `chunks` bertindak sebagai indeks semantik berdimensi tinggi:
 
 ```sql
@@ -205,6 +207,7 @@ CREATE INDEX idx_author_collab_weight ON author_collaboration (weight DESC);
 
 > **Keputusan Arsitektur Graf (Graph Strategy):**  
 > Penelusuran jaringan kolaborasi pada MVP dijalankan via **Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4)** pada tabel edge di atas. Untuk kebutuhan graf pasca-MVP (Phase 9), sistem menetapkan **Apache AGE** sebagai ekstensi native PostgreSQL pilihan.
+> **Literature:** [[literature/Apache AGE Graph Extension]]
 
 ---
 
@@ -214,6 +217,7 @@ Lapisan **Database Gold** menambahkan 3 tabel analitik tingkat lanjut untuk mend
 
 ### 7.1 Tabel `topics` (Klaster Topik Riset - PLANNED, Task 8.5)
 Menyimpan klaster topik riset yang dihasilkan melalui analisis ko-kata (*co-word analysis*) dan pemodelan topik (*BERTopic*).
+> **Literature:** [[literature/2022 - BERTopic]] · [[literature/1983 - Co-word Analysis]]
 
 ```sql
 CREATE TABLE IF NOT EXISTS topics (
@@ -286,6 +290,7 @@ CREATE INDEX idx_researcher_exp_author ON researcher_expertise (author_id);
 #### Formula Perhitungan Skor Kepakaran (`ExpertiseScore`):
 $$\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$$
 - $w_1 = 0.30$ (Relevance), $w_2 = 0.25$ (Productivity), $w_3 = 0.25$ (Impact), $w_4 = 0.20$ (Recency).
+> **Literature:** [[literature/2005 - Hirsch h-index]]
 
 ---
 

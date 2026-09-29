@@ -14,6 +14,9 @@ psycopg[binary]==3.3.6 # Kandidat #2 + driver sync scripts/verify_schema.py (imp
 # RAG / Retrieval — SQL AST gate 
 sqlglot==30.20.0       # Validator whitelist 9 tabel kanonikal, root Select, LIMIT 50, COUNT(DISTINCT publication_id)
 
+# Vector / Embedding — online query embedding (Phase 4, Task 6)
+sentence-transformers==6.1.0  # Local BAAI/bge-m3 1024-dim query embedding; fallback endpoint embedding Ollama bila load lokal gagal
+
 # Utilities
 httpx==0.28.1           # Klien HTTP async untuk Ollama service & testing API
 python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose nilai dari env_file (.env tak pernah di-commit)
@@ -23,9 +26,9 @@ python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose n
 # (docs/09 §9). Mencantumkan di sini sebagai komentar agar tidak ada technical
 # decision baru yang tersembunyi di lockfile.
 # ---------------------------------------------------------------------------
-# Task 1 (TBD-4/TBD-5): sentence-transformers (+ torch sebagai transitive) untuk
-#   batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py (BELUM ADA).
-#   Path online query-embedding (lokal vs endpoint Ollama) masih TBD-5.
+# Task 1 (TBD-4): batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py (BELUM ADA).
+#   Jalur online query-embedding SUDAH diputuskan di Fase 4 (Task 6): SentenceTransformer lokal
+#   sebagai primer + fallback endpoint embedding Ollama (backend/app/services/embedding.py).
 # Task 1c: pgvector (paket PyPI, helper insert vector) — ekstensi DB `vector`
 #   sudah DONE server-side; paket Python baru dibutuhkan saat skrip embedding ada.
 # Task 3/6/9 (TBD-3/TBD-5): httpx — klien HTTP standar ke Ollama (Qwen2.5-Coder-7B)

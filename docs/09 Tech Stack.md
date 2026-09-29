@@ -37,6 +37,7 @@ Batasan keras: khusus CPU, tanpa budget GPU untuk fase MVP. Ini membatasi piliha
   - **Phi-3/Phi-4 mini**: Sering melanggar skema JSON/SQL.
 
 **Serving via Ollama**: Satu biner terpadu, manajemen model otomatis, antarmuka HTTP baku, dan performa kuantisasi GGUF Q4 optimal di CPU.
+> **Literature:** [[literature/2024 - Qwen2.5-Coder]]
 
 ---
 
@@ -45,6 +46,7 @@ Batasan keras: khusus CPU, tanpa budget GPU untuk fase MVP. Ini membatasi piliha
 - **Multibahasa**: Data publikasi Scopus dan pertanyaan pengguna sering mencampur bahasa Indonesia dan Inggris. Model khusus Inggris (`all-MiniLM-L6-v2`) ditolak.
 - **Dimensi**: 1024 dimensi representasi padat (dense), cocok untuk indeks `pgvector` HNSW (`m=16, ef_construction=64`).
 - **Pinning & Reproduksibilitas**: Commit model `BAAI/bge-m3`, versi `sentence-transformers`, dan batch size (32–64) di-pin pada lockfile untuk menjamin hasil retrieval deterministik.
+> **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
 
 ### 3.1 Spesifikasi Vector Storage pgvector (Sinkronisasi `docs/04 §5/§7` + `docs/05 §5.2` + `docs/12 §4` — tanpa menduplikasi DDL penuh)
 

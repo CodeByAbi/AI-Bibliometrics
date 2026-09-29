@@ -16,8 +16,12 @@ from backend.app.models.ask import (
     DebugInfo,
 )
 from backend.app.services.retrievers.sql_retriever import SqlRetriever
+from backend.app.services.retrievers.vector_retriever import VectorRetriever
 from backend.app.services.router import EntityResolutionGate, QuestionRouter
-from backend.app.services.synthesizer.answer import SqlAnswerSynthesizer
+from backend.app.services.synthesizer.answer import (
+    SqlAnswerSynthesizer,
+    VectorAnswerSynthesizer,
+)
 
 router = APIRouter(tags=["Ask"])
 
@@ -187,10 +191,62 @@ async def ask_question(
                 debug=debug_data,
             )
 
-        # 4. Other routes (VectorRoute, GraphRoute, HybridRoute)
-        # Phase 3 serves the structured slice only: non-SQL routes answer
-        # honest not_found under the zero-evidence invariant until their
-        # retrievers land (Fase 4/6/7). Never ok with empty evidence.
+        # 4. VectorRoute Execution (Phase 4 Core)
+        if decision.route == "VectorRoute":
+            t2 = time.perf_counter()
+            vector_result = await VectorRetriever.retrieve(
+                conn,
+                payload.question,
+                filters=payload.filters,
+                resolved_author_id=resolution.resolved_author_id,
+                resolved_institution_id=resolution.resolved_institution_id,
+            )
+            latencies["vector_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
+
+            t3 = time.perf_counter()
+            synth_result = VectorAnswerSynthesizer.synthesize(
+                payload.question,
+                vector_result,
+                filters=payload.filters,
+            )
+            latencies["synthesis_ms"] = round((time.perf_counter() - t3) * 1000, 2)
+
+            total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            latencies["total_ms"] = total_elapsed_ms
+
+            logger.info(
+                "Ask completed: status='%s' route='VectorRoute' total_ms=%s matches=%d",
+                synth_result.status,
+                total_elapsed_ms,
+                vector_result.match_count,
+                extra={"request_id": req_id, "endpoint": "/api/v1/ask", "route": "VectorRoute"},
+            )
+
+            debug_data = None
+            if payload.developer_mode:
+                debug_data = DebugInfo(
+                    sql_executed=vector_result.sql_executed,
+                    route_reasoning=decision.reasoning,
+                    latency_breakdown_ms=latencies,
+                )
+
+            return AskResponse(
+                request_id=req_id,
+                status=synth_result.status,  # type: ignore[arg-type]
+                route="VectorRoute",
+                answer=synth_result.answer,
+                evidence_objects=synth_result.evidence_objects,
+                sources=synth_result.sources,
+                candidates=None,
+                filters_ignored=vector_result.filters_ignored,
+                answered_via_fallback=decision.answered_via_fallback,
+                unverified_citations=synth_result.unverified_citations,
+                debug=debug_data,
+            )
+
+        # 5. Other routes (GraphRoute, HybridRoute)
+        # Honest not_found under the zero-evidence invariant until their
+        # retrievers land (Fase 6/7). Never ok with empty evidence.
         total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         latencies["total_ms"] = total_elapsed_ms
         logger.info(
@@ -208,7 +264,6 @@ async def ask_question(
             )
 
         route_labels = {
-            "VectorRoute": "pencarian semantik (Fase 4)",
             "GraphRoute": "penelusuran jaringan kolaborasi (Fase 6)",
             "HybridRoute": "analisis tren topik dan kepakaran (Fase 7)",
         }
@@ -220,7 +275,7 @@ async def ask_question(
             route=decision.route,
             answer=(
                 f"Kueri Anda terklasifikasi ke {decision.route} ({detail}), "
-                "yang belum tersedia pada irisan vertikal Fase 3. "
+                "yang belum tersedia pada irisan vertikal saat ini. "
                 "Data tidak ditemukan dalam database untuk rute tersebut."
             ),
             evidence_objects=[],

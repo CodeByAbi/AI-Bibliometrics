@@ -86,13 +86,21 @@ class RequestTracingMiddleware(BaseHTTPMiddleware):
 class RateLimitingMiddleware(BaseHTTPMiddleware):
     """Simple in-memory sliding window IP rate limiter."""
 
+    _instances: List["RateLimitingMiddleware"] = []
+
     def __init__(self, app, requests_per_minute: int = 60):
         super().__init__(app)
         self.rpm = requests_per_minute
         self.window_s = 60.0
         self.history: Dict[str, List[float]] = defaultdict(list)
         self._last_sweep = time.time()
+        RateLimitingMiddleware._instances.append(self)
 
+    @classmethod
+    def reset_all(cls) -> None:
+        """Reset rate limiter history across all instances (used in tests)."""
+        for inst in cls._instances:
+            inst.history.clear()
     def _sweep(self, now: float) -> None:
         """Evict stale IPs to bound memory on long-lived servers (1-min cadence)."""
         if now - self._last_sweep < 60.0:

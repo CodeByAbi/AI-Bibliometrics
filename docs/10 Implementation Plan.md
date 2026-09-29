@@ -5,16 +5,15 @@
 **Menggantikan:** `10 Implementation Plan.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/00` hingga `docs/12`  
 
-> **Status Implementasi & Kesiapan Basis Data (Sinkronisasi Progress Phase 2):**  
+> **Status Implementasi & Kesiapan Basis Data (Sinkronisasi Progress Phase 4):**  
 > 1. **Database PostgreSQL & Vector Storage — DONE:** Basis data PostgreSQL aktif memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, serta tabel edge `institution_collaboration` dan `author_collaboration`.  
 > 2. **Cleaning & Cleaned Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`.  
-> 3. **Kerangka FastAPI & DB Pool (Task 2 & 3 / Phase 2) — DONE:** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi dengan 23 passing tests.  
-> 4. **IN PROGRESS (Phase 3):** `QuestionRouter` (Task 4) dan `SqlRetriever` tervalidasi AST `sqlglot` (Task 5) sudah terimplementasi sebagai vertical slice pertama dan hijau di `develop`; sign-off E2E penuh menyusul Task 12.
->
-> ### Progress Tracker (Sinkronisasi Phase 2 Selesai)
-> **DONE:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a-1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8 (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health) · Task 4 (QuestionRouter & EntityResolutionGate, green slice) · Task 5 (SqlRetriever & sqlglot AST gate, green slice).  
-> **NEXT:** Vertical Slice sign-off → Fase 4 (VectorRetriever, Task 6).
----
+> 3. **Kerangka FastAPI & DB Pool (Task 2 & 3 / Phase 2) — DONE:** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.  
+> 4. **Retriever Slice Fase 3 & 4 — DONE:** `QuestionRouter` & `EntityResolutionGate` (Task 4), `SqlRetriever` tervalidasi AST `sqlglot` (Task 5), `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ (Task 6), dan `CitationVerifier` regex post-hoc sudah aktif dan hijau dengan 177 tests passing.  
+>  
+> ### Progress Tracker (Sinkronisasi Phase 4 Selesai)  
+> **DONE:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a-1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8 (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health) · Task 4 (QuestionRouter & EntityResolutionGate) · Task 5 (SqlRetriever & AST gate) · Task 6 (VectorRetriever, CitationVerifier, VectorAnswerSynthesizer).  
+> **NEXT:** Fase 5 (Evidence Layer / Unifier, Task 7) & Fase 6 (GraphRetriever T1-T4, Task 8).
 
 ## 0. Matriks Status Implementasi
 
@@ -26,7 +25,7 @@
 | **Kontrak API v1** | `FOUNDATION DONE` | MVP | Kontrak `POST /api/v1/ask` dengan skema Pydantic v2 `EvidenceObject`, `AskResponse`, dan error envelope terstandarisasi (Task 2 & 10) |
 | **Question Router** | `LIVE (Fase 3 slice)` | MVP | Router 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) + Entity Resolution Gate (Task 4) |
 | **SqlRetriever** | `LIVE (Fase 3 slice)` | MVP | Text-to-SQL + validasi AST `sqlglot` pada 9 tabel kanonikal + peran `app_readonly` (Task 5) |
-| **VectorRetriever** | `READY FOR RETRIEVER DEV` | MVP | `chunks.embedding` terisi 40/40 (1024-dim) + indeks HNSW aktif; siap untuk implementasi `VectorRetriever` (Task 6) |
+| **VectorRetriever** | `LIVE (Fase 4)` | MVP | VectorRetriever + pgvector cosine `<=>` + `DISTINCT ON (p.publication_id)` + ambang $\ge 0.65$ + `VectorAnswerSynthesizer` + `CitationVerifier` (Task 6) |
 | **Evidence Layer** | `NOT IMPLEMENTED` | MVP | `EvidenceUnifier` + `EvidenceRanker` + `EvidenceObject` enforcement (Task 7 & 9) |
 | **Materialisasi Graf**| `DONE` (Tabel Edge) | MVP | `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) termaterialisasi idempoten (Task 8) |
 | **GraphRetriever** | `NOT IMPLEMENTED` | MVP | GraphRetriever + 4 templat Recursive CTE terparameterisasi T1–T4 (Task 8) |
@@ -80,9 +79,10 @@
 ### Task 5 — SqlRetriever (Relasional Silver)
 - Text-to-SQL Generator + multi-layer AST validation via `sqlglot` + `LIMIT 50` enforcement over 9 canonical tables.
 
-### Task 6 — VectorRetriever (Silver Semantic `chunks`)
-- Embed kueri + pencarian kemiripan kosinus dengan klausa `DISTINCT ON (p.publication_id) LIMIT 8` pada `chunks` dengan threshold similarity $\ge 0.65$.
-
+### Task 6 — VectorRetriever (Silver Semantic `chunks`) (DONE)
+- Embed kueri online (SentenceTransformer / Ollama fallback) + pencarian kemiripan kosinus dengan klausa deduplikasi CTE `DISTINCT ON (p.publication_id) LIMIT 8` pada `chunks` dengan threshold similarity $\ge 0.65$.
+- Penegakan zero-match short-circuit deterministik (`status: not_found`, 0 bukti).
+- Verifikasi sitasi post-hoc via `CitationVerifier` (`[Judul, Tahun, DOI]` / `[Judul, Tahun, no-doi]`).
 ### Task 7 — EvidenceUnifier & EvidenceRanker
 - Normalisasi seluruh output retriever menjadi `EvidenceSet`.
 - Ekstraksi fakta numerik dan pembuatan objek bukti dasar.

@@ -1,0 +1,152 @@
+"""Online Query Embedding Service.
+
+Docs Reference: docs/05 Retrieval Rag Design.md §5.2, docs/09 Tech Stack.md §2, docs/11 Roadmap.md (Fase 4).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, List, Optional
+import httpx
+
+from backend.app.core.config import get_settings
+from backend.app.core.errors import AppException
+from backend.app.core.logging import logger
+
+_st_model: Optional[Any] = None
+_st_lock = asyncio.Lock()
+
+
+class EmbeddingError(AppException):
+    """Exception raised when query embedding generation fails."""
+
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            error_type="embedding_service_error",
+            status_code=500,
+            details=details,
+        )
+
+
+def _load_sentence_transformer(model_name: str) -> Any:
+    """Load SentenceTransformer model instance on CPU with safetensors."""
+    from sentence_transformers import SentenceTransformer
+
+    logger.info("Loading local SentenceTransformer model '%s'...", model_name)
+    return SentenceTransformer(model_name, model_kwargs={"use_safetensors": True})
+
+
+def _encode_local_sync(model: Any, text: str) -> List[float]:
+    """Synchronous CPU encoding of single query text."""
+    embedding = model.encode(text, normalize_embeddings=False)
+    if hasattr(embedding, "tolist"):
+        return embedding.tolist()
+    return list(embedding)
+
+
+async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: int) -> List[float]:
+    """Generate embedding vector via Ollama HTTP API."""
+    base_url = host.rstrip("/")
+    ollama_model = "bge-m3" if "bge-m3" in model_name.lower() else model_name
+
+    async with httpx.AsyncClient(timeout=float(timeout_s)) as client:
+        # Try newer /api/embed first
+        try:
+            resp = await client.post(
+                f"{base_url}/api/embed",
+                json={"model": ollama_model, "input": text},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                embeddings = data.get("embeddings")
+                if embeddings and len(embeddings) > 0:
+                    return embeddings[0]
+        except Exception:
+            pass
+
+        # Fallback to /api/embeddings
+        resp = await client.post(
+            f"{base_url}/api/embeddings",
+            json={"model": ollama_model, "prompt": text},
+        )
+        if resp.status_code != 200:
+            raise EmbeddingError(
+                f"Ollama embedding request failed with HTTP {resp.status_code}",
+                details={"host": base_url, "model": ollama_model, "status": resp.status_code},
+            )
+        data = resp.json()
+        embedding = data.get("embedding")
+        if not embedding or not isinstance(embedding, list):
+            raise EmbeddingError(
+                "Ollama returned invalid embedding format",
+                details={"data_keys": list(data.keys())},
+            )
+        return embedding
+
+
+async def generate_query_embedding(query: str) -> List[float]:
+    """Generate 1024-dimensional dense float vector for search query.
+
+    Attempts local SentenceTransformer first, falling back to Ollama endpoint.
+    """
+    clean_query = query.strip()
+    if not clean_query:
+        raise EmbeddingError("Cannot embed empty query text.")
+
+    settings = get_settings()
+    expected_dim = settings.embedding_dimension
+    model_name = settings.embedding_model
+
+    global _st_model
+    vector: Optional[List[float]] = None
+    local_err: Optional[Exception] = None
+
+    # 1. Try local SentenceTransformer in threadpool
+    try:
+        if _st_model is None:
+            async with _st_lock:
+                if _st_model is None:
+                    _st_model = await asyncio.to_thread(_load_sentence_transformer, model_name)
+        vector = await asyncio.to_thread(_encode_local_sync, _st_model, clean_query)
+    except Exception as exc:
+        local_err = exc
+        logger.warning(
+            "Local SentenceTransformer embedding failed (%s), attempting Ollama fallback...",
+            exc,
+        )
+
+    # 2. Fallback to Ollama if local failed
+    if vector is None:
+        try:
+            vector = await _embed_via_ollama(
+                text=clean_query,
+                host=settings.ollama_host,
+                model_name=model_name,
+                timeout_s=settings.ollama_timeout_s,
+            )
+        except Exception as ollama_exc:
+            logger.error(
+                "Both local SentenceTransformer and Ollama embedding failed. Local: %s, Ollama: %s",
+                local_err,
+                ollama_exc,
+            )
+            raise EmbeddingError(
+                f"Failed to generate query embedding: local error '{local_err}', Ollama error '{ollama_exc}'",
+                details={"local_error": str(local_err), "ollama_error": str(ollama_exc)},
+            ) from ollama_exc
+
+    # 3. Validate dimension
+    if len(vector) != expected_dim:
+        raise EmbeddingError(
+            f"Embedding dimension mismatch: expected {expected_dim}, got {len(vector)}",
+            details={"expected": expected_dim, "actual": len(vector)},
+        )
+
+    return vector
+
+
+def clear_embedding_model_cache() -> None:
+    """Clear cached SentenceTransformer instance (for unit testing)."""
+    global _st_model
+    _st_model = None
