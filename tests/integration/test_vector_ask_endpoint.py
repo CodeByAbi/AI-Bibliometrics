@@ -72,6 +72,12 @@ async def test_ask_endpoint_vector_route_developer_mode_diagnostics():
         assert "vector_retrieval_ms" in data["debug"]["latency_breakdown_ms"]
         assert "synthesis_ms" in data["debug"]["latency_breakdown_ms"]
         assert "total_ms" in data["debug"]["latency_breakdown_ms"]
+        scored = data["debug"]["scored_chunks"]
+        assert isinstance(scored, list) and len(scored) >= 1
+        first = scored[0]
+        assert set(first) == {"publication_id", "title", "year", "doi", "chunk_id", "similarity_score"}
+        assert first["similarity_score"] >= 0.65
+        assert len(scored) == len(data["sources"])
 
 
 @pytest.mark.asyncio

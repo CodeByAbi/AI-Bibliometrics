@@ -5,7 +5,7 @@ Docs Reference: docs/06 Api Design.md §5, docs/05 Retrieval Rag Design.md §4.
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -124,6 +124,11 @@ class DebugInfo(BaseModel):
     sql_executed: Optional[str] = None
     route_reasoning: Optional[str] = None
     latency_breakdown_ms: Dict[str, float] = Field(default_factory=dict)
+    scored_chunks: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="Deduped vector matches for inspection (VectorRoute only): "
+        "publication_id, title, year, doi, chunk_id, similarity_score",
+    )
 
 
 class AskResponse(BaseModel):
