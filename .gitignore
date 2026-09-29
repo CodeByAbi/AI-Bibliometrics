@@ -25,3 +25,9 @@ Thumbs.db
 # Frontend / local indexes (never commit installs or caches)
 node_modules/
 .codegraph/
+
+# Local knowledge notes (Obsidian vault + research notes, never commit)
+.obsidian/
+dashboard/
+literature/
+templates/
