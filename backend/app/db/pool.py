@@ -9,6 +9,7 @@ Enforces invariants:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 import asyncpg
 
@@ -64,19 +65,30 @@ async def create_pool(
 async def init_pool() -> asyncpg.Pool:
     """Initialize singleton pool on FastAPI startup."""
     global _pool
-    if _pool is None or _pool.is_closing():
+    current_loop = asyncio.get_running_loop()
+    if _pool is None or _pool.is_closing() or getattr(_pool, "_loop", None) is not current_loop:
+        if _pool is not None and not _pool.is_closing():
+            try:
+                _pool.terminate()
+            except Exception:
+                pass
         _pool = await create_pool()
         logger.info("Database connection pool initialized successfully.")
     return _pool
 
 
 async def get_pool() -> asyncpg.Pool:
-    """Get active singleton pool, recreating if closed."""
+    """Get active singleton pool, recreating if closed or attached to another event loop."""
     global _pool
-    if _pool is None or _pool.is_closing():
+    current_loop = asyncio.get_running_loop()
+    if _pool is None or _pool.is_closing() or getattr(_pool, "_loop", None) is not current_loop:
+        if _pool is not None and not _pool.is_closing():
+            try:
+                _pool.terminate()
+            except Exception:
+                pass
         _pool = await create_pool()
     return _pool
-
 async def close_pool() -> None:
     """Close singleton pool on FastAPI shutdown."""
     global _pool

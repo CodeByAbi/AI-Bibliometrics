@@ -7,8 +7,8 @@
 
 > **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data. Rute `SQLRoute` dapat dibangun di atasnya segera setelah Task 0/2/5 dieksekusi.  
-> 3. **NEXT (belum tersedia — JANGAN diasumsikan sudah bisa retrieval):** generate embeddings → insert embeddings ke pgvector (`chunks.embedding`, Task 1) → similarity search → retrieval → context construction → LLM generation. `VectorRoute`, `GraphRoute`, dan `HybridRoute` berstatus **BLOCKED** sampai Task 1 / Task 8 / Task 8.5 selesai. Arsitektur RAG di dokumen ini adalah **kontrak rekayasa normatif (PLANNED / NOT YET IMPLEMENTED)** — tidak ada modul router, retriever, unifier, synthesizer, atau UI yang sudah berjalan.  
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + irisan vertikal Fase 3 (`QuestionRouter`, `EntityResolutionGate`, `SqlRetriever` tervalidasi AST + sintesis deterministik) yang sudah hijau di `develop`.  
+> 3. **NEXT (belum tersedia):** `VectorRoute`, `GraphRoute`, dan `HybridRoute` berstatus **BLOCKED** sampai Task 6 / Task 8 (templat T1–T4) / Task 8.5 selesai. Modul router dan SQL retriever/synthesizer sudah berjalan; unifier, vector/graph/hybrid retriever, dan UI belum.  
 > 4. **Implikasi:** desain yang sebelumnya terbaca seolah retrieval "saat ini divalidasi" dikoreksi — validasi retrieval hanya dapat dilakukan **setelah** vector tersimpan dan Task 6/7/12 dieksekusi.
 
 ---
@@ -83,7 +83,7 @@ flowchart TD
 
 ### Spesifikasi 4 Rute Retrieval:
 
-> **Kesiapan rute:** `SQLRoute` → READY-TO-BUILD (data relasional DONE, menunggu Task 0/2/5). `VectorRoute` → **BLOCKED (menunggu Task 1: vector belum tersimpan)**. `GraphRoute` → **BLOCKED (menunggu Task 8: edge tables belum dimaterialisasi)**. `HybridRoute` → **BLOCKED (menunggu Task 1 + 8 + 8.5)**.
+> **Kesiapan rute:** `SQLRoute` → LIVE (irisan vertikal Fase 3 hijau di `develop`). `VectorRoute` → **BLOCKED (menunggu Task 6)**. `GraphRoute` → **BLOCKED (menunggu Task 8: templat T1–T4)**. `HybridRoute` → **BLOCKED (menunggu Task 1 + 8 + 8.5)**.
 
 | Rute RAG | Klasifikasi Intent & Kasus Penggunaan | Lapisan Data Target | Strategi Eksekusi & Validasi |
 |---|---|---|---|

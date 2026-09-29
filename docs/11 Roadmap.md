@@ -16,7 +16,7 @@ Inspeksi repositori per **2026-09-28** menetapkan status tersinkronisasi berikut
 - **DONE — Penyimpanan Vector & Indexing (Fase 1):** Kolom `chunks.embedding` **sudah dibuat dan terisi 100% (40/40 chunk)** dengan representasi 1024-dimensi `BAAI/bge-m3`. Indeks HNSW (`idx_chunks_embedding_hnsw`) dan `idx_chunks_pub_id` sudah aktif dan terverifikasi.
 - **DONE — Materialisasi Tabel Edge (Fase 1):** Tabel edge turunan `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) **sudah dimaterialisasi secara idempoten** dan diverifikasi (`CHECK (a < b)`, `via_publication_ids` valid).
 - **DONE — Kerangka Gateway API & DB Pool (Fase 2):** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.
-- **NEXT — Fase 3:** Irisan Vertikal QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`).
+- **IN PROGRESS — Fase 3:** Irisan Vertikal QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau di `develop`, sign-off E2E menyusul Task 12.
 - **PENDING — Pasca-Fase 3:** Retrieval Semantik (Fase 4), Evidence Layer (Fase 5), Mesin Graf & Analitik Gold (Fase 6), Sintesis Jawaban & E2E (Fase 7-8).
 
 ### 1.1b Pelacak Progres (Sinkronisasi 2026-09-28)
@@ -24,7 +24,7 @@ Inspeksi repositori per **2026-09-28** menetapkan status tersinkronisasi berikut
 | Status | Item |
 |---|---|
 | DONE | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8 (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) |
-| NEXT (Fase 3) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) · Vertical Slice E2E |
+| IN PROGRESS (Fase 3) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) — implementasi + uji hijau di `develop` · Vertical Slice sign-off (Task 12) |
 | PENDING (Fase 4+) | VectorRetriever (Task 6) · Evidence Layer (Task 7) · Synthesizer & CitationVerifier (Task 9) · E2E 12 Queries (Task 12) |
 ### 1.2 Apa yang Harus Dibangun Terlebih Dahulu?
 Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasyarat absolut adalah:
@@ -224,7 +224,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 3 — Irisan Vertikal QueryRouter & Retrieval Terstruktur / SQL
-**Status:** `[PLANNED]`  
+**Status:** `[CURRENT]`  
 **Tujuan:** Membuktikan irisan vertikal pertama sistem yang berjalan: rute pertanyaan masuk, buat dan validasi SQL read-only, eksekusi terhadap data nyata di 9 tabel kanonikal, dan kembalikan jawaban ter-grounding.
 
 - **Prasyarat:** Fase 1 (Skema Terverifikasi) dan Fase 2 (Basis FastAPI).
