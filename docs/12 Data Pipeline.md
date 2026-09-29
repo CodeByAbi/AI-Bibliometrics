@@ -149,6 +149,7 @@ Pembersihan (cleaning) dilakukan pada **lapisan transformasi Python** sebelum da
   Abstract: {abstract}
   ```
 - **Ukuran Batch (Batch Size):** $32$ hingga $64$ chunk per batch (dioptimalkan untuk utilisasi CPU/RAM server).
+> **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
 - **DDL & Indeks HNSW (`pgvector`) pada `chunks`:**
   ```sql
   CREATE EXTENSION IF NOT EXISTS vector;
@@ -210,6 +211,7 @@ GROUP BY 1, 2;
 
 ### 6.1 Pipeline Pemodelan Topik & Akselerasi Tren (`topics` & `topic_evolution`)
 1. **Ekstraksi Klaster Topik (BERTopic / Co-word)**:
+> **Literature:** [[literature/2022 - BERTopic]] · [[literature/1983 - Co-word Analysis]]
    - Mengelompokkan naskah berdasarkan representasi vektor `chunks.embedding` dan matriks kemunculan bersama kata kunci (`keywords`).
    - Menghasilkan 10 kata kunci representatif per topik (`cluster_keywords`).
    - Menghitung centroid vektor topik (`representation_vector vector(1024)`) sebagai rata-rata naskah anggota klaster.
@@ -227,6 +229,7 @@ Menghitung skor kepakaran multi-dimensi per kombinasi penulis dan topik riset:
 $$\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$$
 
 - **Konfigurasi Bobot:** $w_1 = 0.30$ (Relevansi Semantik), $w_2 = 0.25$ (Volume Publikasi Logaritmik), $w_3 = 0.25$ (Field-Weighted Citation Impact), $w_4 = 0.20$ (Kebaruan 3 Tahun Terakhir).
+> **Literature:** [[literature/2005 - Hirsch h-index]]
 - **Metrik Jaringan & H-Index:** Menghitung `h_index_topic` (h-index khusus publikasi dalam topik tersebut) dan `coauthor_network_size` (derajat sentralitas kolaborator aktif dalam topik).
 
 ---
