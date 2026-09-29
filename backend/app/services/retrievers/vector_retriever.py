@@ -19,6 +19,15 @@ from backend.app.models.ask import FilterParams
 from backend.app.services.embedding import EmbeddingError, generate_query_embedding
 
 
+#: Canonical cosine similarity gate for BAAI/bge-m3 (docs/05 §5.2, FR4.5).
+#: Queries below this threshold short-circuit to ``status: not_found``.
+COSINE_SIMILARITY_THRESHOLD: float = 0.65
+
+#: Canonical result size: distinct publications returned per query (FR4.4 —
+#: deduplication by ``publication_id`` happens BEFORE this limit).
+VECTOR_TOP_K: int = 8
+
+
 class VectorMatchItem(BaseModel):
     """A single publication matched via vector chunk similarity."""
 
@@ -41,7 +50,7 @@ class VectorRetrievalResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     matches: List[VectorMatchItem] = Field(default_factory=list)
-    threshold: float = 0.65
+    threshold: float = COSINE_SIMILARITY_THRESHOLD
     filters_ignored: List[str] = Field(default_factory=list)
     sql_executed: str
 
@@ -59,8 +68,8 @@ class VectorRetrievalResult(BaseModel):
 class VectorRetriever:
     """Semantic vector search retriever over publication chunks in PostgreSQL/pgvector."""
 
-    DEFAULT_THRESHOLD: float = 0.65
-    DEFAULT_LIMIT: int = 8
+    DEFAULT_THRESHOLD: float = COSINE_SIMILARITY_THRESHOLD
+    DEFAULT_LIMIT: int = VECTOR_TOP_K
 
     @classmethod
     async def retrieve(
