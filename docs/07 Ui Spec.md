@@ -1,14 +1,14 @@
-# Spesifikasi UI — Anti-Slop, Tata Letak Padat (Consolidated Hybrid Master Blueprint)
+# Spesifikasi UI — Anti-Slop, Dense Layout (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
 **Menggantikan:** `07 Ui Spec.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
-> 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal.  
-> 2. **Implementasi UI (PLANNED / NOT YET IMPLEMENTED):** Direktori implementasi (`frontend/`, `backend/`, `database/`, `scripts/`, `docker/`, `tests/`) belum ada di repositori. Seluruh antarmuka UI Next.js, komponen React, state management, dan handler API di bawah ini berstatus **PLANNED** dan mendefinisikan spesifikasi antarmuka normatif untuk fase implementasi (Task 11).
-> 3. **Sinkronisasi Progress 2026-09-27:** Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) **DONE**; vector storage ke pgvector (Task 1) **PENDING**.
+> **Status Implementasi (Sinkronisasi Progress 2026-09-29):**  
+> 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal untuk validasi end-to-end. Kredensial diamankan secara internal.  
+> 2. **Implementasi UI (PLANNED, Task 11):** Spesifikasi antarmuka Next.js di bawah ini normatif untuk fase implementasi. Kerangka backend FastAPI + DB pool + Ollama (Phase 0–2) sudah DONE; direktori `frontend/` masih PLANNED.
+> 3. **Sinkronisasi Progress 2026-09-29:** Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) **DONE**; vector storage + HNSW (Task 1) **DONE**; edge tables (Task 8) **DONE**.
 
 ---
 
@@ -83,7 +83,7 @@ flowchart LR
 
 ---
 
-## 4. Arsitektur Tata Letak (Tata Letak Padat Dua Panel)
+## 4. Dense Layout Architecture (Two-Panel)
 
 ```text
 ┌────────────────────────┬────────────────────────────────────────────────────────────────────────┐
@@ -141,7 +141,7 @@ Menampilkan blok kode SQL/CTE `font-mono`, alasan perutean (routing), serta rinc
 
 ## 6. Daftar Periksa Kriteria Penerimaan UI (Kriteria Penerimaan Task 11)
 
-- [ ] **AC-UI-1**: Tata letak padat 2-panel ala Notion/Linear terimplementasi tanpa elemen dekoratif berlebih.
+- [ ] **AC-UI-1**: Dense 2-panel layout ala Notion/Linear terimplementasi tanpa elemen dekoratif berlebih.
 - [ ] **AC-UI-2**: Integrasi `POST /api/v1/ask` mendukung render `evidence_objects` terstruktur.
 - [ ] **AC-UI-3**: Badge Rute menampilkan `[SQLRoute]`, `[VectorRoute]`, `[GraphRoute]`, dan `[HybridRoute]`.
 - [ ] **AC-UI-4**: Status loading menampilkan tahapan dinamis dan penghitung waktu berjalan (elapsed time counter).
@@ -156,16 +156,16 @@ Menampilkan blok kode SQL/CTE `font-mono`, alasan perutean (routing), serta rinc
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Vector Storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
 | **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
 | **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
@@ -175,11 +175,11 @@ Menampilkan blok kode SQL/CTE `font-mono`, alasan perutean (routing), serta rinc
 
 ## 8. Keputusan Arsitektur Kanonikal
 
-1. **Keputusan Sitasi Tanpa DOI:**
+1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
-2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
-   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
-3. **Keputusan Mesin Graf Pasca-MVP:**
+2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
 ---
@@ -188,6 +188,7 @@ Menampilkan blok kode SQL/CTE `font-mono`, alasan perutean (routing), serta rinc
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/07 UI Spec.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Dense Layout`, `Vector Storage`, `Dynamic 4-Route`, dll); sync status Phase 0–2 DONE | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/07 UI Spec.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/07 UI Spec.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; vector storage PENDING | Sinkronisasi progress aktual 2026-09-27 |
 | `docs/07 UI Spec.md` v3.4.0 | Menyelaraskan komponen UI dan collapsible sources dengan format sitasi `[Judul, Tahun, DOI]` / `[Judul, Tahun, no-doi]` | Penyelarasan format sitasi dan konsistensi parser |

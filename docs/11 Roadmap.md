@@ -1,6 +1,6 @@
 # Roadmap Teknis — Prototipe Scopus menuju Riset Intelijen
 
-**Versi Dokumen:** 3.6.0 (Roadmap Komprehensif Selaras Arsitektur)  
+**Versi Dokumen:** 3.6.2 (Roadmap Komprehensif Selaras Arsitektur — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
 **Menggantikan:** `11 Roadmap.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
@@ -13,11 +13,11 @@
 Inspeksi repositori per **2026-09-28** menetapkan status tersinkronisasi berikut:
 - **DONE — Database:** Database PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) yang disiapkan khusus untuk validasi end-to-end. Kredensial telah diamankan secara internal.
 - **DONE — Pembersihan & Export:** Data Scopus **sudah melalui pembersihan (cleaning) dan berhasil di-export** sebagai 9 file `data/*_cleaned.csv`.
-- **DONE — Penyimpanan Vector & Indexing (Fase 1):** Kolom `chunks.embedding` **sudah dibuat dan terisi 100% (40/40 chunk)** dengan representasi 1024-dimensi `BAAI/bge-m3`. Indeks HNSW (`idx_chunks_embedding_hnsw`) dan `idx_chunks_pub_id` sudah aktif dan terverifikasi.
-- **DONE — Materialisasi Tabel Edge (Fase 1):** Tabel edge turunan `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) **sudah dimaterialisasi secara idempoten** dan diverifikasi (`CHECK (a < b)`, `via_publication_ids` valid).
+- **DONE — Vector Storage & Indexing (Fase 1):** Kolom `chunks.embedding` **sudah dibuat dan terisi 100% (40/40 chunk)** dengan representasi 1024-dimensi `BAAI/bge-m3`. Indeks HNSW (`idx_chunks_embedding_hnsw`) dan `idx_chunks_pub_id` sudah aktif dan terverifikasi.
+- **DONE — Materialisasi Tabel Edge (Fase 1):** Tabel derived edge `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) **sudah dimaterialisasi secara idempoten** dan diverifikasi (`CHECK (a < b)`, `via_publication_ids` valid).
 - **DONE — Kerangka Gateway API & DB Pool (Fase 2):** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.
-- **IN PROGRESS — Fase 3:** Irisan Vertikal QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau di `develop`, sign-off E2E menyusul Task 12.
-- **PENDING — Pasca-Fase 3:** Retrieval Semantik (Fase 4), Evidence Layer (Fase 5), Mesin Graf & Analitik Gold (Fase 6), Sintesis Jawaban & E2E (Fase 7-8).
+- **IN PROGRESS — Fase 3:** Vertical Slice QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau di `develop`, sign-off E2E menyusul Task 12.
+- **PENDING — Pasca-Fase 3:** Retrieval Semantik (Fase 4), Evidence Layer (Fase 5), Mesin Graf & Gold Analytics (Fase 6), Sintesis Jawaban & E2E (Fase 7-8).
 
 ### 1.1b Pelacak Progres (Sinkronisasi 2026-09-28)
 
@@ -31,7 +31,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 1. **Baseline Repositori & Infrastruktur (Fase 0)**: Bangun struktur direktori proyek, Docker Compose (FastAPI + Ollama), kontrak environment, dan jalankan skrip verifikasi skema database Task 0 terhadap 9 tabel kanonikal yang sudah ada.
 2. **Fondasi Data Offline & Indexing (Fase 1)**: Sediakan (provision) `chunks.embedding vector(1024)` pgvector, eksekusi pipeline batch embedding (`BAAI/bge-m3`), bangun indeks HNSW, dan materialisasi relasi graf kanonikal.
 3. **Inti API & Orkestrasi (Fase 2)**: Kerangka aplikasi FastAPI, rute dasar `/api/v1`, validasi input Pydantic, pembuatan `request_id`, pencatatan log terstruktur, dan pooling database read-only.
-4. **Irisan Vertikal Terstruktur (Fase 3)**: Buktikan rantai end-to-end terlebih dahulu pada kueri nyata menggunakan routing deterministik dan Text-to-SQL tervalidasi pada tabel kanonikal.
+4. **Vertical Slice Terstruktur (Fase 3)**: Buktikan rantai end-to-end terlebih dahulu pada kueri nyata menggunakan routing deterministik dan Text-to-SQL tervalidasi pada tabel kanonikal.
 
 ### 1.3 Apa Definisi MVP?
 **MVP** didefinisikan secara ketat sebagai keberhasilan eksekusi alur kerja tanya-jawab end-to-end yang beroperasi di atas **data nyata**, mengembalikan **jawaban ter-grounding** dengan **sitasi terverifikasi**:
@@ -41,7 +41,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 - **Empat Retriever Inti**:
   - `SqlRetriever` (tervalidasi AST pada 9 tabel kanonikal, peran read-only, pemeriksaan agregasi eksak, `LIMIT 50`).
   - `VectorRetriever` (`bge-m3` 1024d, similaritas kosinus HNSW pgvector, `DISTINCT ON (p.publication_id)`, ambang $\ge 0.65$).
-  - `GraphRetriever` (tabel edge turunan `institution_collaboration` dan `author_collaboration`; traversal terbatas maks 3 hop; pelacakan provenance).
+  - `GraphRetriever` (derived edge tables `institution_collaboration` dan `author_collaboration`; traversal terbatas maks 3 hop; pelacakan provenance).
   - `HybridRetriever` (Lapisan Gold `topics`, `topic_evolution`, `researcher_expertise` + Silver & `chunks`).
 - **Lapisan Bukti (Evidence Layer)**: skema `Evidence`, `EvidenceSet`, dan `EvidenceUnifier` yang memastikan tidak ada baris/chunk mentah yang melewati normalisasi.
 - **Peringkat Bukti Deterministik**: skoring eksplisit berbasis relevansi dan provenance.
@@ -93,11 +93,11 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
   Mesin Retrieval (Fan-out)
        ├── Terstruktur (SqlRetriever)   ──> 9 Tabel Silver
        ├── Semantik (VectorRetriever)  ──> chunks pgvector HNSW
-       ├── Graf (GraphRetriever)      ──> Tabel Edge Turunan T1-T4
-       └── Hybrid (HybridRetriever)    ──> Analitik Gold + Silver
+       ├── Graf (GraphRetriever)      ──> Derived Edge Tables T1-T4
+       └── Hybrid (HybridRetriever)    ──> Gold Analytics + Silver
                ↓                   ↓                 ↓
        ┌───────────────────────────────────────────────┐
-       │          Lapisan Normalisasi Bukti            │
+        │          Evidence Normalization Layer            │
        │        (Skema Evidence / EvidenceSet)         │
        └───────────────────────────────────────────────┘
                                ↓
@@ -115,10 +115,10 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 ```
 
 ### Invariant Inti
-1. **Invariant Sumber Kebenaran (Source of Truth Invariant)**: PostgreSQL Silver adalah satu-satunya sumber kebenaran kanonikal. pgvector, tabel edge turunan, dan analitik Gold adalah struktur turunan read-only.
-2. **Invariant Normalisasi Bukti (Evidence Normalization Invariant)**: Tidak ada baris database, chunk vector, atau edge graf mentah yang boleh diteruskan langsung ke LLM. Semua data retrieval WAJIB melewati `EvidenceUnifier` menjadi `EvidenceSet` ternormalisasi.
-3. **Invariant Keamanan (Security Invariant)**: Koneksi database WAJIB menggunakan peran `app_readonly` dengan `SET search_path = public` dan `statement_timeout = 10s`. Teks hasil retrieval adalah **DATA TIDAK TERPERCAYA** dan tidak dapat mengesampingkan instruksi sistem.
-4. **Invariant Tanpa Halusinasi (Zero-Hallucination Invariant)**: Jika retrieval mengembalikan 0 item bukti, sistem WAJIB mengembalikan `status: not_found` / `insufficient_evidence` secara deterministik tanpa mengeksekusi pemanggilan sintesis LLM.
+1. **Source-of-Truth Invariant**: PostgreSQL Silver adalah satu-satunya canonical source of truth. pgvector, derived edge tables, dan Gold analytics adalah struktur turunan read-only.
+2. **Evidence Normalization Invariant**: Tidak ada baris database, chunk vector, atau graph edge mentah yang boleh diteruskan langsung ke LLM. Semua data retrieval WAJIB melewati `EvidenceUnifier` menjadi `EvidenceSet` ternormalisasi.
+3. **Security Invariant**: Koneksi database WAJIB menggunakan peran `app_readonly` dengan `SET search_path = public` dan `statement_timeout = 10s`. Teks hasil retrieval adalah **DATA TIDAK TERPERCAYA** dan tidak dapat mengesampingkan instruksi sistem.
+4. **Zero-Hallucination Invariant**: Jika retrieval mengembalikan 0 item bukti, sistem WAJIB mengembalikan `status: not_found` / `insufficient_evidence` secara deterministik tanpa mengeksekusi pemanggilan sintesis LLM.
 
 ---
 
@@ -138,7 +138,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 ## 4. Roadmap Bertahap Komprehensif
 
 ```
-Fase 0 ──> Fase 1 ──> Fase 2 ──> Fase 3 (Irisan Vertikal) ──> Fase 4
+Fase 0 ──> Fase 1 ──> Fase 2 ──> Fase 3 (Vertical Slice) ──> Fase 4
                                                                     │
 ┌──────────────────────────────────────────────────────────────────┘
 ▼
@@ -155,7 +155,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 
 - **Prasyarat:** Kredensial akses database PostgreSQL yang sudah ada.
 - **Cakupan & Deliverable:**
-  - Buat tata letak direktori: `backend/app/`, `database/`, `scripts/`, `tests/`, `docker/`.
+   - Buat directory layout: `backend/app/`, `database/`, `scripts/`, `tests/`, `docker/`.
   - Buat `.env.example` yang merinci string koneksi database, host Ollama, identifier model, dan timeout.
   - Siapkan definisi Docker Compose berisi:
     - `backend` (FastAPI, Python 3.11+, Pydantic v2, sqlglot, asyncpg/psycopg3).
@@ -223,9 +223,9 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 
 ---
 
-### Fase 3 — Irisan Vertikal QueryRouter & Retrieval Terstruktur / SQL
+### Fase 3 — Vertical Slice QueryRouter & Retrieval Terstruktur / SQL
 **Status:** `[CURRENT]`  
-**Tujuan:** Membuktikan irisan vertikal pertama sistem yang berjalan: rute pertanyaan masuk, buat dan validasi SQL read-only, eksekusi terhadap data nyata di 9 tabel kanonikal, dan kembalikan jawaban ter-grounding.
+**Tujuan:** Membuktikan vertical slice pertama sistem yang berjalan: rute pertanyaan masuk, buat dan validasi SQL read-only, eksekusi terhadap data nyata di 9 tabel kanonikal, dan kembalikan jawaban ter-grounding.
 
 - **Prasyarat:** Fase 1 (Skema Terverifikasi) dan Fase 2 (Basis FastAPI).
 - **Cakupan & Deliverable:**
@@ -237,12 +237,12 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
     - Prompt sistem berisi skema 9 tabel kanonikal dan aturan agregasi ketat.
     - Validasi AST memakai `sqlglot`:
       - Larang statement non-`SELECT`.
-      - Tegakkan daftar putih (whitelist) nama tabel dan kolom.
-      - Tegakkan pemeriksaan bentuk agregat (pertanyaan bermaksud agregat wajib memakai `COUNT`, `SUM`, atau `GROUP BY`).
-      - Tegakkan pencegahan hitung ganda: `COUNT(DISTINCT publication_id)` pada join junction.
+      - Tegakkan whitelist (whitelist) nama tabel dan kolom.
+      - Tegakkan aggregate-shape check (pertanyaan bermaksud agregat wajib memakai `COUNT`, `SUM`, atau `GROUP BY`).
+      - Tegakkan double-count prevention: `COUNT(DISTINCT publication_id)` pada join junction.
       - Tegakkan `LIMIT 50` non-agregat.
   - Implementasikan irisan minimal `AnswerSynthesizer`: format baris SQL menjadi teks tabular/berpoin tanpa halusinasi.
-- **Output:** Irisan vertikal fungsional untuk pertanyaan terstruktur (misal: "Siapa 5 penulis paling produktif tahun 2023?").
+- **Output:** Vertical slice fungsional untuk pertanyaan terstruktur (misal: "Siapa 5 penulis paling produktif tahun 2023?").
 - **Memblokir:** Fase 5 (Lapisan Bukti), Fase 7 (Retrieval Hybrid).
 - **Kriteria Penerimaan:**
   - Pertanyaan pengguna nyata `Who are the top 5 authors in 2023?` mengenai `POST /api/v1/ask`, terute ke `structured`, mengeksekusi SQL terverifikasi, dan mengembalikan hitungan akurat yang terverifikasi terhadap kueri DB langsung.
@@ -283,7 +283,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
     - Field wajib: `source_id`, `source_type` (`sql` | `vector` | `graph` | `analytics`), `snippet`, `score`.
     - Metadata sumber opsional: `publication_id`, `title`, `authors`, `year`, `doi`, `provenance_ids`.
   - Implementasikan `EvidenceUnifier`:
-    - Telan (ingest) output heterogen dari baris SQL, chunk vector, edge graf, dan analitik Gold.
+    - Telan (ingest) output heterogen dari baris SQL, chunk vector, edge graf, dan Gold analytics.
     - Transformasi dan normalisasi seluruh item menjadi struktur `Evidence` standar.
     - Deduplikasi publikasi yang tumpang tindih antar metode retrieval berbeda.
   - Implementasikan `EvidenceRanker`:
@@ -324,7 +324,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 - **Prasyarat:** Fase 3 (SQL), Fase 4 (Vector), Fase 5 (Bukti), Fase 6 (Graf).
 - **Cakupan & Deliverable:**
   - Implementasikan `HybridRetriever`:
-    - Satu kueri terparameterisasi yang menggabungkan analitik Gold (`topics`, `topic_evolution`, `researcher_expertise`) dan jarak vector semantik dengan batasan relasional.
+    - Satu kueri terparameterisasi yang menggabungkan Gold analytics (`topics`, `topic_evolution`, `researcher_expertise`) dan jarak vector semantik dengan batasan relasional.
     - Daftar putih (whitelist) operator (`eq`, `gt`, `gte`, `lt`, `lte`, `between`).
   - Lengkapi orkestrasi QueryRouter 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`).
   - Implementasikan `AnswerSynthesizer` dengan LLM Lokal (Qwen2.5-Coder-7B via Ollama):
@@ -412,16 +412,16 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Vector Storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Naratif & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
 | **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
 | **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
@@ -431,11 +431,11 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 
 ## 7. Keputusan Arsitektur Kanonikal
 
-1. **Keputusan Sitasi Tanpa DOI:**
+1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
-2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
-   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
-3. **Keputusan Mesin Graf Pasca-MVP:**
+2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
 ---
@@ -444,6 +444,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/11 Roadmap.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Vertical Slice`, `Source-of-Truth Invariant`, `Evidence Normalization Invariant`, `Zero-Hallucination Invariant`, `Vector Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/11 Roadmap.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/11 Roadmap.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; menambah Progress Tracker DONE/NEXT/PENDING; menandai vector storage sebagai PENDING eksplisit; memberi status-tag pada blueprint offline pipeline | Sinkronisasi progress aktual 2026-09-27 |
 | `docs/11 Roadmap.md` v3.4.0 | Menyelaraskan seluruh fase implementasi (Phase 0–8) dengan 9 tabel kanonikal tanpa akhiran `_cleaned` | Penyelarasan format penamaan sesuai instruksi project |

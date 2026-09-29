@@ -1,13 +1,13 @@
 # Desain Retrieval & RAG — Hybrid Multi-Rute (SQL + Vector + Graph + Analitik)
 
-**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
 **Menggantikan:** `05 Retrieval Rag Design.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
 > **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + irisan vertikal Fase 3 (`QuestionRouter`, `EntityResolutionGate`, `SqlRetriever` tervalidasi AST + sintesis deterministik) yang sudah hijau di `develop`.  
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + vertical slice Fase 3 (`QuestionRouter`, `EntityResolutionGate`, `SqlRetriever` tervalidasi AST + sintesis deterministik) yang sudah hijau di `develop`.  
 > 3. **NEXT (belum tersedia):** `VectorRoute`, `GraphRoute`, dan `HybridRoute` berstatus **BLOCKED** sampai Task 6 / Task 8 (templat T1–T4) / Task 8.5 selesai. Modul router dan SQL retriever/synthesizer sudah berjalan; unifier, vector/graph/hybrid retriever, dan UI belum.  
 > 4. **Implikasi:** desain yang sebelumnya terbaca seolah retrieval "saat ini divalidasi" dikoreksi — validasi retrieval hanya dapat dilakukan **setelah** vector tersimpan dan Task 6/7/12 dieksekusi.
 
@@ -15,7 +15,7 @@
 
 ## 1. Tujuan
 
-Dokumen ini mendefinisikan spesifikasi arsitektur teknis lengkap untuk sistem **Retrieval-Augmented Generation (RAG)** multi-rute di atas pangkalan data bibliometrik Scopus (9 tabel relasional Silver, 2 tabel edge graf kolaborasi, dan 3 tabel analitik Gold).
+Dokumen ini mendefinisikan spesifikasi arsitektur teknis lengkap untuk sistem **Retrieval-Augmented Generation (RAG)** multi-rute di atas pangkalan data bibliometrik Scopus (9 tabel relasional Silver, 2 tabel edge graf kolaborasi, dan 3 tabel Gold analytics).
 
 Tujuan utama arsitektur ini adalah melayani kueri analitik riset dan kebijakan (*Research Intelligence & Policy Synthesis*) dengan 4 moda retrieval spesifik:
 1. **`SQLRoute` (Kueri Faktual / Statistik Bibliometrik)**: Menjawab agregasi presisi, penghitungan volume, pemeringkatan produktivitas, dan analisis pendanaan (*"Siapa 5 penulis paling produktif tahun 2023?"*, *"Berapa total sitasi institusi X?"*) langsung ke 9 tabel Silver.
@@ -37,13 +37,13 @@ Arsitektur RAG memisahkan secara tegas 6 tahapan pemrosesan kueri:
 ```mermaid
 flowchart TD
     UserQuery[Pertanyaan Pengguna via /api/v1/ask] --> Gateway[Gateway FastAPI: Validasi Batas & request_id]
-    Gateway --> Router[Router Pertanyaan: Dispatcher Dinamis 4-Rute]
+    Gateway --> Router[Question Router: Dispatcher Dinamis 4-Rute]
     
     subgraph RetrievalEngine [Fan-Out Mesin Retrieval]
         Router -->|SQLRoute| SQLR[SqlRetriever: 9 Tabel Silver + Validasi AST]
         Router -->|VectorRoute| VecR[VectorRetriever: chunks.embedding BAAI/bge-m3 HNSW]
-        Router -->|GraphRoute| GraphR[GraphRetriever: Recursive CTE Terparameterisasi T1-T4 pada Edge Turunan]
-        Router -->|HybridRoute| HybR[HybridRetriever: Analitik Gold + Tabel Vector + Silver]
+        Router -->|GraphRoute| GraphR[GraphRetriever: Recursive CTE Terparameterisasi T1-T4 pada Derived Edge]
+        Router -->|HybridRoute| HybR[HybridRetriever: Gold Analytics + Tabel Vector + Silver]
     end
 
     SQLR --> Unifier[EvidenceUnifier: Normalisasi & Deduplikasi Publikasi]
@@ -63,7 +63,7 @@ flowchart TD
 
 ---
 
-## 3. Router Pertanyaan & Dispatch Intent Dinamis
+## 3. Question Router & Dispatch Intent Dinamis
 
 Modul **`QuestionRouter`** pada Gateway FastAPI menganalisis pertanyaan pengguna dan filter input untuk mengarahkan eksekusi ke rute optimal:
 
@@ -83,7 +83,7 @@ flowchart TD
 
 ### Spesifikasi 4 Rute Retrieval:
 
-> **Kesiapan rute:** `SQLRoute` → LIVE (irisan vertikal Fase 3 hijau di `develop`). `VectorRoute` → **BLOCKED (menunggu Task 6)**. `GraphRoute` → **BLOCKED (menunggu Task 8: templat T1–T4)**. `HybridRoute` → **BLOCKED (menunggu Task 1 + 8 + 8.5)**.
+> **Kesiapan rute:** `SQLRoute` → LIVE (vertical slice Fase 3 hijau di `develop`). `VectorRoute` → **BLOCKED (menunggu Task 6)**. `GraphRoute` → **BLOCKED (menunggu Task 8: templat T1–T4)**. `HybridRoute` → **BLOCKED (menunggu Task 1 + 8 + 8.5)**.
 
 | Rute RAG | Klasifikasi Intent & Kasus Penggunaan | Lapisan Data Target | Strategi Eksekusi & Validasi |
 |---|---|---|---|
@@ -148,15 +148,15 @@ class EvidenceObject(BaseModel):
 ### 5.1 `SQLRoute` — Faktual & Agregasi
 - **Validator AST**: Parser Python `sqlglot` memeriksa:
   1. Node root wajib `Select`.
-  2. Daftar putih (whitelist) tabel: 9 tabel Silver (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`).
-  3. Pemeriksaan Bentuk Agregat (Aggregate-Shape Check): Jika kueri adalah agregat, wajib memuat `COUNT`, `SUM`, `AVG`, atau `GROUP BY`.
-  4. Pencegahan Hitung Ganda (Double-Count Prevention): Join ke tabel junction wajib menggunakan `COUNT(DISTINCT publication_id)`.
+  2. whitelist tabel: 9 tabel Silver (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`).
+  3. Aggregate-Shape Check: Jika kueri adalah agregat, wajib memuat `COUNT`, `SUM`, `AVG`, atau `GROUP BY`.
+  4. Double-Count Prevention: Join ke tabel junction wajib menggunakan `COUNT(DISTINCT publication_id)`.
   5. Penegakan `LIMIT 50`.
 
 ### 5.2 `VectorRoute` — Semantik & Konseptual
 > **Status: BLOCKED.** Seluruh spesifikasi di bawah hanya dapat dieksekusi setelah Task 1 (generate + insert `chunks.embedding` + HNSW) selesai. Similarity search **belum ready**.
 - **Model**: `BAAI/bge-m3` (Dense 1024 dimensi, Float32).
-- **Gerbang Kesamaan Kosinus (Cosine Similarity Gate)**: $\ge 0.65$.
+- **Cosine Similarity Gate**: $\ge 0.65$.
 - **Kueri SQL Terparameterisasi**:
   ```sql
   SELECT DISTINCT ON (p.publication_id)
@@ -193,7 +193,7 @@ class EvidenceObject(BaseModel):
   LIMIT 20;
   ```
 
-### 5.4 `HybridRoute` — Analitik Gold (Tren Topik & Kepakaran)
+### 5.4 `HybridRoute` — Gold Analytics (Tren Topik & Kepakaran)
 - **Eksekusi**: Mengakses tabel Gold Layer `topics`, `topic_evolution`, dan `researcher_expertise` digabung dengan `authors` dan `publications`.
 - **Kueri Analitik Kepakaran & Tren Gabungan**:
   ```sql
@@ -290,16 +290,16 @@ flowchart LR
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Vector Storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Narasi & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
 | **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
 | **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
@@ -309,11 +309,11 @@ flowchart LR
 
 ## 10. Keputusan Arsitektur Kanonikal
 
-1. **Keputusan Sitasi Tanpa DOI:**
+1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
-2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
-   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
-3. **Keputusan Mesin Graf Pasca-MVP:**
+2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
 ---
@@ -322,6 +322,7 @@ flowchart LR
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/05 Retrieval Rag Design.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Question Router`, `Aggregate-Shape Check`, `Double-Count Prevention`, `whitelist`, `Cosine Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/05 Retrieval Rag Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/05 Retrieval Rag Design.md` v3.5.0 | Menambah pemisahan CURRENT vs NEXT; menandai VectorRoute/GraphRoute/HybridRoute sebagai BLOCKED (vector/edge/Gold belum ada); mengoreksi kesan retrieval "saat ini divalidasi" | Sinkronisasi progress aktual 2026-09-27 |
 | `docs/05 Retrieval Rag Design.md` v3.4.0 | Mengembalikan seluruh referensi kueri SQL, whitelist, dan tabel ke nama standar tanpa akhiran `_cleaned` | Penyelarasan format penamaan sesuai instruksi project |

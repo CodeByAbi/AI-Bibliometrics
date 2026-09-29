@@ -22,6 +22,7 @@ class FilterParams(BaseModel):
     institution_name: Optional[str] = Field(None, max_length=255, description="Nama institusi")
     topic_name: Optional[str] = Field(None, max_length=255, description="Klaster topik riset")
     document_type: Optional[str] = Field(None, max_length=64, description="Tipe dokumen Scopus")
+    keyword: Optional[str] = Field(None, max_length=255, description="Kata kunci publikasi (lowercase)")
 
     @field_validator("year_to")
     @classmethod

@@ -37,6 +37,21 @@ def format_citation(title: Optional[str], year: Optional[int], doi: Optional[str
     return f"[{t}, {y}, {d}]"
 
 
+def _format_period(filters: Optional[FilterParams]) -> str:
+    """Render the observation window, honoring exact year and ranges (P1-5)."""
+    if not filters:
+        return "all-time"
+    if filters.year is not None:
+        return str(filters.year)
+    if filters.year_from is not None and filters.year_to is not None:
+        return f"{filters.year_from}-{filters.year_to}"
+    if filters.year_from is not None:
+        return f"{filters.year_from}-present"
+    if filters.year_to is not None:
+        return f"up-to-{filters.year_to}"
+    return "all-time"
+
+
 class SqlAnswerSynthesizer:
     """Deterministic, zero-hallucination synthesizer for SQL relational results."""
 
@@ -60,7 +75,7 @@ class SqlAnswerSynthesizer:
 
         rows = sql_result.rows
         cols = set(sql_result.columns)
-        period_str = str(filters.year) if (filters and filters.year) else "all-time"
+        period_str = _format_period(filters)
 
         evidence_objects: List[EvidenceObject] = []
         sources: List[SourceItem] = []
@@ -170,11 +185,23 @@ class SqlAnswerSynthesizer:
                 )
 
         # Case E: Generic table output
+        # AC-RAG-2 requires every status=ok response to carry evidence_objects,
+        # so emit a row-count evidence even when columns match no known shape.
         else:
             answer_paragraphs.append("Berikut adalah hasil kueri database:")
             for idx, r in enumerate(rows, 1):
                 row_str = ", ".join(f"{k}: {v}" for k, v in r.items() if v is not None)
                 answer_paragraphs.append(f"{idx}. {row_str}")
+            evidence_objects.append(
+                EvidenceObject(
+                    claim=f"Kueri database mengembalikan {len(rows)} baris ({period_str})",
+                    metric="publication_count",
+                    value=len(rows),
+                    period=period_str,
+                    sources=[],
+                    confidence=1.0,
+                )
+            )
 
         full_answer = "\n\n".join(answer_paragraphs)
 

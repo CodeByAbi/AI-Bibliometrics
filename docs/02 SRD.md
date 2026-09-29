@@ -1,6 +1,6 @@
 # SRD — Dokumen Kebutuhan Sistem (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.0 (Consolidated Hybrid Master Blueprint)  
+**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
 **Menggantikan:** `02 SRD.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
@@ -40,7 +40,7 @@
 - FR4.2: Pencarian similaritas (similarity search; jarak Cosine pgvector `<=>`) mengembalikan top-K chunk paling relevan dari `chunks.embedding` menggunakan indeks HNSW (`m=16, ef_construction=64`).
 - FR4.3: Chunks dikaitkan kembali ke `publications.publication_id` asal untuk metadata sitasi (`[Title, Year, DOI]` / `[Title, Year, no-doi]`).
 - FR4.4: Hasil pencarian vector dideduplikasi menurut `publication_id` SEBELUM LIMIT — `DISTINCT ON (p.publication_id) LIMIT 8` berarti 8 publikasi unik, bukan baris chunk yang tumpang tindih.
-- FR4.5: Gerbang ambang similaritas (similarity threshold gate): kueri dengan nilai kemiripan $< 0.65$ diarahkan ke `status: not_found`, top-K tidak dipaksakan.
+- FR4.5: Similarity Threshold Gate: kueri dengan nilai kemiripan $< 0.65$ diarahkan ke `status: not_found`, top-K tidak dipaksakan.
 
 ### FR5 — Sintesis Jawaban
 - FR5.1: LLM (`Qwen2.5-Coder-7B-Instruct` via Ollama) menyusun jawaban natural language murni sebagai mesin sintesis naratif/komparasi berdasarkan `EvidenceSet` — dilarang memproduksi angka mentah di luar objek bukti.
@@ -76,7 +76,7 @@
 - Kegagalan satu jalur tidak boleh membuat seluruh request gagal total tanpa pesan — selalu ada fallback response yang informatif.
 
 ### NFR4 — Observabilitas (Observability)
-- Setiap kueri dicatat (log) dengan field konkret: `request_id`, pertanyaan asli, rute terpilih, kontrak-entitas hasil router, hasil gerbang resolusi entitas, `answered_via_fallback`, SQL yang dieksekusi, skor similaritas hasil, threshold hit/miss, waktu eksekusi per tahap, dan sukses/gagal.
+- Setiap kueri dicatat (log) dengan field konkret: `request_id`, pertanyaan asli, rute terpilih, kontrak-entitas hasil router, hasil entity resolution gate, `answered_via_fallback`, SQL yang dieksekusi, skor similaritas hasil, threshold hit/miss, waktu eksekusi per tahap, dan sukses/gagal.
 
 ### NFR5 — Keamanan (Security)
 - Kredensial DB dan API key tidak pernah ada di kode frontend/client-side.
@@ -114,16 +114,16 @@
 | Area Keputusan | Keputusan Kanonikal | Dokumen Terkait | Status |
 |---|---|---|---|
 | **Database** | PostgreSQL 15+ (sudah dibuat & siap pakai, kredensial internal aman) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Penyimpanan vector** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (PLANNED, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Vector Storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) pada `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Konvensi penamaan** | 9 tabel relasional kanonikal standar: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
 | **Pembersihan data (cleaning)** | Bronze → Silver via script Python — **DONE** (hasil pembersihan ter-export di `data/*_cleaned.csv`, 9 file; sudah ter-load di 9 tabel Silver) | `01`, `04`, `10`, `12` | ALIGNED |
 | **Normalisasi lowercase** | Narasi & kategorikal (`abstract`, `keyword`, `country`, dll.) disimpan full lowercase; tampilan & ID asli dipertahankan; kolom `*_normalized` (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) disimpan lowercase+trim+strip-punct untuk agregasi/pencarian | `01`, `02`, `04`, `05`, `12` | ALIGNED |
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, dioptimalkan CPU, input `Title: {title}\nAbstract: {abstract}` (PLANNED, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | 4-Rute Dinamis: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Edge Turunan T1–T4), `HybridRoute` (Analitik Gold + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Gerbang similaritas vector** | Ambang kesamaan kosinus dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang batas short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
+| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Strategi mesin graf** | MVP dikunci menggunakan Recursive CTE Terparameterisasi PostgreSQL (T1–T4); rekomendasi evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
+| **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
 | **Kontrak API** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` dengan `evidence_objects`) + `GET /api/v1/health`. Endpoint `/api/query` resmi SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
 | **Dataset prototipe** | Dataset prototipe kecil (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) untuk validasi end-to-end lengkap | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
@@ -133,11 +133,11 @@
 
 ## 6. Keputusan Arsitektur Kanonikal
 
-1. **Keputusan Sitasi Tanpa DOI:**
+1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
-2. **Keputusan Ambang Batas Kesamaan Kosinus (`VectorRoute`):**
-   - *Keputusan:* Nilai ambang batas kesamaan kosinus dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri yang menghasilkan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
-3. **Keputusan Mesin Graf Pasca-MVP:**
+2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
 ---
@@ -146,6 +146,7 @@
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/02 SRD.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Similarity Threshold Gate`, `Vector Similarity Gate`, `Dynamic 4-Route`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/02 SRD.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/02 SRD.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; menegaskan generate + insert embedding/vector ke pgvector PENDING | Sinkronisasi progress aktual 2026-09-27 |
 | `docs/02 SRD.md` v3.4.0 | Mengembalikan seluruh nama tabel menjadi standar tanpa akhiran `_cleaned` (`publications`, `authors`, dll.) | Penyelarasan format penamaan sesuai instruksi project |
