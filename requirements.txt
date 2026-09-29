@@ -21,6 +21,11 @@ sentence-transformers==6.1.0  # Local BAAI/bge-m3 1024-dim query embedding; fall
 httpx==0.28.1           # Klien HTTP async untuk Ollama service & testing API
 python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose nilai dari env_file (.env tak pernah di-commit)
 
+# Testing — pytest suite (Task 2/12: tests/unit + tests/integration + live-db tests/test_phase1_validation.py)
+pytest==9.1.1            # Test runner; dipakai CI .github/workflows/python-app.yml
+pytest-asyncio==1.4.0    # Menjalankan @pytest.mark.asyncio (asyncio_mode=auto, lihat pytest.ini)
+pytest-mock==3.16.0      # Fixture mocker untuk mocking service/Ollama di unit test
+
 # ---------------------------------------------------------------------------
 # TBD / FUTURE — SENGAJA TIDAK DI-INSTALL. Jangan uncomment sebelum Task terkait
 # (docs/09 §9). Mencantumkan di sini sebagai komentar agar tidak ada technical
@@ -35,7 +40,7 @@ python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose n
 #   sudah DONE server-side; paket Python baru dibutuhkan saat skrip embedding ada.
 # Task 3/6/9 (TBD-3/TBD-5): httpx — klien HTTP standar ke Ollama (Qwen2.5-Coder-7B)
 #   dan test API. Docs hanya mengunci "klien HTTP standar", bukan library-nya.
-# Task 2/12: pytest + pytest-asyncio + pytest-mock ter-install dan dipakai
+# Task 2/12: pytest + pytest-asyncio + pytest-mock di-pin di atas untuk
 #   tests/unit + tests/integration (gate coverage pytest-cov menyusul Fase 8).
 # Task 8.5: pandas / scikit-learn / networkx / bertopic untuk Gold analytics
 #   (topics, topic_evolution, researcher_expertise) — docs/09 §8 menulis

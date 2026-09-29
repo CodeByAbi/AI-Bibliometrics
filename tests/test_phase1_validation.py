@@ -14,6 +14,7 @@ Validates all Phase 1 invariants:
 
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import pytest
@@ -23,6 +24,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.db import get_db_connection
+
+# Live-DB suite: skip cleanly in CI where no database credentials exist.
+# scripts/db.py auto-loads .env at import, so by this point os.environ already
+# reflects both exported vars and the local .env file (which is never committed).
+_LIVE_DB_MISSING = os.environ.get("DB_URL_OWNER") is None and os.environ.get("DB_URL") is None
+pytestmark = pytest.mark.skipif(
+    _LIVE_DB_MISSING,
+    reason="Live PostgreSQL required (neither $DB_URL_OWNER nor $DB_URL is set)",
+)
 
 
 def test_database_connection():
