@@ -115,11 +115,11 @@ class EvidenceSourceRef(BaseModel):
 
 class EvidenceObject(BaseModel):
     claim: str = Field(..., description="Pernyataan faktual spesifik yang didukung oleh data")
-    metric: str = Field(..., description="Jenis metrik terverifikasi: publication_count | citation_count | expertise_score | growth_score | citation_acceleration")
+    metric: str = Field(..., description="Jenis metrik terverifikasi: publication_count | citation_count | expertise_score | growth_score | citation_acceleration | similarity_score")
     value: Union[float, int, str] = Field(..., description="Nilai eksak metrik yang ditarik langsung dari database")
     period: str = Field(..., description="Rentang waktu observasi metrik, contoh: '2020-2023' atau 'all-time'")
     sources: List[EvidenceSourceRef] = Field(..., description="Daftar publikasi bukti primer yang mendasari nilai metrik")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Tingkat keyakinan bukti (1.0 untuk analitik SQL/Gold eksak, 0.7-0.95 untuk similaritas vector)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Tingkat keyakinan bukti (1.0 untuk analitik SQL/Gold eksak, round(similarity,4) untuk similaritas vector, yaitu 0.65-1.0 di atas gate >= 0.65)")
 ```
 
 ### 4.2 Alur Bukti dari Database ke Konteks LLM & Output
@@ -268,11 +268,14 @@ flowchart LR
     ValidateEvObjects --> AssemblePayload[Bungkus ke Envelope AskResponse]
 ```
 
-1. **Pemeriksaan Sitasi Publikasi**: Mencocokkan string `[Judul, Tahun, DOI]` atau `[Judul, Tahun, no-doi]` dengan metadata publikasi dalam `EvidenceSet`. Regex validator:
+1. **Pemeriksaan Sitasi Publikasi**: Mencocokkan string `[Judul, Tahun, DOI]` atau `[Judul, Tahun, no-doi]` (tahun juga menerima `n.d.`) dengan metadata publikasi dalam `EvidenceSet`. Regex validator (kanonikal, sama dengan `backend/app/services/synthesizer/citation.py:CITATION_PATTERN`):
    ```python
    # Regex untuk mengekstrak sitasi [Judul, Tahun, DOI/no-doi]
-   CITATION_PATTERN = re.compile(r"\[([^,]+),\s*(\d{4}),\s*(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+|no-doi)\]")
+   CITATION_PATTERN = re.compile(
+       r"\[([^,\[\]]+),\s*(\d{4}|n\.d\.),\s*(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+|no-doi)\]"
+   )
    ```
+   Catatan: judul berkomma tidak didukung oleh pola ini (keterbatasan yang diketahui, jangan diubah sepihak); pencocokan judul memakai normalisasi + Jaccard `>= 0.8` dengan penolakan substring satu-token, dan tahun numerik wajib sama persis (`n.d.` tunduk pada pencocokan judul saja).
    Jika DOI atau kombinasi Judul+Tahun tidak ada dalam bukti retrieval, sitasi dihapus dari teks dan dicatat pada array metadata `unverified_citations`.
 2. **Pemeriksaan Nilai Metrik Objek Bukti**: Memvalidasi bahwa seluruh nilai `value` dalam `evidence_objects` identik secara eksak dengan hasil kueri database (mencegah distorsi angka oleh LLM).
 

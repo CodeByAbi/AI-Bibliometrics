@@ -6,6 +6,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.2, docs/09 Tech Stack.md §2
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any, List, Optional
 import httpx
 
@@ -17,14 +18,29 @@ _st_model: Optional[Any] = None
 _st_lock = asyncio.Lock()
 
 
+def validate_embedding_vector(vector: List[float], expected_dim: int) -> None:
+    """Validate embedding dims are finite floats (guards pgvector literal build)."""
+    if len(vector) != expected_dim:
+        raise EmbeddingError(
+            f"Embedding dimension mismatch: expected {expected_dim}, got {len(vector)}",
+            details={"expected": expected_dim, "actual": len(vector)},
+        )
+    for v in vector:
+        if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+            raise EmbeddingError(
+                "Embedding contains non-finite value (NaN/Inf); refusing to build SQL literal.",
+                details={"expected": expected_dim},
+            )
+
+
 class EmbeddingError(AppException):
-    """Exception raised when query embedding generation fails."""
+    """Exception raised when query embedding generation fails (503, not 500)."""
 
     def __init__(self, message: str, details: Optional[dict[str, Any]] = None):
         super().__init__(
             message=message,
-            error_type="embedding_service_error",
-            status_code=500,
+            error_type="embedding_service_unavailable",
+            status_code=503,
             details=details,
         )
 
@@ -89,6 +105,12 @@ async def generate_query_embedding(query: str) -> List[float]:
     """Generate 1024-dimensional dense float vector for search query.
 
     Attempts local SentenceTransformer first, falling back to Ollama endpoint.
+
+    Encoding contract (locked with offline batch): raw query text with
+    ``normalize_embeddings=False``, matching ``scripts/embed_chunks.py``
+    (which encodes ``Title: {title}\\nAbstract: {chunk}`` the same way).
+    Query-side prefixing is intentionally NOT added here so the live
+    ``>= 0.65`` cosine gate stays calibrated to the stored vectors.
     """
     clean_query = query.strip()
     if not clean_query:
@@ -136,12 +158,8 @@ async def generate_query_embedding(query: str) -> List[float]:
                 details={"local_error": str(local_err), "ollama_error": str(ollama_exc)},
             ) from ollama_exc
 
-    # 3. Validate dimension
-    if len(vector) != expected_dim:
-        raise EmbeddingError(
-            f"Embedding dimension mismatch: expected {expected_dim}, got {len(vector)}",
-            details={"expected": expected_dim, "actual": len(vector)},
-        )
+    # 3. Validate dimension + finiteness (guards pgvector literal build)
+    validate_embedding_vector(vector, expected_dim)
 
     return vector
 

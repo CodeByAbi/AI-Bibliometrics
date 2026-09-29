@@ -10,22 +10,23 @@
 ## 1. Ringkasan Eksekutif & Penilaian Status Proyek
 
 ### 1.1 Posisi Saat Ini (Realitas Audit Repositori)
-Inspeksi repositori per **2026-09-28** menetapkan status tersinkronisasi berikut:
+Inspeksi repositori per **2026-09-29** menetapkan status tersinkronisasi berikut:
 - **DONE — Database:** Database PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi, 22 kolom naskah) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) yang disiapkan khusus untuk validasi end-to-end. Kredensial telah diamankan secara internal.
 - **DONE — Pembersihan & Export:** Data Scopus **sudah melalui pembersihan (cleaning) dan berhasil di-export** sebagai 9 file `data/*_cleaned.csv`.
 - **DONE — Vector Storage & Indexing (Fase 1):** Kolom `chunks.embedding` **sudah dibuat dan terisi 100% (40/40 chunk)** dengan representasi 1024-dimensi `BAAI/bge-m3`. Indeks HNSW (`idx_chunks_embedding_hnsw`) dan `idx_chunks_pub_id` sudah aktif dan terverifikasi.
 - **DONE — Materialisasi Tabel Edge (Fase 1):** Tabel derived edge `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) **sudah dimaterialisasi secara idempoten** dan diverifikasi (`CHECK (a < b)`, `via_publication_ids` valid).
 - **DONE — Kerangka Gateway API & DB Pool (Fase 2):** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.
-- **IN PROGRESS — Fase 3:** Vertical Slice QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau di `develop`, sign-off E2E menyusul Task 12.
-- **PENDING — Pasca-Fase 3:** Retrieval Semantik (Fase 4), Evidence Layer (Fase 5), Mesin Graf & Gold Analytics (Fase 6), Sintesis Jawaban & E2E (Fase 7-8).
+- **IMPLEMENTED — VERIFICATION PENDING — Fase 3:** Vertical Slice QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau, sign-off E2E menyusul Task 12.
+- **IMPLEMENTED — VERIFICATION PENDING — Fase 4:** Mesin Retrieval Semantik / Vector (`VectorRetriever` + online embedding `BAAI/bge-m3` + `VectorAnswerSynthesizer` + `CitationVerifier` Vector-scoped) — unit + integration hijau; checklist runtime live-DB + sign-off E2E (Task 12) masih pending.
+- **PENDING — Pasca-Fase 4:** Evidence Layer generik (Fase 5), Mesin Graf & Gold Analytics (Fase 6), Sintesis Jawaban Unified & E2E (Fase 7-8).
 
-### 1.1b Pelacak Progres (Sinkronisasi 2026-09-28)
+### 1.1b Pelacak Progres (Sinkronisasi 2026-09-29)
 
 | Status | Item |
 |---|---|
 | DONE | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8 (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) |
-| IN PROGRESS (Fase 3) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) — implementasi + uji hijau di `develop` · Vertical Slice sign-off (Task 12) |
-| PENDING (Fase 4+) | VectorRetriever (Task 6) · Evidence Layer (Task 7) · Synthesizer & CitationVerifier (Task 9) · E2E 12 Queries (Task 12) |
+| IMPLEMENTED — VERIFICATION PENDING (Fase 3–4) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) · VectorRetriever + online embedding (Task 6) · Vector-scoped Synthesizer + CitationVerifier (Task 9a) — implementasi + unit/integration hijau · E2E sign-off (Task 12) pending |
+| PENDING (Fase 5+) | Evidence Layer generik (Task 7) · GraphRetriever T1–T4 (Task 8-retriever) · Gold Analytics (Task 8.5) · Unified Synthesizer (Task 9-full) · API full wiring (Task 10-full) · Frontend (Task 11) · E2E 12 Queries (Task 12) |
 ### 1.2 Apa yang Harus Dibangun Terlebih Dahulu?
 Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasyarat absolut adalah:
 1. **Baseline Repositori & Infrastruktur (Fase 0)**: Bangun struktur direktori proyek, Docker Compose (FastAPI + Ollama), kontrak environment, dan jalankan skrip verifikasi skema database Task 0 terhadap 9 tabel kanonikal yang sudah ada.
@@ -70,15 +71,15 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
   └────────────────────────────────────────────────────────┘
            ├───────────────────────────────┐
            ↓                               ↓
-    Persiapan Chunk                  Ekstraksi Graf
-    [NEXT — Task 1a]                [PENDING — Task 8]
-           ↓                               ↓
-    Embedding (BAAI/bge-m3)         Materialisasi Tabel Edge
-    [PENDING — Task 1b]             [PENDING — Task 8]
-           ↓                               ↓
-    pgvector (chunks.embedding)     institution/author_collab
-    [PENGISIAN PENDING — Task 1c]   [Indeks Relasi Turunan]
-    [Indeks Semantik Turunan]        [PENDING]
+     Persiapan Chunk                  Ekstraksi Graf
+     [DONE — Task 1a]                [DONE — Task 8-edge]
+            ↓                               ↓
+     Embedding (BAAI/bge-m3)         Materialisasi Tabel Edge
+     [DONE — Task 1b]                [DONE — Task 8-edge]
+            ↓                               ↓
+     pgvector (chunks.embedding)     institution/author_collab
+     [DONE — Task 1c, 40/40]         [DONE — 254 + 484 edge]
+     [DONE — Task 1d HNSW]           [Indeks Relasi Turunan]
 
 
                               PIPELINE ONLINE
@@ -251,7 +252,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 4 — Mesin Retrieval Semantik / Vector
-**Status:** `[PLANNED]`  
+**Status:** `[IMPLEMENTED — VERIFICATION PENDING]` (unit + integration hijau; checklist runtime live-DB + sign-off E2E Task 12 pending)
 **Tujuan:** Menghadirkan pencarian dokumen berbasis kemiripan pada abstrak publikasi riset dengan deduplikasi ketat dan penegakan ambang ($\ge 0.65$).
 
 - **Prasyarat:** Fase 1 (Embedding Terisi & Terindeks) dan Fase 2 (Basis FastAPI).
@@ -264,8 +265,9 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
     - Gabung (join) dengan tabel `publications` untuk mengambil metadata kanonikal (`title`, `year`, `doi`, `eid`).
   - Implementasikan gerbang ambang skor similaritas: saring chunk di bawah ambang dasar similaritas ($\ge 0.65$).
   - Tangani skenario nol-kecocokan: kembalikan daftar kosong segera jika tidak ada chunk lolos ambang.
-- **Output:** `VectorRetriever` teruji yang mengembalikan chunk publikasi topikal terdedup menurut naskah (paper).
-- **Memblokir:** Fase 5 (Lapisan Bukti), Fase 7 (Retrieval Hybrid).
+- **Output:** `VectorRetriever` teruji yang mengembalikan chunk publikasi topikal terdedup menurut naskah (paper). Implementasi: `backend/app/services/embedding.py` (dual-path lokal + fallback Ollama, dim-check 1024, guard non-finite) + `backend/app/services/retrievers/vector_retriever.py` (`DISTINCT ON`, `LIMIT 8`, gate `>= 0.65`, `filters_ignored`, redaksi debug `[vector_1024d]`) + `VectorAnswerSynthesizer`/`CitationVerifier` (Task 9a, Vector-scoped) + wiring `POST /api/v1/ask` (`VectorRoute`).
+- **Catatan verifikasi:** vektor precomputed divalidasi dimensi + finite sebelum build literal SQL; literal vektor diinterpolasi dari float tervalidasi (`f"{v:.8f}"`, aman de facto) sedangkan threshold/filter/ID/limit tetap `$N` parameterized; operator memakai kualifikasi `extensions.<=>` (asumsi ekstensi `vector` di skema `extensions`, layout Supabase).
+- **Memblokir:** Fase 5 (Lapisan Bukti generik), Fase 7 (Retrieval Hybrid).
 - **Kriteria Penerimaan:**
   - Pertanyaan "papers about oxidative stress in Wharton's jelly" mengembalikan 8 publikasi topikal teratas dengan DOI dan abstrak valid.
   - Tidak ada satu publikasi pun muncul berulang dalam daftar chunk yang dikembalikan.

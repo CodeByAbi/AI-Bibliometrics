@@ -72,3 +72,32 @@ async def test_generate_query_embedding_all_backends_fail_raises():
         with patch("backend.app.services.embedding._embed_via_ollama", side_effect=RuntimeError("Ollama failed")):
             with pytest.raises(EmbeddingError, match="Failed to generate query embedding"):
                 await generate_query_embedding("Doomed query")
+
+
+@pytest.mark.asyncio
+async def test_generate_query_embedding_failure_maps_to_503():
+    """Embedding outage must surface as 503 (service unavailable), not 500."""
+    clear_embedding_model_cache()
+
+    with patch("backend.app.services.embedding._load_sentence_transformer", side_effect=RuntimeError("Local failed")):
+        with patch("backend.app.services.embedding._embed_via_ollama", side_effect=RuntimeError("Ollama failed")):
+            try:
+                await generate_query_embedding("Doomed query")
+                raise AssertionError("expected EmbeddingError")
+            except EmbeddingError as exc:
+                assert exc.status_code == 503
+                assert exc.error_type == "embedding_service_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_generate_query_embedding_non_finite_raises():
+    """NaN/Inf model output must be rejected before SQL literal construction."""
+    import math
+
+    mock_st = MagicMock()
+    mock_st.encode.return_value = [0.05] * 1023 + [math.inf]
+
+    with patch("backend.app.services.embedding._load_sentence_transformer", return_value=mock_st):
+        clear_embedding_model_cache()
+        with pytest.raises(EmbeddingError, match="non-finite"):
+            await generate_query_embedding("Query with bad vector")

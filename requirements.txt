@@ -26,8 +26,10 @@ python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose n
 # (docs/09 §9). Mencantumkan di sini sebagai komentar agar tidak ada technical
 # decision baru yang tersembunyi di lockfile.
 # ---------------------------------------------------------------------------
-# Task 1 (TBD-4): batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py (BELUM ADA).
-#   Jalur online query-embedding SUDAH diputuskan di Fase 4 (Task 6): SentenceTransformer lokal
+# Task 1 (TBD-4): batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py.
+#   Model embedding SUDAH di-pin di bawah (sentence-transformers==6.1.0; torch +
+#   safetensors datang transitif) dan dipakai bersama oleh batch offline (Task 1)
+#   dan online query-embedding Fase 4 (Task 6): SentenceTransformer lokal
 #   sebagai primer + fallback endpoint embedding Ollama (backend/app/services/embedding.py).
 # Task 1c: pgvector (paket PyPI, helper insert vector) — ekstensi DB `vector`
 #   sudah DONE server-side; paket Python baru dibutuhkan saat skrip embedding ada.
