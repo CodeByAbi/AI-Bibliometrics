@@ -7,15 +7,16 @@
 
 > **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + vertical slice Fase 3 (`QuestionRouter`, `EntityResolutionGate`, `SqlRetriever` tervalidasi AST + sintesis deterministik) yang sudah hijau di `develop`.  
-> 3. **NEXT (belum tersedia):** `VectorRoute`, `GraphRoute`, dan `HybridRoute` berstatus **BLOCKED** sampai Task 6 / Task 8 (templat T1–T4) / Task 8.5 selesai. Modul router dan SQL retriever/synthesizer sudah berjalan; unifier, vector/graph/hybrid retriever, dan UI belum.  
-> 4. **Implikasi:** desain yang sebelumnya terbaca seolah retrieval "saat ini divalidasi" dikoreksi — validasi retrieval hanya dapat dilakukan **setelah** vector tersimpan dan Task 6/7/12 dieksekusi.
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` yang sudah hijau di `develop` dengan 177 tests passing.  
+> 3. **NEXT (belum tersedia):** `GraphRoute` dan `HybridRoute` berstatus **BLOCKED** sampai Task 8 (templat T1–T4) / Task 8.5 selesai. Modul router, SQL retriever, vector retriever, synthesizer, dan citation verifier sudah berjalan; unifier, graph/hybrid retriever, dan UI belum.  
+> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding` kini aktif dan tervalidasi.
 
 ---
 
 ## 1. Tujuan
 
 Dokumen ini mendefinisikan spesifikasi arsitektur teknis lengkap untuk sistem **Retrieval-Augmented Generation (RAG)** multi-rute di atas pangkalan data bibliometrik Scopus (9 tabel relasional Silver, 2 tabel edge graf kolaborasi, dan 3 tabel Gold analytics).
+> **Literature:** [[literature/2020 - Retrieval-Augmented Generation]]
 
 Tujuan utama arsitektur ini adalah melayani kueri analitik riset dan kebijakan (*Research Intelligence & Policy Synthesis*) dengan 4 moda retrieval spesifik:
 1. **`SQLRoute` (Kueri Faktual / Statistik Bibliometrik)**: Menjawab agregasi presisi, penghitungan volume, pemeringkatan produktivitas, dan analisis pendanaan (*"Siapa 5 penulis paling produktif tahun 2023?"*, *"Berapa total sitasi institusi X?"*) langsung ke 9 tabel Silver.
@@ -83,7 +84,7 @@ flowchart TD
 
 ### Spesifikasi 4 Rute Retrieval:
 
-> **Kesiapan rute:** `SQLRoute` → LIVE (vertical slice Fase 3 hijau di `develop`). `VectorRoute` → **BLOCKED (menunggu Task 6)**. `GraphRoute` → **BLOCKED (menunggu Task 8: templat T1–T4)**. `HybridRoute` → **BLOCKED (menunggu Task 1 + 8 + 8.5)**.
+> **Kesiapan rute:** `SQLRoute` → LIVE (Task 5). `VectorRoute` → LIVE (Task 6). `GraphRoute` → **BLOCKED (menunggu Task 8: templat T1–T4)**. `HybridRoute` → **BLOCKED (menunggu Task 8 + 8.5)**.
 
 | Rute RAG | Klasifikasi Intent & Kasus Penggunaan | Lapisan Data Target | Strategi Eksekusi & Validasi |
 |---|---|---|---|
@@ -153,9 +154,10 @@ class EvidenceObject(BaseModel):
   4. Double-Count Prevention: Join ke tabel junction wajib menggunakan `COUNT(DISTINCT publication_id)`.
   5. Penegakan `LIMIT 50`.
 
-### 5.2 `VectorRoute` — Semantik & Konseptual
-> **Status: BLOCKED.** Seluruh spesifikasi di bawah hanya dapat dieksekusi setelah Task 1 (generate + insert `chunks.embedding` + HNSW) selesai. Similarity search **belum ready**.
+### 5.2 `VectorRoute` — Semantik & Konseptual (LIVE — Task 6)
+> **Status: LIVE.** Pencarian similaritas semantik kosinus ber-indeks HNSW dengan deduplikasi per naskah dan ambang $\ge 0.65$ aktif melayani kueri konseptual.
 - **Model**: `BAAI/bge-m3` (Dense 1024 dimensi, Float32).
+> **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
 - **Cosine Similarity Gate**: $\ge 0.65$.
 - **Kueri SQL Terparameterisasi**:
   ```sql
@@ -176,6 +178,7 @@ class EvidenceObject(BaseModel):
 
 ### 5.3 `GraphRoute` — Jaringan Kolaborasi
 - **Eksekusi**: Menggunakan 4 templat terparameterisasi (T1–T4) pada edge table `institution_collaboration` dan `author_collaboration`.
+> **Literature:** [[literature/Apache AGE Graph Extension]]
 - **Templat T1 (Institusi Partner)**:
   ```sql
   SELECT ic.institution_b AS partner_id, i.institution_name AS partner_name, 
