@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.core.logging import logger
-from backend.app.models.ask import EvidenceSourceRef, SourceItem
 
 # Standard canonical citation pattern: [Title, Year, DOI] or [Title, Year, no-doi]
 CITATION_PATTERN = re.compile(
