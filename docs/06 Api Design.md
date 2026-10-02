@@ -141,9 +141,10 @@ class CandidateItem(BaseModel):
 
 class DebugInfo(BaseModel):
     sql_executed: Optional[str]
-    route_reasoning: Optional[str]
-    latency_breakdown_ms: Dict[str, float]
+    route_reasoning: Optional[str]  # Wajib ada di semua cabang saat developer_mode=true (dikunci via test parametrized 6 rute x fallback)
+    latency_breakdown_ms: Dict[str, float]  # Kunci kanonikal: routing_ms, entity_resolution_ms, sql_retrieval_ms | vector_retrieval_ms, evidence_unify_ms (Fase 5), synthesis_ms, total_ms
     scored_chunks: Optional[List[Dict[str, Any]]]  # VectorRoute saja: publication_id, title, year, doi, chunk_id, similarity_score
+    evidence_set: Optional[Dict[str, Any]]  # Fase 5: {query, evidence_objects[], sources[], items_count, filters_ignored[], sql_executed, is_empty} — hanya saat developer_mode=true
 
 class AskResponse(BaseModel):
     request_id: str = Field(..., description="UUIDv4 pelacakan request yang unik")
@@ -222,7 +223,7 @@ class AskResponse(BaseModel):
 
 ## 6. Spesifikasi Pemeriksaan Kesehatan: `GET /api/v1/health`
 
-Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, dan layanan Ollama:
+Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, lapisan Evidence Fase 5, dan layanan Ollama:
 
 ```json
 {
@@ -244,9 +245,12 @@ Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, dan
     "status": "ready",
     "model": "BAAI/bge-m3",
     "dimension": 1024
-  }
+  },
+  "evidence_layer_ready": true
 }
 ```
+
+`evidence_layer_ready` adalah probe Fase 5 tanpa DB: `true` hanya bila `EvidenceUnifier` mengekspos `from_sql`/`from_vector`/`from_graph`/`from_analytics`/`unify`, `EvidenceRanker` mengekspos `rank_evidence_objects`/`rank_sources`/`rank_items`, dan `EvidenceSet` mengekspos `is_empty`/`to_metrics_json`/`to_chunks_text`/`to_untrusted_evidence_block`. Probe tidak pernah melempar (gagal → `false`, respons tetap tersanitasi). Status sistem `healthy` mensyaratkan `silver_tables_ready && pgvector_ready && evidence_layer_ready`; selain itu `degraded` (atau `unhealthy` bila DB `disconnected`).
 
 ---
 
@@ -272,7 +276,7 @@ Semua pengecualian (*exception*) internal ditangkap di gerbang batas (boundary) 
 - [ ] **AC-API-1**: Endpoint `POST /api/v1/ask` tervalidasi menggunakan Pydantic v2 dan mendukung 4 rute retrieval normatif.
 - [ ] **AC-API-2**: Skema `AskResponse` menyertakan array `evidence_objects` dengan field `claim`, `metric`, `value`, `period`, `sources`, dan `confidence`.
 - [ ] **AC-API-3**: Tidak ada error internal atau raw stack trace yang bocor ke respons client.
-- [ ] **AC-API-4**: Endpoint `GET /api/v1/health` memverifikasi status koneksi basis data Silver/Gold, pgvector, dan LLM Ollama.
+- [ ] **AC-API-4**: Endpoint `GET /api/v1/health` memverifikasi status koneksi basis data Silver/Gold, pgvector, lapisan Evidence Fase 5 (`evidence_layer_ready`), dan LLM Ollama.
 
 ---
 
