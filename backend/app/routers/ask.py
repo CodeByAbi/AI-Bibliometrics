@@ -1,12 +1,13 @@
 """Ask router endpoint (/api/v1/ask).
 
-Docs Reference: docs/06 Api Design.md §5, docs/05 Retrieval Rag Design.md.
+Docs Reference: docs/06 Api Design.md §5, docs/05 Retrieval Rag Design.md §4 (EvidenceSet).
 """
 
 from __future__ import annotations
 
 import time
 import uuid
+from typing import Any, Dict
 from fastapi import APIRouter, Request, status
 from backend.app.core.logging import logger
 from backend.app.db.pool import get_pool
@@ -15,15 +16,42 @@ from backend.app.models.ask import (
     AskResponse,
     DebugInfo,
 )
+from backend.app.services.evidence.models import EvidenceSet
+from backend.app.services.evidence.unifier import EvidenceUnifier
+from backend.app.services.retrievers.graph_retriever import GraphRetriever
 from backend.app.services.retrievers.sql_retriever import SqlRetriever
 from backend.app.services.retrievers.vector_retriever import VectorRetriever
 from backend.app.services.router import EntityResolutionGate, QuestionRouter
 from backend.app.services.synthesizer.answer import (
+    GraphAnswerSynthesizer,
     SqlAnswerSynthesizer,
+    SynthesizedGraphResponse,
+    SynthesizedSqlResponse,
+    SynthesizedVectorResponse,
     VectorAnswerSynthesizer,
 )
-
 router = APIRouter(tags=["Ask"])
+
+
+def _debug_evidence_set(
+    synth_result: SynthesizedSqlResponse | SynthesizedVectorResponse | SynthesizedGraphResponse | None,
+    ev_set: EvidenceSet,
+) -> Dict[str, Any] | None:
+    """Serialize the normalized EvidenceSet for developer_mode inspection.
+
+    Returns a JSON-safe dict mirroring the canonical EvidenceSet fields so
+    multi-source retrieval can be traced back to its deduplicated evidence
+    before synthesis (Phase 5 acceptance: no raw-row-to-LLM bypass).
+    """
+    return {
+        "query": ev_set.query,
+        "evidence_objects": [ev.model_dump() for ev in ev_set.evidence_objects],
+        "sources": [s.model_dump() for s in ev_set.sources],
+        "items_count": len(ev_set.items),
+        "filters_ignored": list(ev_set.filters_ignored),
+        "sql_executed": ev_set.sql_executed,
+        "is_empty": ev_set.is_empty,
+    }
 
 
 @router.post(
@@ -138,7 +166,7 @@ async def ask_question(
                 debug=debug_data,
             )
 
-        # 3. SQLRoute Execution (Phase 3 Core)
+        # 3. SQLRoute Execution (Phase 3 retrieval + Phase 5 Evidence gate)
         if decision.route == "SQLRoute":
             t2 = time.perf_counter()
             sql_result = await SqlRetriever.retrieve(
@@ -150,11 +178,44 @@ async def ask_question(
             )
             latencies["sql_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
 
+            # Phase 5 gate: normalize rows -> canonical EvidenceSet exactly once.
+            t_ev = time.perf_counter()
+            ev_set = EvidenceUnifier.from_sql(
+                payload.question, sql_result, filters=payload.filters
+            )
+            latencies["evidence_unify_ms"] = round((time.perf_counter() - t_ev) * 1000, 2)
+
+            if ev_set.is_empty:
+                total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+                latencies["total_ms"] = total_elapsed_ms
+                debug_data = None
+                if payload.developer_mode:
+                    debug_data = DebugInfo(
+                        sql_executed=sql_result.sql_executed,
+                        route_reasoning=decision.reasoning,
+                        latency_breakdown_ms=latencies,
+                        evidence_set=_debug_evidence_set(None, ev_set),
+                    )
+                return AskResponse(
+                    request_id=req_id,
+                    status="not_found",
+                    route="SQLRoute",
+                    answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                    evidence_objects=[],
+                    sources=[],
+                    candidates=None,
+                    filters_ignored=list(ev_set.filters_ignored),
+                    answered_via_fallback=decision.answered_via_fallback,
+                    unverified_citations=[],
+                    debug=debug_data,
+                )
+
             t3 = time.perf_counter()
             synth_result = SqlAnswerSynthesizer.synthesize(
                 payload.question,
                 sql_result,
                 filters=payload.filters,
+                evidence_set=ev_set,
             )
             latencies["synthesis_ms"] = round((time.perf_counter() - t3) * 1000, 2)
 
@@ -175,6 +236,7 @@ async def ask_question(
                     sql_executed=sql_result.sql_executed,
                     route_reasoning=decision.reasoning,
                     latency_breakdown_ms=latencies,
+                    evidence_set=_debug_evidence_set(synth_result, synth_result.evidence_set or EvidenceSet(query=payload.question)),
                 )
 
             return AskResponse(
@@ -191,7 +253,7 @@ async def ask_question(
                 debug=debug_data,
             )
 
-        # 4. VectorRoute Execution (Phase 4 Core)
+        # 4. VectorRoute Execution (Phase 4 retrieval + Phase 5 Evidence gate)
         if decision.route == "VectorRoute":
             t2 = time.perf_counter()
             vector_result = await VectorRetriever.retrieve(
@@ -202,12 +264,48 @@ async def ask_question(
                 resolved_institution_id=resolution.resolved_institution_id,
             )
             latencies["vector_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
+            if vector_result.embedding_ms is not None:
+                latencies["embedding_ms"] = round(vector_result.embedding_ms, 2)
+
+            # Phase 5 gate: normalize chunks -> canonical EvidenceSet exactly once.
+            t_ev = time.perf_counter()
+            ev_set = EvidenceUnifier.from_vector(
+                payload.question, vector_result, filters=payload.filters
+            )
+            latencies["evidence_unify_ms"] = round((time.perf_counter() - t_ev) * 1000, 2)
+
+            if ev_set.is_empty:
+                total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+                latencies["total_ms"] = total_elapsed_ms
+                debug_data = None
+                if payload.developer_mode:
+                    debug_data = DebugInfo(
+                        sql_executed=vector_result.sql_executed,
+                        route_reasoning=decision.reasoning,
+                        latency_breakdown_ms=latencies,
+                        embedding_backend=vector_result.embedding_backend,
+                        evidence_set=_debug_evidence_set(None, ev_set),
+                    )
+                return AskResponse(
+                    request_id=req_id,
+                    status="not_found",
+                    route="VectorRoute",
+                    answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                    evidence_objects=[],
+                    sources=[],
+                    candidates=None,
+                    filters_ignored=list(ev_set.filters_ignored),
+                    answered_via_fallback=decision.answered_via_fallback,
+                    unverified_citations=[],
+                    debug=debug_data,
+                )
 
             t3 = time.perf_counter()
             synth_result = VectorAnswerSynthesizer.synthesize(
                 payload.question,
                 vector_result,
                 filters=payload.filters,
+                evidence_set=ev_set,
             )
             latencies["synthesis_ms"] = round((time.perf_counter() - t3) * 1000, 2)
 
@@ -228,6 +326,7 @@ async def ask_question(
                     sql_executed=vector_result.sql_executed,
                     route_reasoning=decision.reasoning,
                     latency_breakdown_ms=latencies,
+                    embedding_backend=vector_result.embedding_backend,
                     scored_chunks=[
                         {
                             "publication_id": m.publication_id,
@@ -239,6 +338,7 @@ async def ask_question(
                         }
                         for m in vector_result.matches
                     ],
+                    evidence_set=_debug_evidence_set(synth_result, synth_result.evidence_set or EvidenceSet(query=payload.question)),
                 )
 
             return AskResponse(
@@ -255,9 +355,88 @@ async def ask_question(
                 debug=debug_data,
             )
 
-        # 5. Other routes (GraphRoute, HybridRoute)
-        # Honest not_found under the zero-evidence invariant until their
-        # retrievers land (Fase 6/7). Never ok with empty evidence.
+        # 5. GraphRoute Execution (Phase 6 GraphRetriever + Evidence gate + GraphAnswerSynthesizer)
+        if decision.route == "GraphRoute":
+            t2 = time.perf_counter()
+            graph_result = await GraphRetriever.retrieve(
+                conn,
+                payload.question,
+                filters=payload.filters,
+                resolved_author_id=resolution.resolved_author_id,
+                resolved_author_name=resolution.resolved_author_name,
+                resolved_institution_id=resolution.resolved_institution_id,
+                resolved_institution_name=resolution.resolved_institution_name,
+            )
+            latencies["graph_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
+
+            # Phase 5/6 gate: normalize graph edges -> canonical EvidenceSet exactly once.
+            t_ev = time.perf_counter()
+            ev_set = EvidenceUnifier.from_graph(
+                payload.question, graph_result, filters=payload.filters
+            )
+            latencies["evidence_unify_ms"] = round((time.perf_counter() - t_ev) * 1000, 2)
+
+            if ev_set.is_empty:
+                total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+                latencies["total_ms"] = total_elapsed_ms
+                debug_data = None
+                if payload.developer_mode:
+                    debug_data = DebugInfo(
+                        sql_executed=graph_result.sql_executed,
+                        route_reasoning=decision.reasoning,
+                        latency_breakdown_ms=latencies,
+                        evidence_set=_debug_evidence_set(None, ev_set),
+                    )
+                return AskResponse(
+                    request_id=req_id,
+                    status="not_found",
+                    route="GraphRoute",
+                    answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                    evidence_objects=[],
+                    sources=[],
+                    candidates=None,
+                    filters_ignored=list(ev_set.filters_ignored),
+                    answered_via_fallback=decision.answered_via_fallback,
+                    unverified_citations=[],
+                    debug=debug_data,
+                )
+
+            t3 = time.perf_counter()
+            synth_result = GraphAnswerSynthesizer.synthesize(
+                payload.question,
+                graph_result,
+                filters=payload.filters,
+                evidence_set=ev_set,
+            )
+            latencies["synthesis_ms"] = round((time.perf_counter() - t3) * 1000, 2)
+            total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            latencies["total_ms"] = total_elapsed_ms
+
+            debug_data = None
+            if payload.developer_mode:
+                debug_data = DebugInfo(
+                    sql_executed=graph_result.sql_executed,
+                    route_reasoning=decision.reasoning,
+                    latency_breakdown_ms=latencies,
+                    evidence_set=_debug_evidence_set(synth_result, synth_result.evidence_set or ev_set),
+                )
+
+            return AskResponse(
+                request_id=req_id,
+                status=synth_result.status,  # type: ignore[arg-type]
+                route="GraphRoute",
+                answer=synth_result.answer,
+                evidence_objects=synth_result.evidence_objects,
+                sources=synth_result.sources,
+                candidates=None,
+                filters_ignored=graph_result.filters_ignored,
+                answered_via_fallback=decision.answered_via_fallback,
+                unverified_citations=synth_result.unverified_citations,
+                debug=debug_data,
+            )
+
+        # 6. Other routes (HybridRoute)
+        # Honest not_found under the zero-evidence invariant until its retriever lands (Fase 7).
         total_elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         latencies["total_ms"] = total_elapsed_ms
         logger.info(
@@ -274,18 +453,12 @@ async def ask_question(
                 latency_breakdown_ms=latencies,
             )
 
-        route_labels = {
-            "GraphRoute": "penelusuran jaringan kolaborasi (Fase 6)",
-            "HybridRoute": "analisis tren topik dan kepakaran (Fase 7)",
-        }
-        detail = route_labels.get(decision.route, decision.route)
-
         return AskResponse(
             request_id=req_id,
             status="not_found",
             route=decision.route,
             answer=(
-                f"Kueri Anda terklasifikasi ke {decision.route} ({detail}), "
+                f"Kueri Anda terklasifikasi ke {decision.route} (analisis tren topik dan kepakaran (Fase 7)), "
                 "yang belum tersedia pada irisan vertikal saat ini. "
                 "Data tidak ditemukan dalam database untuk rute tersebut."
             ),
