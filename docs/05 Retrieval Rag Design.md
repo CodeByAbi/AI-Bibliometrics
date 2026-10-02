@@ -1,15 +1,15 @@
 # Desain Retrieval & RAG — Hybrid Multi-Rute (SQL + Vector + Graph + Analitik)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
+**Versi Dokumen:** 3.6.4 (Fase 6 GraphRetriever Sync — aturan bahasa: narasi Indonesia, teknis Inggris)  
+**Tanggal Status:** 2026-10-02  
 **Menggantikan:** `05 Retrieval Rag Design.md` Draft v2 s.d. v3.5.0  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi (Sinkronisasi Progress 2026-09-27):**  
+> **Status Implementasi (Sinkronisasi Progress 2026-10-02):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` yang sudah hijau di `develop` dengan 200 tests passing.  
-> 3. **NEXT (belum tersedia):** `GraphRoute` dan `HybridRoute` berstatus **BLOCKED** sampai Task 8 (templat T1–T4) / Task 8.5 selesai. Modul router, SQL retriever, vector retriever, synthesizer, dan citation verifier sudah berjalan; unifier, graph/hybrid retriever, dan UI belum.  
-> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding` kini aktif dan tervalidasi.
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` (DOI + year strict + Jaccard title) + `GraphRetriever` T1-T4 parameterized (T1/T2/T3/T4 AUTHOR + T4 INSTITUTION ego-BFS) + `GraphAnswerSynthesizer` + `EvidenceUnifier.from_graph` (fail-closed on missing provenance) + `EvidenceSet` + 261 tests hijau.  
+> 3. **NEXT (belum tersedia):** `HybridRoute` berstatus **BLOCKED** sampai Task 8.5 (Gold Analytics) selesai. `GraphRoute` T4 sekarang menjalankan ego-BFS berbatas (target_id selalu NULL), bukan path A-B eksplisit — ditingkatkan ke pairwise path pada Fase 9 bila perlu.  
+> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding` kini aktif dan tervalidasi; validasi jalur kolaborasi graf aktif pada tabel edge.
 
 ---
 
@@ -84,7 +84,7 @@ flowchart TD
 
 ### Spesifikasi 4 Rute Retrieval:
 
-> **Kesiapan rute:** `SQLRoute` → LIVE (Task 5). `VectorRoute` → LIVE (Task 6). `GraphRoute` → **BLOCKED (menunggu Task 8: templat T1–T4)**. `HybridRoute` → **BLOCKED (menunggu Task 8 + 8.5)**.
+> **Kesiapan rute:** `SQLRoute` → LIVE (Task 5). `VectorRoute` → LIVE (Task 6). `GraphRoute` → **LIVE (Task 8-retriever, T1–T4 parameterized, T4 ego-BFS berbatas; live E2E Task 12 pending)**. `HybridRoute` → **BLOCKED (menunggu Task 8.5: Gold Analytics)**.
 
 | Rute RAG | Klasifikasi Intent & Kasus Penggunaan | Lapisan Data Target | Strategi Eksekusi & Validasi |
 |---|---|---|---|
@@ -183,9 +183,10 @@ class EvidenceObject(BaseModel):
   ORDER BY similarity_score DESC
   LIMIT $2;  -- $2 = 8 publikasi unik
   ```
-  > Catatan implementasi: literal vektor diinterpolasi (bukan `$N`) karena `asyncpg` tidak memiliki codec pgvector — aman de facto karena setiap elemen adalah float finite tervalidasi dengan format tetap (`f"{v:.8f}"`), tanpa teks pengguna, dan diredaksi menjadi `[vector_1024d]` pada debug. Ambang, filter, ID, dan limit tetap terparameterisasi (`$N`). Kualifikasi `extensions.` mengikuti layout Supabase. CTE dalam tidak ber-`LIMIT` sehingga `LIMIT 8` luar = 8 publikasi unik (bukan 8 baris chunk).
+   > Catatan implementasi: literal vektor diinterpolasi (bukan `$N`) karena `asyncpg` tidak memiliki codec pgvector — aman de facto karena setiap elemen adalah float finite tervalidasi dengan format tetap (`f"{v:.8f}"`), tanpa teks pengguna, dan diredaksi menjadi `[vector_1024d]` pada debug. Ambang, filter, ID, dan limit tetap terparameterisasi (`$N`). Kualifikasi skema mengikuti setting `VECTOR_SCHEMA` tervalidasi (default `extensions` = layout Supabase, terverifikasi live `extensions/vector 0.8.2`; instalasi lokal vanilla memakai `public`) — nilai selain identifier SQL polos ditolak fail-fast saat startup. CTE dalam tidak ber-`LIMIT` sehingga `LIMIT 8` luar = 8 publikasi unik (bukan 8 baris chunk).
 
 ### 5.3 `GraphRoute` — Jaringan Kolaborasi
+- **Status:** `[IMPLEMENTED — VERIFICATION PENDING]` — unit 19 + integration 6 + E2E mock hijau; live E2E (Task 12) pending.
 - **Eksekusi**: Menggunakan 4 templat terparameterisasi (T1–T4) pada edge table `institution_collaboration` dan `author_collaboration`.
 > **Literature:** [[literature/Apache AGE Graph Extension]]
 - **Templat T1 (Institusi Partner)**:
@@ -202,8 +203,15 @@ class EvidenceObject(BaseModel):
   JOIN institutions i ON i.institution_id = ic.institution_a
   WHERE ic.institution_b = $1
   ORDER BY publication_count DESC
-  LIMIT 20;
+  LIMIT $2;  -- default 20, max 50 (clamp)
   ```
+- **Templat T2 (Co-Authorship Penulis)**: bentuk simetris UNION ALL pada `author_collaboration` (a↔b); `max_hops` tidak berlaku (1-hop langsung).
+- **Templat T3 (Komposisi Topik→Institusi)**: `ILIKE` parameter `'%kw%'` dengan **escape wildcard** (`\%`, `\_`, `\\`) via `ESCAPE '\'`, `COUNT(DISTINCT publication_id)` + `ARRAY_AGG` di atas `pub_institution × publications × keywords`.
+- **Templat T4 (Pencarian Jalur Multi-Hop)**: Recursive CTE berbatas `max_hops = 3` (clamp), guard siklus `NOT (next = ANY(path_nodes))`, `LIMIT 50`. Dua varian: `T4_AUTHOR` (atas `author_collaboration`) dan `T4_INSTITUTION` (atas `institution_collaboration`). **Catatan MVP:** T4 mengeksekusi *ego-BFS* (target_entity `$3::TEXT` selalu `NULL`); path pairwise A↔B direncanakan Fase 9.
+- **Provenance:** setiap edge membawa `via_publication_ids`; `GraphRetriever._fetch_publication_metadata` mengisi `title/year/doi/eid` (cap 50 ID, truncation dilog). `EvidenceUnifier.from_graph` **fail-closed**: edge tanpa provenance resolvable di-drop, bukan emit klaim tanpa sitasi.
+- **`filters_ignored`:** `year`, `country`, `document_type` tercatat diabaikan dengan jujur (template graf tidak mendukung filter temporal/dokumen).
+- **Timeout:** `asyncio.wait_for(10s)` per template; `DBTimeoutError` pada kegagalan.
+- **`sql_executed`:** string diagnostik ber-`TEMPLATE:` prefix (bukan SQL literal), aman untuk audit/debug.
 
 ### 5.4 `HybridRoute` — Gold Analytics (Tren Topik & Kepakaran)
 - **Eksekusi**: Mengakses tabel Gold Layer `topics`, `topic_evolution`, dan `researcher_expertise` digabung dengan `authors` dan `publications`.
@@ -337,6 +345,7 @@ flowchart LR
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/05 Retrieval Rag Design.md` v3.6.4 | Sinkronisasi Fase 6: `GraphRoute` dari BLOCKED ke LIVE (Task 8-retriever); tambah spesifikasi T2/T3/T4 (T3 wildcard-escape, T4 ego-BFS + guard siklus); `from_graph` fail-closed; `CitationVerifier` Jaccard ≥0.8 + DOI-year strict; HybridRoute masih BLOCKED (Task 8.5) | Review Phase 6 2026-10-02: kode + 261 tests membuktikan graph retrieval + evidence + synthesizer + wiring GraphRoute sudah ada; dokumen lama masih menyatakan BLOCKED |
 | `docs/05 Retrieval Rag Design.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Question Router`, `Aggregate-Shape Check`, `Double-Count Prevention`, `whitelist`, `Cosine Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/05 Retrieval Rag Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/05 Retrieval Rag Design.md` v3.5.0 | Menambah pemisahan CURRENT vs NEXT; menandai VectorRoute/GraphRoute/HybridRoute sebagai BLOCKED (vector/edge/Gold belum ada); mengoreksi kesan retrieval "saat ini divalidasi" | Sinkronisasi progress aktual 2026-09-27 |
