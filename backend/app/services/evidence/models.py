@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.models.ask import (
     EvidenceObject,
-    EvidenceSourceRef,
     SourceItem,
 )
 

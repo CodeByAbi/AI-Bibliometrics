@@ -5,7 +5,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §4, §5; docs/10 Implementation
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 from backend.app.models.ask import EvidenceObject, SourceItem
 from backend.app.services.evidence.models import EvidenceItem
 
