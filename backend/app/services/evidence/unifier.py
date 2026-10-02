@@ -5,7 +5,8 @@ Docs Reference: docs/05 Retrieval Rag Design.md §4, §5; docs/10 Implementation
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence
+import logging
+from typing import Any, Dict, List, Optional, Sequence, Union
 from backend.app.models.ask import (
     EvidenceObject,
     EvidenceSourceRef,
@@ -18,14 +19,20 @@ from backend.app.services.evidence.formatting import (
 )
 from backend.app.services.evidence.models import EvidenceItem, EvidenceSet
 from backend.app.services.evidence.ranker import EvidenceRanker
+from backend.app.services.retrievers.graph_retriever import (
+    GraphEdgeResult,
+    GraphPublicationMeta,
+    GraphRetrievalResult,
+)
 from backend.app.services.retrievers.sql_retriever import SqlRetrievalResult
 from backend.app.services.retrievers.vector_retriever import VectorRetrievalResult
-
 __all__ = ["EvidenceUnifier", "format_citation"]
 
 
 class EvidenceUnifier:
     """Normalizes heterogeneous retrieval outputs (SQL, Vector, Graph, Analytics) into a canonical EvidenceSet."""
+
+    _logger = logging.getLogger("evidence.unifier")
 
     @classmethod
     def from_sql(
@@ -325,63 +332,155 @@ class EvidenceUnifier:
     def from_graph(
         cls,
         question: str,
-        edges: List[Dict[str, Any]],
+        result_or_edges: Optional[Union[GraphRetrievalResult, Sequence[Dict[str, Any]], Sequence[GraphEdgeResult]]] = None,
         filters: Optional[FilterParams] = None,
         sql_executed: Optional[str] = None,
+        publications: Optional[Dict[str, Any]] = None,
+        *,
+        edges: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> EvidenceSet:
-        """Normalize Graph collaboration edge results into a canonical EvidenceSet."""
-        if not edges:
+        """Normalize Graph collaboration edge results into a canonical EvidenceSet.
+
+        Builds EvidenceObjects, EvidenceItems, and SourceItems with rich provenance
+        and publication references.
+        """
+        target = result_or_edges if result_or_edges is not None else edges
+        if isinstance(target, GraphRetrievalResult):
+            raw_edges: Sequence[Any] = target.edges
+            pubs_map: Dict[str, Any] = target.publications
+            sql_exec: Optional[str] = target.sql_executed or sql_executed
+            filters_ign: List[str] = list(target.filters_ignored)
+        elif isinstance(target, (list, tuple)):
+            raw_edges = target
+            pubs_map = publications or {}
+            sql_exec = sql_executed
+            filters_ign = []
+        else:
+            raw_edges = []
+            pubs_map = {}
+            sql_exec = sql_executed
+            filters_ign = []
+
+        if not raw_edges:
             return EvidenceSet(
                 query=question,
                 evidence_objects=[],
                 sources=[],
                 items=[],
-                filters_ignored=[],
-                sql_executed=sql_executed,
+                filters_ignored=filters_ign,
+                sql_executed=sql_exec,
             )
 
         period_str = _format_period(filters)
         evidence_objects: List[EvidenceObject] = []
-        sources: List[SourceItem] = []
+        sources_dict: Dict[str, SourceItem] = {}
         items: List[EvidenceItem] = []
+        skipped_edges: List[str] = []
 
-        for idx, edge in enumerate(edges, 1):
-            partner_name = str(edge.get("partner_name") or edge.get("partner_id") or "Unknown")
-            count_val = edge.get("publication_count", edge.get("weight", 0))
-            via_pubs = edge.get("via_publication_ids") or []
+        for idx, edge in enumerate(raw_edges, 1):
+            if isinstance(edge, dict):
+                partner_name = str(edge.get("partner_name") or edge.get("partner_id") or "Unknown")
+                partner_id = str(edge.get("partner_id") or f"edge_{idx}")
+                count_val = edge.get("publication_count", edge.get("weight", 0))
+                via_pubs = edge.get("via_publication_ids") or []
+                hop_count = edge.get("hop_count")
+                extra_meta = dict(edge)
+            else:
+                partner_name = str(edge.partner_name or edge.partner_id or "Unknown")
+                partner_id = str(edge.partner_id or f"edge_{idx}")
+                count_val = edge.publication_count
+                via_pubs = edge.via_publication_ids or []
+                hop_count = edge.hop_count
+                extra_meta = dict(edge.extra_metadata) if hasattr(edge, "extra_metadata") else {}
+
             if isinstance(via_pubs, str):
                 via_pubs = [via_pubs]
 
-            claim_text = (
-                f"Kolaborasi dengan {partner_name} tercatat sebanyak {count_val} publikasi bersama ({period_str})"
-            )
+            topic_kw = extra_meta.get("topic_keyword")
+            if hop_count and hop_count > 1:
+                claim_text = (
+                    f"Jalur kolaborasi dengan {partner_name} terhubung sejauh {hop_count} hop dengan {count_val} publikasi bersama ({period_str})"
+                )
+            elif topic_kw:
+                claim_text = (
+                    f"Kolaborasi institusi {partner_name} pada topik '{topic_kw}' tercatat sebanyak {count_val} publikasi ({period_str})"
+                )
+            else:
+                claim_text = (
+                    f"Kolaborasi dengan {partner_name} tercatat sebanyak {count_val} publikasi bersama ({period_str})"
+                )
 
+            # Build supporting publication source refs for this edge
+            edge_sources: List[EvidenceSourceRef] = []
+            for pid in via_pubs:
+                pid_str = str(pid)
+                if pid_str in pubs_map:
+                    pm = pubs_map[pid_str]
+                    title = pm.title if hasattr(pm, "title") else pm.get("title")
+                    year = pm.year if hasattr(pm, "year") else pm.get("year")
+                    doi = pm.doi if hasattr(pm, "doi") else pm.get("doi")
+                    eid = pm.eid if hasattr(pm, "eid") else pm.get("eid")
+                    edge_sources.append(
+                        EvidenceSourceRef(
+                            publication_id=pid_str,
+                            title=title,
+                            year=year,
+                            doi=doi,
+                            eid=eid,
+                        )
+                    )
+                    if pid_str not in sources_dict:
+                        sources_dict[pid_str] = SourceItem(
+                            publication_id=pid_str,
+                            title=title or f"Publication {pid_str}",
+                            year=year,
+                            doi=doi,
+                            source_type="graph",
+                            relevance_score=1.0,
+                            provenance=f"via kolaborasi dengan {partner_name}",
+                        )
+
+            # Fail-closed: an edge with no resolvable publication provenance
+            # produces no verifiable citation (format_citation_tag returns ""
+            # for empty sources). Drop the edge rather than emit an
+            # un-citable claim, keeping the zero-hallucination invariant intact.
+            if not edge_sources:
+                skipped_edges.append(f"{partner_id} ({partner_name})")
+                continue
+
+            confidence = EvidenceRanker.calculate_graph_confidence()
             evidence_objects.append(
                 EvidenceObject(
                     claim=claim_text,
                     metric="publication_count",
                     value=int(count_val) if isinstance(count_val, (int, float)) else str(count_val),
                     period=period_str,
-                    sources=[],
-                    confidence=EvidenceRanker.calculate_graph_confidence(),
+                    sources=edge_sources,
+                    confidence=confidence,
                 )
             )
 
-            edge_id = str(edge.get("partner_id") or f"edge_{idx}")
             items.append(
                 EvidenceItem(
-                    source_id=f"graph_edge_{edge_id}",
+                    source_id=f"graph_edge_{partner_id}",
                     source_type="graph",
                     content=f"Partner: {partner_name}, Weight: {count_val}",
                     score=float(count_val) if isinstance(count_val, (int, float)) else 1.0,
-                    confidence=EvidenceRanker.calculate_graph_confidence(),
+                    confidence=confidence,
                     provenance_ids=[str(pid) for pid in via_pubs],
-                    metadata=dict(edge),
+                    metadata=extra_meta,
                 )
             )
 
+        if skipped_edges:
+            cls._logger.info(
+                "from_graph: skipped %d edge(s) with unresolvable publication provenance: %s",
+                len(skipped_edges),
+                ", ".join(skipped_edges[:10]),
+            )
+
         ranked_ev = EvidenceRanker.rank_evidence_objects(evidence_objects)
-        ranked_src = EvidenceRanker.rank_sources(sources)
+        ranked_src = EvidenceRanker.rank_sources(list(sources_dict.values()))
         ranked_items = EvidenceRanker.rank_items(items)
 
         return EvidenceSet(
@@ -389,10 +488,9 @@ class EvidenceUnifier:
             evidence_objects=ranked_ev,
             sources=ranked_src,
             items=ranked_items,
-            filters_ignored=[],
-            sql_executed=sql_executed,
+            filters_ignored=filters_ign,
+            sql_executed=sql_exec,
         )
-
     @classmethod
     def from_analytics(
         cls,

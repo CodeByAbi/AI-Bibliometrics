@@ -101,16 +101,14 @@ async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: in
         return embedding
 
 
-async def generate_query_embedding(query: str) -> List[float]:
-    """Generate 1024-dimensional dense float vector for search query.
+async def generate_query_embedding_with_backend(query: str) -> tuple[List[float], str]:
+    """Generate query embedding, also reporting which backend served it.
 
-    Attempts local SentenceTransformer first, falling back to Ollama endpoint.
-
-    Encoding contract (locked with offline batch): raw query text with
-    ``normalize_embeddings=False``, matching ``scripts/embed_chunks.py``
-    (which encodes ``Title: {title}\\nAbstract: {chunk}`` the same way).
-    Query-side prefixing is intentionally NOT added here so the live
-    ``>= 0.65`` cosine gate stays calibrated to the stored vectors.
+    Returns ``(vector, backend)`` where ``backend`` is ``"local"``
+    (SentenceTransformer CPU) or ``"ollama"`` (HTTP fallback). Phase 4
+    audit D1: the dual-path contract is kept for availability, but the
+    serving backend is now observable so threshold-gate calibration drift
+    during fallback can be attributed (``embedding_backend`` debug field).
     """
     clean_query = query.strip()
     if not clean_query:
@@ -122,6 +120,7 @@ async def generate_query_embedding(query: str) -> List[float]:
 
     global _st_model
     vector: Optional[List[float]] = None
+    backend = "local"
     local_err: Optional[Exception] = None
 
     # 1. Try local SentenceTransformer in threadpool
@@ -140,6 +139,7 @@ async def generate_query_embedding(query: str) -> List[float]:
 
     # 2. Fallback to Ollama if local failed
     if vector is None:
+        backend = "ollama"
         try:
             vector = await _embed_via_ollama(
                 text=clean_query,
@@ -161,6 +161,21 @@ async def generate_query_embedding(query: str) -> List[float]:
     # 3. Validate dimension + finiteness (guards pgvector literal build)
     validate_embedding_vector(vector, expected_dim)
 
+    return vector, backend
+
+
+async def generate_query_embedding(query: str) -> List[float]:
+    """Generate 1024-dimensional dense float vector for search query.
+
+    Attempts local SentenceTransformer first, falling back to Ollama endpoint.
+
+    Encoding contract (locked with offline batch): raw query text with
+    ``normalize_embeddings=False``, matching ``scripts/embed_chunks.py``
+    (which encodes ``Title: {title}\\nAbstract: {chunk}`` the same way).
+    Query-side prefixing is intentionally NOT added here so the live
+    ``>= 0.65`` cosine gate stays calibrated to the stored vectors.
+    """
+    vector, _ = await generate_query_embedding_with_backend(query)
     return vector
 
 

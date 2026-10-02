@@ -9,22 +9,28 @@ Docs Reference: docs/05 Retrieval Rag Design.md §7 (citation format),
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from backend.app.models.ask import FilterParams
+if TYPE_CHECKING:
+    from backend.app.models.ask import FilterParams
+
+from backend.app.models.ask import format_citation as _canonical_format_citation
 
 
 def format_citation(
     title: Optional[str], year: Optional[int], doi: Optional[str]
 ) -> str:
-    """Format citation string adhering strictly to canonical [Title, Year, DOI/no-doi]."""
-    t = title.strip() if title and title.strip() else "Untitled"
-    y = str(year) if year is not None else "n.d."
-    d = doi.strip() if doi and doi.strip() else "no-doi"
-    return f"[{t}, {y}, {d}]"
+    """Format citation string adhering strictly to canonical [Title, Year, DOI/no-doi].
+
+    Re-export of the single source of truth defined in
+    ``backend.app.models.ask.format_citation``. Kept here so existing
+    ``from backend.app.services.evidence.formatting import format_citation``
+    call sites (unifier, synthesizer) remain importable unchanged.
+    """
+    return _canonical_format_citation(title, year, doi)
 
 
-def format_period(filters: Optional[FilterParams]) -> str:
+def format_period(filters: Optional["FilterParams"]) -> str:
     """Render the observation window, honoring exact year and ranges.
 
     Canonical mapping (user-facing):

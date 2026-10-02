@@ -21,6 +21,10 @@ sentence-transformers==6.1.0  # Local BAAI/bge-m3 1024-dim query embedding; fall
 httpx==0.28.1           # Klien HTTP async untuk Ollama service & testing API
 python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose nilai dari env_file (.env tak pernah di-commit)
 
+# Graph visualization — scripts/visualize_graph.py (offline exploration layer)
+networkx==3.6.1        # Undirected collaboration graph, metrics, GraphML export
+matplotlib==3.11.2     # Static PNG rendering (Agg backend, single-hue style)
+
 # Testing — pytest suite (Task 2/12: tests/unit + tests/integration + live-db tests/test_phase1_validation.py)
 pytest==9.1.1            # Test runner; dipakai CI .github/workflows/python-app.yml
 pytest-asyncio==1.4.0    # Menjalankan @pytest.mark.asyncio (asyncio_mode=auto, lihat pytest.ini)
@@ -42,9 +46,10 @@ pytest-mock==3.16.0      # Fixture mocker untuk mocking service/Ollama di unit t
 #   dan test API. Docs hanya mengunci "klien HTTP standar", bukan library-nya.
 # Task 2/12: pytest + pytest-asyncio + pytest-mock di-pin di atas untuk
 #   tests/unit + tests/integration (gate coverage pytest-cov menyusul Fase 8).
-# Task 8.5: pandas / scikit-learn / networkx / bertopic untuk Gold analytics
+# Task 8.5: pandas / scikit-learn / bertopic untuk Gold analytics
 #   (topics, topic_evolution, researcher_expertise) — docs/09 §8 menulis
 #   "BERTopic/co-word + Pandas/sklearn/NetworkX" sebagai alternatif, belum final.
+#   (networkx kini juga di-pin di atas untuk visualisasi graf kolaborasi.)
 # DITOLAK / DITUNDA eksplisit per docs (jangan ajukan ulang tanpa ADR):
 #   langchain, llama-index (ditolak docs/09 §5); celery, redis (Fase 10);
 #   apache-age / ext graf mandiri (evaluasi Fase 9); supabase-py (akses via

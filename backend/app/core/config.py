@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
     from dotenv import load_dotenv
@@ -44,6 +45,23 @@ class Settings(BaseModel):
     embedding_model: str = Field(default="BAAI/bge-m3")
     embedding_dimension: int = Field(default=1024)
     ollama_timeout_s: int = Field(default=8, ge=1, le=120)
+    vector_schema: str = Field(
+        default="extensions",
+        description="PostgreSQL schema holding the pgvector extension "
+        "(Supabase layout: 'extensions'; vanilla local installs: 'public').",
+    )
+
+    @field_validator("vector_schema")
+    @classmethod
+    def validate_vector_schema(cls, v: str) -> str:
+        """Allow only plain SQL identifiers — the value is interpolated as a
+        schema qualifier in VectorRetriever SQL, never as user input."""
+        vv = (v or "").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", vv):
+            raise ValueError(
+                f"VECTOR_SCHEMA must be a plain SQL identifier, got {v!r}"
+            )
+        return vv
 
 
 def _parse_int_env(name: str, default: str) -> int:
@@ -63,6 +81,7 @@ def _from_env() -> Settings:
         embedding_model=os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3").strip(),
         embedding_dimension=_parse_int_env("EMBEDDING_DIMENSION", "1024"),
         ollama_timeout_s=_parse_int_env("OLLAMA_TIMEOUT_S", "8"),
+        vector_schema=os.environ.get("VECTOR_SCHEMA", "extensions").strip(),
     )
 
 

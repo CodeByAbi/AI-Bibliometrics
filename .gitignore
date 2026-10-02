@@ -31,3 +31,13 @@ node_modules/
 dashboard/
 literature/
 templates/
+
+# Phase 6 push exclusions (local tooling, demos, generated artifacts)
+.opencode/
+opencode.json
+outputs/
+graph-viewer/
+docs/learning/
+package-lock.json
+package.json
+scripts/test_jev_api.py

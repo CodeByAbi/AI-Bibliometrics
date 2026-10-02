@@ -297,10 +297,10 @@ Pre-task **DONE** (outside Task 0–12 numbering, synced 2026-09-27): Database s
 | **Task 1 — Embedding Pipeline** | `ALTER chunks ADD embedding vector(1024)` + bge-m3 batch + HNSW | ✅ DONE | - |
 | **Task 2 — Backend Skeleton + DB Layer** | FastAPI layout, `app_readonly` pool + timeouts, `GET /api/v1/health` | ✅ DONE | - |
 | **Task 3 — Ollama Setup** | pull `qwen2.5-coder:7b-instruct`, isolated LLM client, health check | ✅ DONE | - |
-| **Task 4 — Router + Entity Gate** | 4-class routing, Pydantic entity contracts, `needs_clarification` | 🔶 IN PROGRESS (Phase 3, green slice) | Task 6, 7, 8 |
-| **Task 5 — SQL Generator + Validator** | Text-to-SQL over 9 tables, `sqlglot` checks, 1x retry | 🔶 IN PROGRESS (Phase 3, green slice) | Structured slice |
-| **Task 6 — Vector Retriever** | Query embed + `<=>` over `chunks` + `DISTINCT ON` + threshold $\ge 0.65$ | ⬜ PLANNED (Phase 4) | Semantic slice |
-| **Task 7 — Evidence Layer Unifier** | Normalize all outputs to `EvidenceSet` + deterministic ranking | ⬜ PLANNED (Phase 5) | Synthesis engine |
+| **Task 4 — Router + Entity Gate** | 4-class routing, Pydantic entity contracts, `needs_clarification` | ✅ IMPLEMENTED (Phase 3, green slice) | Task 6, 7, 8 |
+| **Task 5 — SQL Generator + Validator** | Text-to-SQL over 9 tables, `sqlglot` checks, 1x retry | ✅ IMPLEMENTED (Phase 3, green slice) | Structured slice |
+| **Task 6 — Vector Retriever** | Query embed + `<=>` over `chunks` + `DISTINCT ON` + threshold $\ge 0.65$ | ✅ IMPLEMENTED (Phase 4, green slice) | Semantic slice |
+| **Task 7 — Evidence Layer Unifier** | `EvidenceUnifier` + `EvidenceRanker` + `EvidenceSet` + `EvidenceItem`, deterministic ranking, no raw-row-to-LLM | ✅ IMPLEMENTED (Phase 5, unit 21 + integration 9 + E2E mock 12) | Synthesis engine |
 | **Task 8 — Graph Edge Tables** | Build 2 edge tables + T1–T4 templates + hop/limit clamps | ✅ DONE (Edge Tables) / PLANNED (T1–T4 Templates) | Network queries |
 | **Task 8.5 — Gold Analytics** | `topics` + `topic_evolution` + `researcher_expertise` | ⬜ PLANNED (Phase 6) | Policy/expert synthesis |
 | **Task 9 — Answer Synthesis** | Grounding prompt + `CitationVerifier` + deterministic short-circuit | ⬜ PLANNED | Grounded answers |

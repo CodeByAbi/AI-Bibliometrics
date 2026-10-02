@@ -21,7 +21,11 @@ services:
     # Tag pinned at Task 3 (Ollama setup) once the model-serving version is validated.
     image: ollama/ollama:latest
     ports:
-      - "11434:11434"
+      # Host port defaults to 11435 to avoid clash with native Ollama Desktop
+      # (which already listens on 11434). Container port stays 11434 so
+      # backend OLLAMA_HOST=http://ollama:11434 keeps working.
+      # Override with OLLAMA_PORT=11434 in .env if native Ollama is stopped.
+      - "${OLLAMA_PORT:-11435}:11434"
     volumes:
       - ollama-data:/root/.ollama
 

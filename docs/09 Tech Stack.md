@@ -118,7 +118,7 @@ Framework seperti LangChain/LlamaIndex dihindari untuk MVP karena lapisan abstra
 | TBD-2 | Server ASGI (`uvicorn` + versi) | Dibutuhkan `Task 2` tapi belum ada dasar dokumen | Task 2 |
 | TBD-3 | Test tooling (`pytest` / `httpx` + versi) untuk suite router/SQL/vector/graph/evidence/API + E2E 12-kueri | Dibutuhkan `Task 12` (`docs/10`, `docs/11 Fase 8`) | Task 2 / Task 12 |
 | TBD-4 | Versi pin: `pgvector`, `Ollama`, `sqlglot`, `Pydantic v2` minor, `sentence-transformers`, commit `BAAI/bge-m3` + lockfile | `09 §3` menjanjikan pin di lockfile; lockfile belum ada (belum ada `backend/`) | Task 0/2 |
-| TBD-5 | Path online query-embedding: `sentence-transformers` lokal **vs** endpoint embedding Ollama | `docs/11 Fase 4` menulis alternatif; `09` hanya mengunci batch offline | Task 4 / Task 6 |
+| TBD-5 | Path online query-embedding: `sentence-transformers` lokal **vs** endpoint embedding Ollama | `docs/11 Fase 4` menulis alternatif; `09` hanya mengunci batch offline | Task 6 — DECIDED: lokal primer + Ollama fallback (dual-path, `backend/app/services/embedding.py:generate_query_embedding_with_backend`); backend pelayan terekspos sebagai `embedding_backend` (`"local"`/`"ollama"`) di debug `VectorRoute`. Sisa: parity check distribusi fallback terhadap gate 0.65 (Task 12) |
 | TBD-6 | Frontend CSS/component lib + versi Node | `docs/07` hanya mengunci token warna/font, bukan lib | Task 11 |
 | TBD-7 | Kriteria evaluasi Apache AGE Fase 9 (versi + benchmark) | `09 §7` hanya menetapkan sebagai target evaluasi | Fase 9 (pasca-MVP) |
 
