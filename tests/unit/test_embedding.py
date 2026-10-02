@@ -13,6 +13,7 @@ from backend.app.services.embedding import (
     _embed_via_ollama,
     clear_embedding_model_cache,
     generate_query_embedding,
+    generate_query_embedding_with_backend,
 )
 
 
@@ -101,3 +102,30 @@ async def test_generate_query_embedding_non_finite_raises():
         clear_embedding_model_cache()
         with pytest.raises(EmbeddingError, match="non-finite"):
             await generate_query_embedding("Query with bad vector")
+
+
+@pytest.mark.asyncio
+async def test_generate_query_embedding_with_backend_reports_local():
+    """Provenance variant reports 'local' when SentenceTransformer serves."""
+    mock_st = MagicMock()
+    mock_st.encode.return_value = [0.05] * 1024
+
+    with patch("backend.app.services.embedding._load_sentence_transformer", return_value=mock_st):
+        clear_embedding_model_cache()
+        vec, backend = await generate_query_embedding_with_backend("Provenance query")
+        assert len(vec) == 1024
+        assert backend == "local"
+
+
+@pytest.mark.asyncio
+async def test_generate_query_embedding_with_backend_reports_ollama():
+    """Provenance variant reports 'ollama' when the fallback serves."""
+    clear_embedding_model_cache()
+    fake_vector = [0.02] * 1024
+
+    with patch("backend.app.services.embedding._load_sentence_transformer", side_effect=RuntimeError("Local ST failed")):
+        with patch("backend.app.services.embedding._embed_via_ollama", new_callable=AsyncMock) as mock_ollama:
+            mock_ollama.return_value = fake_vector
+            vec, backend = await generate_query_embedding_with_backend("Fallback provenance")
+            assert len(vec) == 1024
+            assert backend == "ollama"
