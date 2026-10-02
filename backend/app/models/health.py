@@ -56,3 +56,7 @@ class HealthResponse(BaseModel):
     database: DatabaseHealth
     llm_service: LLMServiceHealth
     embedding_service: EmbeddingServiceHealth
+    evidence_layer_ready: bool = Field(
+        default=False,
+        description="True if Phase 5 Evidence layer (EvidenceUnifier + EvidenceRanker + EvidenceSet) imports and exposes its canonical API",
+    )
