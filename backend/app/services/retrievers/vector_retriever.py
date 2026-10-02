@@ -6,7 +6,6 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.2, docs/10 Implementation Pl
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from typing import Any, List, Optional
 import asyncpg
@@ -16,7 +15,10 @@ from backend.app.core.config import get_settings
 from backend.app.core.errors import DBTimeoutError
 from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
-from backend.app.services.embedding import EmbeddingError, generate_query_embedding
+from backend.app.services.embedding import (
+    generate_query_embedding_with_backend,
+    validate_embedding_vector,
+)
 
 
 #: Canonical cosine similarity gate for BAAI/bge-m3 (docs/05 §5.2, FR4.5).
@@ -26,6 +28,25 @@ COSINE_SIMILARITY_THRESHOLD: float = 0.65
 #: Canonical result size: distinct publications returned per query (FR4.4 —
 #: deduplication by ``publication_id`` happens BEFORE this limit).
 VECTOR_TOP_K: int = 8
+
+#: Hard bounds for the ``threshold``/``limit`` overrides on ``retrieve``.
+#: The canonical contract is 0.65/8; out-of-range overrides fail fast
+#: instead of silently violating the gate (Phase 4 audit D4).
+MIN_THRESHOLD: float = 0.0
+MAX_THRESHOLD: float = 1.0
+MIN_LIMIT: int = 1
+MAX_LIMIT: int = 50
+
+
+def _escape_like_literal(value: str) -> str:
+    """Escape ``\\``, ``%`` and ``_`` so ILIKE filters match literally.
+
+    Mirrors the Graph T3 escape discipline (``ESCAPE '\\'``); every ILIKE
+    predicate built here must carry the ``ESCAPE`` clause (Phase 4 audit D4).
+    """
+    return (
+        value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
 
 
 class VectorMatchItem(BaseModel):
@@ -53,6 +74,12 @@ class VectorRetrievalResult(BaseModel):
     threshold: float = COSINE_SIMILARITY_THRESHOLD
     filters_ignored: List[str] = Field(default_factory=list)
     sql_executed: str
+    #: Wall-clock ms spent generating the query embedding (None when a
+    #: precomputed ``query_vector`` was injected by the caller).
+    embedding_ms: Optional[float] = None
+    #: Which embedding backend served the query (``"local"`` | ``"ollama"``),
+    #: None when a precomputed vector was injected (Phase 4 audit D1).
+    embedding_backend: Optional[str] = None
 
     @property
     def is_empty(self) -> bool:
@@ -104,43 +131,53 @@ class VectorRetriever:
         query_vector : Optional[List[float]]
             Precomputed query embedding vector; if None, generated on-the-fly.
         """
-        # 1. Generate query embedding if not provided
+        # 0. Clamp the canonical contract: out-of-range overrides fail fast
+        # instead of silently shifting the >= 0.65 gate or the 8-pub limit.
+        if not (MIN_THRESHOLD <= float(threshold) <= MAX_THRESHOLD):
+            raise ValueError(
+                f"threshold must be within [{MIN_THRESHOLD}, {MAX_THRESHOLD}], "
+                f"got {threshold!r} (canonical: {COSINE_SIMILARITY_THRESHOLD})."
+            )
+        if not (MIN_LIMIT <= int(limit) <= MAX_LIMIT):
+            raise ValueError(
+                f"limit must be within [{MIN_LIMIT}, {MAX_LIMIT}], "
+                f"got {limit!r} (canonical: {VECTOR_TOP_K})."
+            )
+
+        # 1. Generate query embedding if not provided (timed + attributed
+        # for NFR4 observability: embedding cost vs PG cost stay separable).
+        embedding_ms: Optional[float] = None
+        embedding_backend: Optional[str] = None
         if query_vector is None:
-            query_vector = await generate_query_embedding(question)
+            t_emb = time.perf_counter()
+            query_vector, embedding_backend = await generate_query_embedding_with_backend(question)
+            embedding_ms = (time.perf_counter() - t_emb) * 1000.0
 
         # Defense-in-depth: query_vector may be injected directly (tests,
-        # callers). Reject wrong dimensions and NaN/Inf before interpolating
-        # into the pgvector literal — generate_query_embedding already
+        # callers). Single shared validator — generate_query_embedding already
         # validates its own output, this covers the precomputed path.
         expected_dim = get_settings().embedding_dimension
-        if len(query_vector) != expected_dim:
-            raise EmbeddingError(
-                f"Precomputed query embedding dimension mismatch: "
-                f"expected {expected_dim}, got {len(query_vector)}.",
-                details={"expected": expected_dim, "actual": len(query_vector)},
-            )
-        for v in query_vector:
-            if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
-                raise EmbeddingError(
-                    "Precomputed query embedding contains non-finite value; refusing SQL build."
-                )
+        assert query_vector is not None  # generation above either returns or raises
+        validate_embedding_vector(query_vector, expected_dim)
 
         # Format pgvector string safely (finite floats only, no user text).
         # NOTE: the vector is interpolated rather than bound as $N because
         # asyncpg has no native pgvector codec here; interpolation is safe
         # de facto since every element is a validated finite float rendered
         # with a fixed numeric format. Threshold/filters/IDs/limit stay
-        # parameterized ($N). The `extensions.` schema qualification assumes
-        # the `vector` extension lives in the `extensions` schema
-        # (Supabase layout); for local installs in `public`, install the
-        # extension into `extensions` or adjust the qualifier — never inject
-        # user text into this literal.
+        # parameterized ($N). The schema qualifier comes from the validated
+        # ``VECTOR_SCHEMA`` setting (default ``extensions`` = Supabase layout;
+        # vanilla local installs use ``public``) — ``Settings`` rejects
+        # anything that is not a plain SQL identifier, so no user text can
+        # reach this literal through the qualifier either.
         vec_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
+        vec_schema = get_settings().vector_schema
+        dist_op = f"(c.embedding OPERATOR({vec_schema}.<=>) '{vec_literal}'::{vec_schema}.vector)"
 
         # 2. Build parameterized filter conditions
         where_clauses: List[str] = [
             "c.embedding IS NOT NULL",
-            f"(1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector)) >= $1",
+            f"(1 - {dist_op}) >= $1",
         ]
         params: List[Any] = [threshold]
         param_idx = 2
@@ -160,17 +197,17 @@ class VectorRetriever:
                 params.append(filters.year_to)
                 param_idx += 1
             if filters.document_type:
-                where_clauses.append(f"p.document_type ILIKE ${param_idx}")
-                params.append(f"%{filters.document_type.strip()}%")
+                where_clauses.append(f"p.document_type ILIKE ${param_idx} ESCAPE '\\'")
+                params.append(f"%{_escape_like_literal(filters.document_type.strip())}%")
                 param_idx += 1
             if filters.country:
                 where_clauses.append(
                     f"p.publication_id IN ("
                     f"SELECT pi.publication_id FROM pub_institution pi "
                     f"JOIN institutions i ON i.institution_id = pi.institution_id "
-                    f"WHERE i.country ILIKE ${param_idx})"
+                    f"WHERE i.country ILIKE ${param_idx} ESCAPE '\\')"
                 )
-                params.append(f"%{filters.country.strip()}%")
+                params.append(f"%{_escape_like_literal(filters.country.strip())}%")
                 param_idx += 1
 
             # Track ignored filters
@@ -213,11 +250,11 @@ class VectorRetriever:
                 p.citation_count,
                 c.chunk_id,
                 c.chunk_text,
-                1 - (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector) AS similarity_score
+                1 - {dist_op} AS similarity_score
             FROM chunks c
             JOIN publications p ON p.publication_id = c.publication_id
             WHERE {where_sql}
-            ORDER BY p.publication_id, (c.embedding OPERATOR(extensions.<=>) '{vec_literal}'::extensions.vector) ASC
+            ORDER BY p.publication_id, {dist_op} ASC
         )
         SELECT *
         FROM scored_chunks
@@ -246,12 +283,6 @@ class VectorRetriever:
             ) from exc
 
         query_ms = (time.perf_counter() - t0) * 1000.0
-        logger.info(
-            "Vector retrieval executed in %.2fms: %d distinct matches found (threshold=%.2f)",
-            query_ms,
-            len(rows),
-            threshold,
-        )
 
         matches = [
             VectorMatchItem(
@@ -268,6 +299,30 @@ class VectorRetriever:
             for r in rows
         ]
 
+        # NFR4 observability: threshold gate outcome + score range per query.
+        # Scores stay server-side (only aggregates logged); the raw 1024-d
+        # vector is never logged (see [vector_1024d] redaction below).
+        if matches:
+            scores = [m.similarity_score for m in matches]
+            logger.info(
+                "Vector retrieval executed in %.2fms: threshold_gate=hit "
+                "matches=%d threshold=%.2f score_min=%.4f score_max=%.4f",
+                query_ms,
+                len(matches),
+                threshold,
+                min(scores),
+                max(scores),
+                extra={"endpoint": "/api/v1/ask", "route": "VectorRoute"},
+            )
+        else:
+            logger.info(
+                "Vector retrieval executed in %.2fms: threshold_gate=miss "
+                "matches=0 threshold=%.2f",
+                query_ms,
+                threshold,
+                extra={"endpoint": "/api/v1/ask", "route": "VectorRoute"},
+            )
+
         # For debug reporting, replace vector literal with a concise token
         debug_sql = sql.replace(vec_literal, "[vector_1024d]")
 
@@ -276,4 +331,6 @@ class VectorRetriever:
             threshold=threshold,
             filters_ignored=filters_ignored,
             sql_executed=debug_sql,
+            embedding_ms=embedding_ms,
+            embedding_backend=embedding_backend,
         )
