@@ -9,20 +9,35 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+def format_citation(
+    title: Optional[str], year: Optional[int], doi: Optional[str]
+) -> str:
+    """Canonical [Title, Year, DOI/no-doi] citation string.
+
+    Defined here (not in ``services.evidence.formatting``) to keep the
+    ``models`` layer free of a circular dependency on the services layer.
+    ``backend.app.services.evidence.formatting`` re-exports the same logic.
+    """
+    t = title.strip() if title and title.strip() else "Untitled"
+    y = str(year) if year is not None else "n.d."
+    d = doi.strip() if doi and doi.strip() else "no-doi"
+    return f"[{t}, {y}, {d}]"
+
+
 class FilterParams(BaseModel):
     """Structured search filters."""
 
     model_config = ConfigDict(frozen=True)
 
-    year: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun publikasi eksak")
-    year_from: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun awal publikasi")
-    year_to: Optional[int] = Field(None, ge=1900, le=2026, description="Tahun akhir publikasi")
-    country: Optional[str] = Field(None, max_length=128, description="Negara institusi (lowercase)")
-    author_name: Optional[str] = Field(None, max_length=255, description="Nama penulis")
-    institution_name: Optional[str] = Field(None, max_length=255, description="Nama institusi")
-    topic_name: Optional[str] = Field(None, max_length=255, description="Klaster topik riset")
-    document_type: Optional[str] = Field(None, max_length=64, description="Tipe dokumen Scopus")
-    keyword: Optional[str] = Field(None, max_length=255, description="Kata kunci publikasi (lowercase)")
+    year: Optional[int] = Field(default=None, ge=1900, le=2026, description="Tahun publikasi eksak")
+    year_from: Optional[int] = Field(default=None, ge=1900, le=2026, description="Tahun awal publikasi")
+    year_to: Optional[int] = Field(default=None, ge=1900, le=2026, description="Tahun akhir publikasi")
+    country: Optional[str] = Field(default=None, max_length=128, description="Negara institusi (lowercase)")
+    author_name: Optional[str] = Field(default=None, max_length=255, description="Nama penulis")
+    institution_name: Optional[str] = Field(default=None, max_length=255, description="Nama institusi")
+    topic_name: Optional[str] = Field(default=None, max_length=255, description="Klaster topik riset")
+    document_type: Optional[str] = Field(default=None, max_length=64, description="Tipe dokumen Scopus")
+    keyword: Optional[str] = Field(default=None, max_length=255, description="Kata kunci publikasi (lowercase)")
 
     @field_validator("year_to")
     @classmethod
@@ -89,6 +104,19 @@ class EvidenceObject(BaseModel):
     sources: List[EvidenceSourceRef] = Field(default_factory=list, description="Daftar publikasi bukti pendukung")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Tingkat keyakinan bukti data")
 
+    def format_citation_tag(self) -> str:
+        """Render the first supporting source as a canonical [Title, Year, DOI/no-doi] tag.
+
+        Uses the primary source (first in the deterministic ordering) so that
+        every claim line carries exactly one verifiable citation. Returns an
+        empty string when the claim has no supporting sources (e.g. aggregate
+        scalar counts with no publication-level provenance).
+        """
+        if not self.sources:
+            return ""
+        ref = self.sources[0]
+        return format_citation(ref.title, ref.year, ref.doi)
+
 
 class SourceItem(BaseModel):
     """Retrieved publication record item."""
@@ -129,6 +157,12 @@ class DebugInfo(BaseModel):
         description="Deduped vector matches for inspection (VectorRoute only): "
         "publication_id, title, year, doi, chunk_id, similarity_score",
     )
+    embedding_backend: Optional[str] = Field(
+        None,
+        description="Which query-embedding backend served the request "
+        '("local" | "ollama", VectorRoute only; Phase 4 audit D1)',
+    )
+    evidence_set: Optional[Dict[str, Any]] = None
 
 
 class AskResponse(BaseModel):
