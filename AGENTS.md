@@ -303,3 +303,62 @@ pytest tests/e2e/test_e2e_12_queries.py
 1. **Security Guardrails**: 100% pass on SQL AST validation and read-only enforcement.
 2. **Zero-Hallucination Gate**: `0` evidence items must short-circuit in $<200\text{ms}$ with `status: not_found`.
 3. **Citation Integrity**: Final synthesized answers must contain 0 unverified citations; any citation not matched in `EvidenceSet` must be stripped to `unverified_citations`.
+
+## Jev Decision Engine
+
+This project has a custom OpenCode tool called `jev_decide`.
+
+### When to use Jev
+
+Use `jev_decide` when the user is asking for help making a decision between two or more concrete alternatives.
+
+Typical cases include:
+- choosing between technical approaches
+- choosing between architectures
+- choosing between libraries or frameworks
+- choosing between implementation strategies
+- deciding which workflow or pipeline should be used
+- deciding which option better fits the project's stated requirements
+- situations where the user explicitly expresses uncertainty, such as "I'm confused", "which one should I use", or "should I choose A or B"
+
+When a decision can reasonably be represented as discrete alternatives, prefer using `jev_decide` rather than making the decision solely from the conversational model's own judgment.
+
+### How to use Jev
+
+Call the `jev_decide` tool with:
+
+- `state`: the relevant project context and decision context
+- `question`: the exact decision that needs to be evaluated
+- `criteria_json`: a JSON object containing the available alternatives and a concise description of each alternative
+
+Example:
+
+{
+  "option_a": "Use RAG over research papers",
+  "option_b": "Use Text-to-SQL over the project database"
+}
+
+### Interpreting Jev results
+
+Jev returns:
+- `decision`
+- `probabilities`
+- `confidence`
+
+Do not treat the highest-probability option as an absolute truth.
+
+If the probabilities are close, explicitly describe the decision as uncertain and explain the competing probabilities.
+
+Use the Jev result as decision evidence, while still considering the user's actual requirements and project context.
+
+### When NOT to use Jev
+
+Do not use `jev_decide` for:
+- normal conversation
+- simple factual questions
+- straightforward coding tasks with no meaningful alternative
+- summarization
+- translation
+- writing or rewriting
+- tasks where the user is not actually making a decision
+- decisions that have no clear discrete alternatives

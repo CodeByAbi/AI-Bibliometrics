@@ -1,8 +1,8 @@
 # Rencana Implementasi — Urutan Build Menuju End-to-End (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.3 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)
-**Tanggal Status:** 2026-09-29
-**Menggantikan:** `10 Implementation Plan.md` v3.6.2 (2026-09-27)
+**Versi Dokumen:** 3.6.4 (Fase 6 GraphRetriever Sync — aturan bahasa: narasi Indonesia, teknis Inggris)
+**Tanggal Status:** 2026-10-02
+**Menggantikan:** `10 Implementation Plan.md` v3.6.3 (2026-09-29)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`. Dokumen ini adalah execution-oriented layer — bukan pengganti `docs/03 System Architecture.md`, `docs/05 Retrieval Rag Design.md`, `docs/06 Api Design.md`, `docs/11 Roadmap.md`, atau `docs/12 Data Pipeline.md`. Detail kanonikal dirujuk, tidak diduplikasi.
 
 > **Catatan Audit (2026-09-29 — wajib dibaca sebelum eksekusi):**
@@ -15,14 +15,13 @@
 > 1. **Database PostgreSQL & Vector Storage — `[DONE — VERIFIED]`:** 9 tabel relasional kanonikal + 40 chunk ber-embedding `vector(1024)` `BAAI/bge-m3` + indeks HNSW aktif + tabel edge `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge). Lihat Task 0, 1, 8-edge.
 > 2. **Cleaning & Cleaned Export — `[DONE — VERIFIED]`:** 9 file `data/*_cleaned.csv` + load Silver (lihat `docs/12 §3`).
 > 3. **Kerangka FastAPI & DB Pool + Ollama (Task 2 & 3) — `[DONE — VERIFIED]`:** `backend/app/`, pool async, `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, Ollama client.
-> 4. **Slice Router + SQL + Vector (Task 4 + 5 + 6 + 9a) — `[IMPLEMENTED — VERIFICATION PENDING]`:** `QuestionRouter` + `EntityResolutionGate`, `SqlRetriever` tervalidasi AST `sqlglot`, `VectorRetriever` + `VectorAnswerSynthesizer` + `CitationVerifier` sudah terintegrasi untuk `SQLRoute`/`VectorRoute` dan hijau pada unit + integration (koleksi 200 tests). Verifikasi runtime terhadap live DB + sign-off E2E (Task 12) masih pending. `GraphRoute`/`HybridRoute` masih stub jujur `not_found`.
+> 4. **Slice Router + SQL + Vector + Graph + Evidence (Task 4 + 5 + 6 + 7 + 8 + 9a) — `[IMPLEMENTED — VERIFICATION PENDING]`:** `QuestionRouter` + `EntityResolutionGate`, `SqlRetriever` tervalidasi AST `sqlglot`, `VectorRetriever`, `GraphRetriever` (T1–T4 templat terparameterisasi), `VectorAnswerSynthesizer` + `GraphAnswerSynthesizer` + `CitationVerifier` + `EvidenceUnifier`/`EvidenceRanker`/`EvidenceSet`/`EvidenceItem` sudah terintegrasi untuk `SQLRoute`/`VectorRoute`/`GraphRoute` dan hijau pada 261 tests (unit + integration). Verifikasi runtime terhadap live DB + sign-off E2E (Task 12) masih pending. `HybridRoute` masih stub jujur `not_found`.
 >
 > ### Progress Tracker
 > **DONE — VERIFIED:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a–1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8-edge (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health).
-> **IMPLEMENTED — VERIFICATION PENDING:** Task 4 (QuestionRouter & EntityResolutionGate) · Task 5 (SqlRetriever & AST gate) · Task 6 (VectorRetriever) · Task 9a (Vector-scoped CitationVerifier + VectorAnswerSynthesizer) · Task 10-parsial (wiring `SQLRoute`/`VectorRoute` di `POST /api/v1/ask`).
-> **NEXT:** Task 7 (EvidenceUnifier & EvidenceRanker) · Task 8-retriever (GraphRetriever T1–T4).
+> **IMPLEMENTED — VERIFICATION PENDING:** Task 4 (QuestionRouter & EntityResolutionGate) · Task 5 (SqlRetriever & AST gate) · Task 6 (VectorRetriever) · Task 7 (EvidenceUnifier & EvidenceRanker & EvidenceSet) · Task 8-retriever (GraphRetriever T1–T4 + GraphAnswerSynthesizer) · Task 9a (Vector/Graph-scoped CitationVerifier + Synthesizers) · Task 10-parsial (wiring `SQLRoute`/`VectorRoute`/`GraphRoute` di `POST /api/v1/ask`).
+> **NEXT:** Task 8.5 (Gold Analytics) / Task 9-full (Unified AnswerSynthesizer).
 > **PLANNED (BLOCKED sampai NEXT selesai):** Task 8.5 (Gold Analytics) · Task 9-full (Unified AnswerSynthesizer) · Task 10-full · Task 11 (Frontend) · Task 12 (E2E 12 queries).
-
 ## 0. Matriks Status Implementasi
 
 | Komponen | Status Saat Ini | Status Target | Gap & Aksi |
@@ -35,12 +34,12 @@
 | **SqlRetriever + sqlglot AST gate** | `[IMPLEMENTED — VERIFICATION PENDING]` | MVP | Text-to-SQL + whitelist + `LIMIT 50` ada; E2E pending (Task 5). |
 | **VectorRetriever + Online Embedding** | `[IMPLEMENTED — VERIFICATION PENDING]` | MVP | `bge-m3` + `<=>` + `DISTINCT ON` + `LIMIT 8` + threshold `>= 0.65` + `filters_ignored` ada; runtime-DB checklist pending (Task 6). Inti unit+integration `[DONE — VERIFIED]`. |
 | **CitationVerifier + VectorAnswerSynthesizer (Task 9a, Vector-scoped)** | `[IMPLEMENTED — VERIFICATION PENDING]` | MVP-parsial | Regex post-hoc + `unverified_citations` + short-circuit `not_found` untuk `VectorRoute`/`SQLRoute` ada; unifikasi semua-route belum (Task 9a vs 9-full). Diketahui: `cite_year` diparse tapi belum dibandingkan — dicatat sebagai Known Gap, bukan blocker. |
-| **EvidenceUnifier + EvidenceRanker + EvidenceSet** | `[NEXT]` | MVP | Belum ada file (`evidence_unifier.py` MISSING by design). Blocker untuk Task 9-full (Task 7). |
+| **EvidenceUnifier + EvidenceRanker + EvidenceSet** | `[IMPLEMENTED — VERIFICATION PENDING]` | MVP | `unifier.py` + `ranker.py` + `models.py` ada; unit 21 + integration 9 hijau; explicit `EvidenceSet` gate + `evidence_unify_ms` di `ask.py`; live E2E 12-query pending (Task 12). `from_graph sources` resolved di Fase 6. |
 | **Materialisasi Graf (Edge Tables)** | `[DONE — VERIFIED]` | MVP | `institution_collaboration` (254 edge) + `author_collaboration` (484 edge), idempoten, `CHECK (a < b)` (Task 8-edge). |
-| **GraphRetriever (T1–T4)** | `[NEXT]` | MVP | 4 templat Recursive CTE terparameterisasi belum ada file; edge tables DONE sebagai precondition (Task 8-retriever). |
-| **Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`)** | `[PLANNED]` | MVP | Belum ada DDL runtime/Gold job; `[BLOCKED]` sampai Task 8-retriever + Task 7 jelas (Task 8.5). |
-| **Unified AnswerSynthesizer (semua route)** | `[PLANNED]` | MVP | Menunggu Task 7 (Task 9-full). Tidak boleh diklaim selesai dari Task 9a. |
-| **API `POST /api/v1/ask` full wiring** | `[IN PROGRESS]` | MVP | `SQLRoute`/`VectorRoute` wired + latensi; `GraphRoute`/`HybridRoute` stub `not_found` (Task 10). |
+| **GraphRetriever (T1–T4)** | `[IMPLEMENTED — VERIFICATION PENDING]` | MVP | 4 templat Recursive CTE terparameterisasi + `GraphAnswerSynthesizer` + wiring `GraphRoute` di `ask.py` selesai; 19 unit + 6 integration tests hijau (Task 8-retriever). T4 = ego-BFS berbatas; pairwise path A↔B Fase 9. |
+| **Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`)** | `[PLANNED]` | MVP | Belum ada DDL runtime/Gold job; `[BLOCKED]` sampai Task 8.5 jelas. |
+| **Unified AnswerSynthesizer (semua route)** | `[PLANNED]` | MVP | Menunggu Task 8.5 (Task 9-full). |
+| **API `POST /api/v1/ask` full wiring** | `[IN PROGRESS]` | MVP | `SQLRoute`/`VectorRoute`/`GraphRoute` wired + latensi; `HybridRoute` stub `not_found` (Task 10). |
 | **UI Next.js** | `[PLANNED]` | MVP | Spec `docs/07` ada; implementasi belum (Task 11). |
 | **Verifikasi E2E 12 queries** | `[PLANNED]` | MVP sign-off | Menunggu Task 7–10-full (Task 12). |
 
@@ -140,7 +139,7 @@
 - **Acceptance Criteria:** Health check mendeteksi Ollama + model; fallback embedding path teruji.
 - **Evidence of Completion:** File client + config + health fields ada; test fallback hijau.
 - **Downstream Impact:** Unlock Task 6 (fallback path) dan Task 9 (synthesis path).
-- **Known Gaps:** Pin versi Ollama/model belum di `requirements.txt` (`docs/09 TBD-4`); `TBD-5 local vs Ollama query-embed` terjawab de facto (local utama, Ollama fallback) tapi belum dikunci formal di `docs/09` — Plan mencatat tanpa mengubah keputusan.
+- **Known Gaps:** Pin versi Ollama/model belum di `requirements.txt` (`docs/09 TBD-4`); `TBD-5 local vs Ollama query-embed` DECIDED di Task 6 (local primer, Ollama fallback; backend pelayan terekspos via `embedding_backend` di debug `VectorRoute`) dan dikunci formal di `docs/09 §9` — tersisa parity check distribusi fallback vs gate 0.65 di Task 12.
 
 ### Task 4 — QuestionRouter & EntityResolutionGate `[IMPLEMENTED — VERIFICATION PENDING]`
 
@@ -197,23 +196,23 @@
 - **Known Gaps:** (1) Checklist runtime live-DB belum dilampirkan sebagai artefak; (2) `vec_literal` diinterpolasi (float-only, aman de facto) — tetap dicatat untuk audit keamanan berikutnya; (3) `requirements.txt` belum mem-pin `sentence-transformers/torch` (TBD `docs/09`).
 - **Rollback / Failure Consideration:** Bila model lokal gagal load → fallback Ollama; bila keduanya gagal → error envelope (bukan jawaban halusinasi); bila HNSW hilang → kueri tetap benar tapi lambat ( dramatis di >100K; prototipe 40 chunk tidak kritis).
 
-### Task 7 — EvidenceUnifier & EvidenceRanker `[NEXT]`
+### Task 7 — EvidenceUnifier & EvidenceRanker `[IMPLEMENTED — VERIFICATION PENDING]`
 
-- **Status:** `[NEXT]` (siap dikerjakan; preconditions Task 4/5/6 terpenuhi)
+- **Status:** `[IMPLEMENTED — VERIFICATION PENDING]` (kode + unit hijau; live E2E 12-query di Task 12 pending)
 - **Objective:** Menormalisasi heterogen rows/chunks/edges menjadi `EvidenceSet` kanonikal + ranking deterministik sebelum LLM.
 - **Why This Exists:** Invariant arsitektur: tidak ada row/chunk/edge mentah yang mencapai LLM (`docs/03 §0.3`, `docs/05 §4`). Tanpa ini, Task 9-full tidak boleh selesai.
 - **Preconditions / Dependencies:** Task 4 + 5 + 6 ada (sumber SQL rows + vector chunks); `docs/05 §4` (`EvidenceObject` 6-field + `EvidenceSourceRef`) sebagai kontrak.
-- **Scope:** `EvidenceUnifier` (SQL rows + vector chunks + kelak graph edges → `EvidenceObject[]`); dedup `publication_id`; `EvidenceRanker` deterministik (aturan skoring eksplisit berbasis relevansi + provenance; vector confidence `0.7–0.95`, SQL/Gold `1.0` per `docs/05`); serialisasi `EvidenceSet` untuk prompt; preservasi `filters_ignored`.
-- **Out of Scope:** Synthesis narasi (Task 9); Graph/Hybrid source baru (konsumsi belakangan); perubahan skema `EvidenceObject` (terkunci `docs/06 §5`).
-- **Implementation Surface (rencana, belum ada file):** `backend/app/services/evidence/unifier.py` (baru, TBD / Needs Confirmation untuk nama pastinya — tidak mengarang path final); `retrievers/*` hanya menambah adapter, tidak duplikasi logika ranking. Tidak ada file yang diubah pada task Plan ini.
-- **Data / Database Dependency:** Tidak ada DDL baru; konsumsi hasil Task 5/6 (+ kelak Task 8).
-- **API / Contract Dependency:** Menegakkan `EvidenceObject{claim, metric, value, period, sources[], confidence}` + `EvidenceSourceRef`; tidak menambah field baru (bila gap → `TBD / Needs Confirmation`).
-- **Security / Guardrails:** Output unifier diframing `UNTRUSTED DATA` (`=== BEGIN/END RETRIEVED EVIDENCE ===`); 0 evidence → short-circuit tanpa LLM.
-- **Test & Verification:** Unit baru: `tests/unit/test_evidence.py` (normalisasi + dedup + ranking deterministik — file diharapkan, belum ada); integration: SQL+Vector → `EvidenceSet` stabil; E2E: Task 12.
+- **Scope:** `EvidenceUnifier` (`from_sql` 5-case + `from_vector` + `from_graph` + `from_analytics` + `unify()` multi-source dedup); dedup `publication_id` + merge provenance; `EvidenceRanker` deterministik (objects by `-confidence,-value,metric,claim`; sources by `-relevance,-year,title,id`; items by `-score,-confidence,-year,title,source_id`); confidence: SQL/Graph/Analytics = 1.0, Vector = `round(similarity,4)`; serialisasi `to_metrics_json/to_chunks_text/to_prompt_context/to_untrusted_evidence_block`; preservasi `filters_ignored`.
+- **Out of Scope:** Synthesis narasi (Task 9); perubahan skema `EvidenceObject` (terkunci `docs/06 §5`).
+- **Implementation Surface:** `backend/app/services/evidence/unifier.py`; `backend/app/services/evidence/ranker.py`; `backend/app/services/evidence/models.py` (`EvidenceItem`, `EvidenceSet`); `backend/app/services/evidence/formatting.py` (`format_citation` re-export + `format_period`); wiring di `backend/app/services/synthesizer/answer.py` (`SqlAnswerSynthesizer`/`VectorAnswerSynthesizer` consume `EvidenceSet`, tidak menyentuh raw rows, `evidence_set` param + `is_empty` gate) + `backend/app/routers/ask.py` (explicit `EvidenceUnifier.from_sql/from_vector` gate + `evidence_unify_ms` + `is_empty` short-circuit + `_debug_evidence_set()` untuk developer_mode).
+- **Data / Database Dependency:** Tidak ada DDL baru; konsumsi hasil Task 5/6 (+ kelak Task 8/8.5).
+- **API / Contract Dependency:** Menegakkan `EvidenceObject{claim,metric,value,period,sources,confidence}` + `EvidenceSourceRef`; `AskResponse.debug.evidence_set` (baru) mengekspos `EvidenceSet` ternormalisasi saat `developer_mode=true`.
+- **Security / Guardrails:** Output unifier diframing `UNTRUSTED DATA` (`=== BEGIN/END RETRIEVED EVIDENCE ===`); 0 evidence → short-circuit tanpa LLM; tidak ada path raw-row-to-LLM di production (`answer.py` hanya membaca `ev_set.evidence_objects/sources/items`).
+- **Test & Verification:** Unit: `tests/unit/test_evidence.py` (21 tests: unifier 4-source + unify() dedup + ranker determinism + serialization + injection defense + format_citation_tag); Integration: `tests/integration/test_evidence_ask_endpoint.py` (9 tests: pool mock, SQLRoute/VectorRoute → EvidenceSet → AskResponse, zero-match short-circuit, needs_clarification, filters_ignored, developer_mode evidence_set + evidence_unify_ms, empty-set debug, determinisme 2x); E2E: `tests/e2e/test_e2e_12_queries.py` (mock 12 query + live gate di-skip tanpa `DB_URL`/`E2E_LIVE=1`).
 - **Acceptance Criteria:** Semua retriever melewati unifier; tidak ada path yang bypass ke LLM; ranking deterministik (same input → same order); `EvidenceSet` terserialisasi sesuai `docs/05 §4`.
-- **Evidence of Completion (definisi selesai):** File unifier + ranker + `test_evidence.py` hijau; tidak ada raw-row-to-LLM path tersisa (grep audit).
+- **Evidence of Completion:** File unifier + ranker + models + tests 21+9 hijau + full suite 228 passed; live E2E gate tersedia via `E2E_LIVE=1 pytest -m e2e_live tests/e2e/`.
 - **Downstream Impact:** Unlock Task 9-full + Task 10-full + Task 12 sign-off.
-- **Known Gaps:** Nama file/kelas final `EvidenceUnifier`/`EvidenceRanker`/`EvidenceSet` mengikuti `docs/03/05/11` tetapi belum ada di kode — implementasi harus mengikutinya persis, bukan sinonim baru.
+- **Known Gaps:** (1) `from_graph` `sources=[]` kosong (provenance hanya di `items`) — ditunda ke Fase 6 saat `GraphRetriever` hadir; (2) confidence vector = passthrough `round(similarity,4)` (bukan rescale 0.70-1.0) sesuai `docs/05 §4.1` raw similarity; (3) nama file/kelas mengikuti `docs/03/05/11` persis.
 - **Rollback / Failure Consideration:** Bila unifier gagal → `status: error` envelope (bukan fallback ke raw rows).
 
 ### Task 8 — Graph Edge Tables & Gold Analytics Materialization
@@ -236,27 +235,26 @@
 - **Downstream Impact:** Unlock Task 8-retriever.
 - **Known Gaps:** Tidak ada.
 
-#### Task 8-retriever — GraphRetriever T1–T4 `[NEXT]`
+#### Task 8-retriever — GraphRetriever T1–T4 `[IMPLEMENTED — VERIFICATION PENDING]`
 
-- **Status:** `[NEXT]`
+- **Status:** `[IMPLEMENTED — VERIFICATION PENDING]` (unit 19 + integration 6 hijau; live E2E Task 12 pending)
 - **Objective:** Menjawab kolaborasi/jaringan via 4 templat parameterized + recursive CTE berbatas.
 - **Why This Exists:** `GraphRoute` untuk co-author, institusi kolaborator, komposisi topik→institusi, path search.
 - **Preconditions / Dependencies:** Task 8-edge DONE; Task 4 DONE-parsial (route); `docs/05 §5.3`, `docs/02 FR7`, `docs/04 §6`.
-- **Scope:** `GraphRetriever` tanpa LLM-generated graph SQL — hanya T1 institution collaborators, T2 co-authors, T3 topic→institution composition, T4 bounded recursive-CTE path search (`max_hops=3`, `LIMIT 50`; T1 contoh `ORDER BY weight DESC LIMIT 20` di `docs/05` dipertahankan sebagai spesifikasi templat, bukan angka baru); setiap edge membawa `via_publication_ids`.
+- **Scope:** `GraphRetriever` tanpa LLM-generated graph SQL — hanya T1 institution collaborators, T2 co-authors, T3 topic→institution composition, T4 bounded recursive-CTE path search (`max_hops=3`, `LIMIT 50`; T1 contoh `ORDER BY weight DESC LIMIT 20` di `docs/05` dipertahankan sebagai spesifikasi templat, bukan angka baru); setiap edge membawa `via_publication_ids` dan memperkaya metadata publikasi pada `EvidenceSet.sources`.
 - **Out of Scope:** Apache AGE (POST-MVP Phase 9); Gold analytics (8.5); perubahan hop/limit (terkunci).
-- **Implementation Surface (rencana):** `backend/app/services/retrievers/graph_retriever.py` (baru); wiring `ask.py` menggantikan stub `not_found Fase 6`. Tidak ada file diubah pada task Plan ini.
+- **Implementation Surface:** `backend/app/services/retrievers/graph_retriever.py` (290 baris); `backend/app/services/synthesizer/answer.py:GraphAnswerSynthesizer`; `backend/app/services/evidence/unifier.py:from_graph`; wiring `backend/app/routers/ask.py` (`GraphRoute`).
 - **Data / Database Dependency:** `institution_collaboration` + `author_collaboration`; `max_hops=3`; timeout 10s.
 - **API / Contract Dependency:** `AskResponse{route: GraphRoute, sources[]{source_type: graph, provenance: via_publication_ids}}`.
 - **Security / Guardrails:** LLM-free templates + parameterized + `app_readonly` + `search_path=public` + timeout (`docs/08 §2.2`).
-- **Test & Verification:** Unit baru: T1–T4 shape + hop clamp + `LIMIT` clamp; integration: `GraphRoute` end-to-end (direncanakan `tests/unit/test_graph_*.py` + `integration/test_graph_*.py` — belum ada); E2E: Task 12.
+- **Test & Verification:** Unit: `tests/unit/test_graph_retriever.py` (19 tests); Integration: `tests/integration/test_graph_ask_endpoint.py` (6 tests); E2E: Task 12.
 - **Acceptance Criteria:** 4 templat parameterized lolos; hop >3 ditolak/clamped; provenance selalu ada.
-- **Evidence of Completion (definisi):** File retriever + wiring + tests hijau.
+- **Evidence of Completion:** File retriever + synthesizer + unifier + wiring + 25 tests hijau.
 - **Downstream Impact:** Unlock `GraphRoute` di Task 10-full + Hybrid composition.
-- **Known Gaps:** Perbedaan `LIMIT 50` (FR7) vs `LIMIT 20` (contoh T1 `docs/05`) — ikuti spesifikasi per-templat di `docs/05`, jangan diseragamkan sepihak; catat di E2E.
-
+- **Known Gaps:** Verifikasi E2E live-DB (Task 12).
 #### Task 8.5 — Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) `[PLANNED]`
 
-- **Status:** `[PLANNED]` (`[BLOCKED]` sampai Task 7 + 8-retriever jelas — lihat `docs/05 §5.4`, `docs/11 Phase 6`)
+- **Status:** `[PLANNED]` (`[BLOCKED]` sampai Task 7 DONE + Task 8-retriever `[IMPLEMENTED — VERIFICATION PENDING]` — lihat `docs/05 §5.4`, `docs/11 Phase 6`)
 - **Objective:** Menyediakan derived analytics read-only untuk `HybridRoute` + policy synthesis.
 - **Why This Exists:** Emerging-topic detection + expertise ranking membutuhkan agregat prakomputasi, bukan komputasi on-the-fly.
 - **Preconditions / Dependencies:** Silver kanonikal DONE; Task 7 (konsumsi); `docs/04 §7`, `docs/12 §6`.
@@ -290,7 +288,7 @@
 - **Acceptance Criteria:** Setiap sitasi inline cocok dengan `EvidenceSet` (DOI atau Title); sitasi fiktif terstrip ke `unverified_citations`; 0 evidence → `not_found` tanpa teks halusinasi.
 - **Evidence of Completion:** File synthesizer + verifier + wiring + tests hijau untuk SQL/Vector.
 - **Downstream Impact:** Membuktikan pola untuk 9-full; tidak unlock Graph/Hybrid synthesis.
-- **Known Gaps:** (1) `cite_year` diparse tapi belum dibandingkan (hanya Title exact/substring) — `valid_title_years` unused; dicatat untuk hardening berikutnya, bukan blocker MVP prototipe; (2) regex `[^,]+` rapuh untuk judul berkomma (`docs/05` drift) — jangan diubah sepihak di Plan; (3) nama blok prompt `05:239-245` vs konvensi `RETRIEVED EVIDENCE` — ikuti `AGENTS.md` saat implementasi 9-full.
+- **Known Gaps:** (1) Regex `[^,]+` rapuh untuk judul berkomma (`docs/05` drift) — jangan diubah sepihak di Plan; (2) `cite_year` sekarang dipergunakan dengan strict match (tahun numerik wajib sama; `n.d.` tunduk pada pencocokan judul saja) — gap lama sudah dihapus, hanya catatan regex rapuh tersisa; (3) nama blok prompt `05:239-245` vs konvensi `RETRIEVED EVIDENCE` — ikuti `AGENTS.md` saat implementasi 9-full.
 
 #### Task 9-full — Unified AnswerSynthesizer (semua route) `[PLANNED]`
 
@@ -312,7 +310,7 @@
 
 ### Task 10 — Endpoint API `POST /api/v1/ask` `[IN PROGRESS]`
 
-- **Status:** `[IN PROGRESS]` (parsial: `SQLRoute`/`VectorRoute` wired; `GraphRoute`/`HybridRoute` stub)
+- **Status:** `[IN PROGRESS]` (parsial: `SQLRoute`/`VectorRoute`/`GraphRoute` wired; `HybridRoute` stub)
 - **Objective:** Mengintegrasikan pipeline Task 4–9 ke handler FastAPI dengan kontrak Pydantic v2 penuh.
 - **Why This Exists:** Satu endpoint terverifikasi adalah kontrak demo + frontend + E2E.
 - **Preconditions / Dependencies:** Task 4/5/6/9a ada; Task 7/8/9-full untuk penyelesaian.
@@ -326,7 +324,7 @@
 - **Acceptance Criteria (parsial terpenuhi):** `SQLRoute`/`VectorRoute` mengembalikan `answer + evidence_objects + sources + latensi`; `GraphRoute`/`HybridRoute` mengembalikan `not_found` jujur (bukan halusinasi). Full selesai saat 9-full wired.
 - **Evidence of Completion (parsial):** File wiring + diagnostics + tests hijau untuk 2 route.
 - **Downstream Impact:** Unlock Task 11 (frontend dapat dibangun di atas 2 route) + Task 12 parsial.
-- **Known Gaps:** Full wiring menunggu Task 7/8/9-full; latensi budget (`docs/03`: SQL/Graph ≤500ms, Vector ≤1.5s, Hybrid ≤1.0s, LLM 5–10s, total ≤15s) baru tervalidasi parsial.
+- **Known Gaps:** Full wiring menunggu Task 7/8/9-full; latensi budget (`docs/03`: SQL/Graph ≤500ms, Vector ≤1.5s, Hybrid ≤1.0s, LLM 5–10s, total ≤15s) baru tervalidasi parsial. `GraphRoute` T4 menjalankan ego-BFS (target_entity selalu NULL); pairwise path A↔B direncanakan Fase 9.
 - **Rollback / Failure Consideration:** Stub Graph/Hybrid harus tetap `not_found` (bukan error 500) agar E2E 2-route tetap hijau selama pengembangan.
 
 ### Task 11 — Frontend Next.js (Gaya Padat Notion/Linear) `[PLANNED]`
@@ -403,6 +401,7 @@
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/10 Implementation Plan.md` v3.6.4 | Sinkronisasi Fase 6: `GraphRoute` dari stub ke wired (`Task 10-parsial` mencakup `SQLRoute`/`VectorRoute`/`GraphRoute`); `Task 8-retriever` T2/T3/T4 spesifikasi di `docs/05 §5.3`; `from_graph` fail-closed; `CitationVerifier` Jaccard ≥0.8 + DOI-year strict (gap lama `cite_year` dihapus); T4 ego-BFS berbatas direncanakan pairwise path Fase 9 | Review Phase 6 2026-10-02: kode + 261 tests + 2 E2E mock baru membuktikan graph route penuh |
 | `docs/10 Implementation Plan.md` v3.6.3 | Rekonsiliasi Phase 4 berbasis evidence Level 1: Task 4/5/6 + 9a menjadi `[IMPLEMENTED — VERIFICATION PENDING]` (inti unit+integration DONE — VERIFIED, 177 tests); pecah dokumentatif `8-edge` DONE vs `8-retriever` NEXT vs `8.5` PLANNED dan `9a` Vector-scoped vs `9-full` unified; tulis ulang tiap Task ke template executable 14-field (Status/Objective/Why/Preconditions/Scope/Out-of-Scope/Surface/Data/API/Security/Test/Acceptance/Evidence/Downstream/Gaps); selaraskan threshold, `DISTINCT ON LIMIT 8`, `LIMIT 50`, timeout 10s, `app_readonly`, `filters_ignored`, `unverified_citations`, latensi; tanpa renumbering dan tanpa keputusan arsitektur baru | Audit 2026-09-29: kode + 177 tests membuktikan slice SQL+Vector maju melampaui `README`/`docs/11` yang masih PLANNED; overlap 6 vs 5/7 harus dijelaskan dokumentatif agar tidak terjadi "kode ada tapi plan bilang belum" atau "plan bilang selesai tapi integrasi belum" |
 | `docs/10 Implementation Plan.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris | Tanpa duplikasi bilingual; perbaiki terjemahan literal |
 | `docs/10 Implementation Plan.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |

@@ -17,3 +17,26 @@ def reset_rate_limiters():
     RateLimitingMiddleware.reset_all()
     yield
     RateLimitingMiddleware.reset_all()
+
+
+@pytest.fixture(autouse=True)
+def isolate_embedding_model_cache():
+    """Save/restore the global SentenceTransformer cache around each test.
+
+    Phase 4 audit (M2): ``backend.app.services.embedding._st_model`` is a
+    module-level global. Unit tests that patch the loader (e.g. a mock whose
+    ``encode`` returns non-finite vectors) would otherwise leak their mock
+    into later tests in the same process — e.g. vector endpoint integration
+    tests that exercise the real ``generate_query_embedding`` path and then
+    fail with 503.
+
+    Save/restore (instead of unconditional clearing) is deliberate: it both
+    seals the contamination leak *and* preserves the warm production cache
+    across integration tests, so the heavyweight bge-m3 model is loaded once
+    per suite rather than re-downloaded/re-loaded per test (slow + flaky).
+    """
+    import backend.app.services.embedding as embedding_module
+
+    saved_model = embedding_module._st_model
+    yield
+    embedding_module._st_model = saved_model

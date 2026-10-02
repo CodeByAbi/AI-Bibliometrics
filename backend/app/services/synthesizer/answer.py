@@ -5,7 +5,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §4, §6, §7; docs/06 Api Desig
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.models.ask import (
@@ -13,9 +13,9 @@ from backend.app.models.ask import (
     FilterParams,
     SourceItem,
 )
+from backend.app.services.retrievers.graph_retriever import GraphRetrievalResult
 from backend.app.services.retrievers.sql_retriever import SqlRetrievalResult
 from backend.app.services.retrievers.vector_retriever import (
-    VectorMatchItem,
     VectorRetrievalResult,
 )
 from backend.app.services.synthesizer.citation import CitationVerifier
@@ -24,8 +24,10 @@ from backend.app.services.evidence.models import EvidenceSet
 from backend.app.services.evidence.unifier import EvidenceUnifier
 
 __all__ = [
+    "SynthesizedGraphResponse",
     "SynthesizedSqlResponse",
     "SynthesizedVectorResponse",
+    "GraphAnswerSynthesizer",
     "SqlAnswerSynthesizer",
     "VectorAnswerSynthesizer",
     "format_citation",
@@ -43,6 +45,7 @@ class SynthesizedSqlResponse(BaseModel):
     evidence_objects: List[EvidenceObject] = Field(default_factory=list)
     sources: List[SourceItem] = Field(default_factory=list)
     unverified_citations: List[str] = Field(default_factory=list)
+    evidence_set: Optional[EvidenceSet] = None
 
 
 class SynthesizedVectorResponse(BaseModel):
@@ -55,6 +58,20 @@ class SynthesizedVectorResponse(BaseModel):
     evidence_objects: List[EvidenceObject] = Field(default_factory=list)
     sources: List[SourceItem] = Field(default_factory=list)
     unverified_citations: List[str] = Field(default_factory=list)
+    evidence_set: Optional[EvidenceSet] = None
+
+class SynthesizedGraphResponse(BaseModel):
+    """Output of Graph collaboration network grounded answer synthesis."""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+    answer: str
+    evidence_objects: List[EvidenceObject] = Field(default_factory=list)
+    sources: List[SourceItem] = Field(default_factory=list)
+    unverified_citations: List[str] = Field(default_factory=list)
+    evidence_set: Optional[EvidenceSet] = None
+
 
 
 def _format_period(filters: Optional[FilterParams]) -> str:
@@ -71,9 +88,15 @@ class SqlAnswerSynthesizer:
         question: str,
         sql_result: SqlRetrievalResult,
         filters: Optional[FilterParams] = None,
+        evidence_set: Optional[EvidenceSet] = None,
     ) -> SynthesizedSqlResponse:
-        """Synthesize narrative answer and EvidenceObjects from SQL execution result."""
-        # 1. Zero-match short circuit
+        """Synthesize narrative answer and EvidenceObjects from SQL execution result.
+
+        When ``evidence_set`` is provided (Phase 5 wiring in ``ask.py``), it is
+        reused verbatim so unification happens exactly once per request.
+        Otherwise it is built via ``EvidenceUnifier.from_sql``.
+        """
+        # 1. Zero-match short circuit (retrieval-level + EvidenceSet-level).
         if sql_result.is_empty:
             return SynthesizedSqlResponse(
                 status="not_found",
@@ -81,58 +104,34 @@ class SqlAnswerSynthesizer:
                 evidence_objects=[],
                 sources=[],
                 unverified_citations=[],
+                evidence_set=None,
             )
 
-        ev_set = EvidenceUnifier.from_sql(question, sql_result, filters=filters)
-        rows = sql_result.rows
-        cols = set(sql_result.columns)
+        ev_set = evidence_set if evidence_set is not None else EvidenceUnifier.from_sql(
+            question, sql_result, filters=filters
+        )
+        if ev_set.is_empty:
+            return SynthesizedSqlResponse(
+                status="not_found",
+                answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                evidence_objects=[],
+                sources=[],
+                unverified_citations=[],
+                evidence_set=ev_set,
+            )
+
         answer_paragraphs: List[str] = []
-        # Case A: Single aggregate scalar (e.g., total_publications)
-        if len(rows) == 1 and ("total_publications" in cols or "count" in cols):
-            val = rows[0].get("total_publications", rows[0].get("count", 0))
-            claim_text = f"Berdasarkan data database, total publikasi tercatat sebanyak {val}."
-            if filters and filters.year:
-                claim_text = f"Berdasarkan data database, total publikasi pada tahun {filters.year} adalah {val}."
-            answer_paragraphs.append(claim_text)
+        # 2. Deterministic narrative rendering from normalized EvidenceSet
+        #    (single source of truth: ev_set.evidence_objects + ev_set.sources).
+        for idx, ev in enumerate(ev_set.evidence_objects, 1):
+            answer_paragraphs.append(f"{idx}. {ev.claim} {ev.format_citation_tag()}")
 
-        # Case B: Author rankings (author_name + publication_count)
-        elif "author_name" in cols and ("publication_count" in cols or "count" in cols):
-            answer_paragraphs.append("Berikut adalah daftar penulis berdasarkan jumlah publikasi dalam database:")
-            for idx, r in enumerate(rows, 1):
-                name = r.get("author_name", "Unknown")
-                count_val = r.get("publication_count", r.get("count", 0))
-                answer_paragraphs.append(f"{idx}. **{name}** — {count_val} publikasi")
-
-        # Case C: Institution rankings (institution_name + publication_count)
-        elif "institution_name" in cols and ("publication_count" in cols or "count" in cols):
-            answer_paragraphs.append("Berikut adalah daftar institusi berdasarkan jumlah publikasi dalam database:")
-            for idx, r in enumerate(rows, 1):
-                name = r.get("institution_name", "Unknown")
-                count_val = r.get("publication_count", r.get("count", 0))
-                answer_paragraphs.append(f"{idx}. **{name}** — {count_val} publikasi")
-
-        # Case D: Publication list (publication_id, title, year, citation_count, doi)
-        elif "title" in cols:
-            answer_paragraphs.append("Ditemukan publikasi berikut dalam database yang sesuai dengan kriteria:")
-            for idx, r in enumerate(rows, 1):
-                title = r.get("title", "Untitled")
-                year = r.get("year")
-                doi = r.get("doi")
-                citations = r.get("citation_count", 0)
-
-                cite_tag = format_citation(title, year, doi)
-                item_line = f"{idx}. **{title}** ({year})"
-                if citations is not None:
-                    item_line += f" — {citations} sitasi"
-                item_line += f" {cite_tag}"
-                answer_paragraphs.append(item_line)
-
-        # Case E: Generic table output
-        else:
+        if not ev_set.evidence_objects and ev_set.sources:
             answer_paragraphs.append("Berikut adalah hasil kueri database:")
-            for idx, r in enumerate(rows, 1):
-                row_str = ", ".join(f"{k}: {v}" for k, v in r.items() if v is not None)
-                answer_paragraphs.append(f"{idx}. {row_str}")
+            for idx, src in enumerate(ev_set.sources, 1):
+                item_line = f"{idx}. **{src.title}** ({src.year or 'n.d.'})"
+                cite_tag = format_citation(src.title, src.year, src.doi)
+                answer_paragraphs.append(f"{item_line} {cite_tag}")
 
         full_answer = "\n\n".join(answer_paragraphs)
 
@@ -142,6 +141,7 @@ class SqlAnswerSynthesizer:
             evidence_objects=ev_set.evidence_objects,
             sources=ev_set.sources,
             unverified_citations=[],
+            evidence_set=ev_set,
         )
 
 
@@ -154,9 +154,14 @@ class VectorAnswerSynthesizer:
         question: str,
         vector_result: VectorRetrievalResult,
         filters: Optional[FilterParams] = None,
+        evidence_set: Optional[EvidenceSet] = None,
     ) -> SynthesizedVectorResponse:
-        """Synthesize grounded narrative answer and EvidenceObjects from Vector search matches."""
-        # 1. Zero-match short circuit
+        """Synthesize grounded narrative answer and EvidenceObjects from Vector search matches.
+
+        When ``evidence_set`` is provided (Phase 5 wiring in ``ask.py``), it is
+        reused verbatim so unification happens exactly once per request.
+        """
+        # 1. Zero-match short circuit (retrieval-level + EvidenceSet-level).
         if vector_result.is_empty:
             return SynthesizedVectorResponse(
                 status="not_found",
@@ -164,31 +169,48 @@ class VectorAnswerSynthesizer:
                 evidence_objects=[],
                 sources=[],
                 unverified_citations=[],
+                evidence_set=None,
             )
 
-        ev_set = EvidenceUnifier.from_vector(question, vector_result, filters=filters)
-        matches = vector_result.matches
+        ev_set = evidence_set if evidence_set is not None else EvidenceUnifier.from_vector(
+            question, vector_result, filters=filters
+        )
+        if ev_set.is_empty:
+            return SynthesizedVectorResponse(
+                status="not_found",
+                answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                evidence_objects=[],
+                sources=[],
+                unverified_citations=[],
+                evidence_set=ev_set,
+            )
         answer_paragraphs: List[str] = []
         answer_paragraphs.append(
             f"Berdasarkan pencarian semantik (ambang similaritas kosinus >= {vector_result.threshold:.2f}), "
-            f"ditemukan {len(matches)} publikasi yang relevan dengan kriteria pencarian:"
+            f"ditemukan {len(ev_set.evidence_objects)} publikasi yang relevan dengan kriteria pencarian:"
         )
 
-        for idx, m in enumerate(matches, 1):
-            cite_tag = format_citation(m.title, m.year, m.doi)
-            snippet = m.chunk_text.strip()
-            if len(snippet) > 200:
-                snippet = snippet[:197] + "..."
-
-            item_line = (
-                f"{idx}. **{m.title}** ({m.year or 'n.d.'}) "
-                f"— Skor Kemiripan: {m.similarity_score:.2f} {cite_tag}\n"
-                f"   > *Ringkasan Abstrak:* {snippet}"
-            )
+        # 2. Deterministic narrative rendering from normalized EvidenceSet
+        #    (single source of truth: ev_set.evidence_objects).
+        # Item lookup is by EvidenceObject -> EvidenceItem via the same
+        # deterministic rank order (EvidenceRanker.rank_items), so index i
+        # of evidence_objects aligns with index i of items for vector sets.
+        items_by_index = list(enumerate(ev_set.items, 1))
+        for idx, ev in enumerate(ev_set.evidence_objects, 1):
+            claim = ev.claim
+            cite_tag = ev.format_citation_tag()
+            item_line = f"{idx}. {claim} {cite_tag}"
+            if idx <= len(items_by_index):
+                _i, snippet_item = items_by_index[idx - 1]
+                if snippet_item.source_type == "vector" and snippet_item.content:
+                    snippet = snippet_item.content.strip()
+                    if len(snippet) > 200:
+                        snippet = snippet[:197] + "..."
+                    item_line += f"\n   > *Ringkasan Abstrak:* {snippet}"
             answer_paragraphs.append(item_line)
 
         raw_answer = "\n\n".join(answer_paragraphs)
-        verified_res = CitationVerifier.verify(raw_answer, matches)
+        verified_res = CitationVerifier.verify(raw_answer, ev_set.sources)
 
         return SynthesizedVectorResponse(
             status="ok",
@@ -196,4 +218,74 @@ class VectorAnswerSynthesizer:
             evidence_objects=ev_set.evidence_objects,
             sources=ev_set.sources,
             unverified_citations=verified_res.unverified_citations,
+            evidence_set=ev_set,
+        )
+
+class GraphAnswerSynthesizer:
+    """Deterministic grounded synthesizer for Graph collaboration results."""
+
+    @classmethod
+    def synthesize(
+        cls,
+        question: str,
+        graph_result: GraphRetrievalResult,
+        filters: Optional[FilterParams] = None,
+        evidence_set: Optional[EvidenceSet] = None,
+    ) -> SynthesizedGraphResponse:
+        """Synthesize grounded narrative answer and EvidenceObjects from Graph search results."""
+        # 1. Zero-match short circuit (retrieval-level + EvidenceSet-level).
+        if graph_result.is_empty:
+            return SynthesizedGraphResponse(
+                status="not_found",
+                answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                evidence_objects=[],
+                sources=[],
+                unverified_citations=[],
+                evidence_set=None,
+            )
+
+        ev_set = evidence_set if evidence_set is not None else EvidenceUnifier.from_graph(
+            question, graph_result, filters=filters
+        )
+        if ev_set.is_empty:
+            return SynthesizedGraphResponse(
+                status="not_found",
+                answer="Data tidak ditemukan dalam database untuk kriteria pencarian tersebut.",
+                evidence_objects=[],
+                sources=[],
+                unverified_citations=[],
+                evidence_set=ev_set,
+            )
+
+        answer_paragraphs: List[str] = []
+        entity_label = graph_result.target_entity_name or "entitas terkait"
+        if graph_result.template_type == "T1":
+            intro = f"Berdasarkan penelusuran jaringan kolaborasi institusi ({entity_label}), ditemukan {len(ev_set.evidence_objects)} mitra kolaborasi:"
+        elif graph_result.template_type == "T2":
+            intro = f"Berdasarkan penelusuran jaringan co-authorship penulis ({entity_label}), ditemukan {len(ev_set.evidence_objects)} rekan penulis (co-authors):"
+        elif graph_result.template_type == "T3":
+            intro = f"Berdasarkan penelusuran kolaborasi pada topik '{entity_label}', ditemukan {len(ev_set.evidence_objects)} institusi terkait:"
+        elif graph_result.template_type in ("T4", "T4_AUTHOR", "T4_INSTITUTION"):
+            intro = f"Berdasarkan penelusuran jalur kolaborasi multi-hop ({entity_label}), ditemukan {len(ev_set.evidence_objects)} jalur terhubung:"
+        else:
+            intro = f"Berdasarkan penelusuran jaringan kolaborasi, ditemukan {len(ev_set.evidence_objects)} relasi kolaborasi:"
+
+        answer_paragraphs.append(intro)
+
+        for idx, ev in enumerate(ev_set.evidence_objects, 1):
+            claim = ev.claim
+            cite_tag = ev.format_citation_tag()
+            item_line = f"{idx}. {claim} {cite_tag}".rstrip()
+            answer_paragraphs.append(item_line)
+
+        raw_answer = "\n\n".join(answer_paragraphs)
+        verified_res = CitationVerifier.verify(raw_answer, ev_set.sources)
+
+        return SynthesizedGraphResponse(
+            status="ok",
+            answer=verified_res.cleaned_text,
+            evidence_objects=ev_set.evidence_objects,
+            sources=ev_set.sources,
+            unverified_citations=verified_res.unverified_citations,
+            evidence_set=ev_set,
         )

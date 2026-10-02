@@ -18,15 +18,17 @@ Inspeksi repositori per **2026-09-29** menetapkan status tersinkronisasi berikut
 - **DONE — Kerangka Gateway API & DB Pool (Fase 2):** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.
 - **IMPLEMENTED — VERIFICATION PENDING — Fase 3:** Vertical Slice QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau, sign-off E2E menyusul Task 12.
 - **IMPLEMENTED — VERIFICATION PENDING — Fase 4:** Mesin Retrieval Semantik / Vector (`VectorRetriever` + online embedding `BAAI/bge-m3` + `VectorAnswerSynthesizer` + `CitationVerifier` Vector-scoped) — unit + integration hijau; checklist runtime live-DB + sign-off E2E (Task 12) masih pending.
-- **PENDING — Pasca-Fase 4:** Evidence Layer generik (Fase 5), Mesin Graf & Gold Analytics (Fase 6), Sintesis Jawaban Unified & E2E (Fase 7-8).
+- **IMPLEMENTED — VERIFICATION PENDING — Fase 5:** Evidence Layer generik (`EvidenceUnifier` + `EvidenceRanker` + `EvidenceSet` + `EvidenceItem`) — unit 21 + integration 9 + E2E mock 12 query hijau; live E2E (Task 12) pending; `from_graph sources` resolved di Fase 6.
+- **IMPLEMENTED — VERIFICATION PENDING — Fase 6:** Mesin Retrieval Graf (`GraphRetriever` T1–T4 + `GraphAnswerSynthesizer` + `CitationVerifier` + wiring `GraphRoute` di `POST /api/v1/ask`) — unit 19 + integration 6 hijau; live E2E (Task 12) pending.
+- **PENDING — Pasca-Fase 6:** Gold Analytics (Fase 6/Task 8.5), Sintesis Jawaban Unified & E2E (Fase 7-8).
 
 ### 1.1b Pelacak Progres (Sinkronisasi 2026-09-29)
 
 | Status | Item |
 |---|---|
 | DONE | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8 (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) |
-| IMPLEMENTED — VERIFICATION PENDING (Fase 3–4) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) · VectorRetriever + online embedding (Task 6) · Vector-scoped Synthesizer + CitationVerifier (Task 9a) — implementasi + unit/integration hijau · E2E sign-off (Task 12) pending |
-| PENDING (Fase 5+) | Evidence Layer generik (Task 7) · GraphRetriever T1–T4 (Task 8-retriever) · Gold Analytics (Task 8.5) · Unified Synthesizer (Task 9-full) · API full wiring (Task 10-full) · Frontend (Task 11) · E2E 12 Queries (Task 12) |
+| IMPLEMENTED — VERIFICATION PENDING (Fase 3–6) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) · VectorRetriever + online embedding (Task 6) · Vector/Graph-scoped Synthesizer + CitationVerifier (Task 9a) · Evidence Layer generik: EvidenceUnifier + EvidenceRanker + EvidenceSet + EvidenceItem (Task 7) · GraphRetriever T1–T4 + GraphAnswerSynthesizer (Task 8-retriever) — 261 tests passing (unit + integration) · live E2E sign-off (Task 12) pending |
+| PENDING (Fase 7+) | Gold Analytics (Task 8.5) · Unified Synthesizer (Task 9-full) · API full wiring (Task 10-full) · Frontend (Task 11) · E2E 12 Queries live (Task 12) |
 ### 1.2 Apa yang Harus Dibangun Terlebih Dahulu?
 Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasyarat absolut adalah:
 1. **Baseline Repositori & Infrastruktur (Fase 0)**: Bangun struktur direktori proyek, Docker Compose (FastAPI + Ollama), kontrak environment, dan jalankan skrip verifikasi skema database Task 0 terhadap 9 tabel kanonikal yang sudah ada.
@@ -276,31 +278,29 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 5 — Unifikasi Lapisan Bukti & Peringkat Deterministik
-**Status:** `[PLANNED]`  
+**Status:** `[IMPLEMENTED — VERIFICATION PENDING]` (unit + integration hijau; live E2E Task 12 pending)
 **Tujuan:** Menegakkan kontrak bukti perantara kanonikal dan unifier, memisahkan (decouple) sumber retrieval dari sintesis jawaban.
 
 - **Prasyarat:** Fase 3 (`SqlRetriever`) dan Fase 4 (`VectorRetriever`).
 - **Cakupan & Deliverable:**
-  - Definisikan model Pydantic kanonikal `Evidence` dan `EvidenceSet`:
-    - Field wajib: `source_id`, `source_type` (`sql` | `vector` | `graph` | `analytics`), `snippet`, `score`.
-    - Metadata sumber opsional: `publication_id`, `title`, `authors`, `year`, `doi`, `provenance_ids`.
-  - Implementasikan `EvidenceUnifier`:
-    - Telan (ingest) output heterogen dari baris SQL, chunk vector, edge graf, dan Gold analytics.
-    - Transformasi dan normalisasi seluruh item menjadi struktur `Evidence` standar.
-    - Deduplikasi publikasi yang tumpang tindih antar metode retrieval berbeda.
-  - Implementasikan `EvidenceRanker`:
-    - Algoritma peringkat deterministik yang menggabungkan skor kosinus vector, kecocokan kata kunci, dan kebaruan publikasi.
-    - Isolasi eksplisit peringkat deterministik saat ini dari reranker cross-encoder masa depan.
-- **Output:** Lapisan data `EvidenceSet` terpadu yang menjamin penyajian standar ke model pembuatan (generation).
+  - Model kanonikal `EvidenceObject{claim,metric,value,period,sources[],confidence}` + `EvidenceSourceRef{publication_id,doi,eid,title,year}` + `EvidenceItem{source_id,source_type,snippet→content,score,confidence,publication_id,title,year,doi,eid,provenance_ids,metadata}` + `EvidenceSet{query,evidence_objects,sources,items,filters_ignored,sql_executed,is_empty,count}` (`docs/05 §4`, `docs/06 §5`) — bukan skema lama `source_id/source_type/snippet/score`.
+  - `EvidenceUnifier.from_sql` (5 kasus bentuk rows), `from_vector`, `from_graph`, `from_analytics`, `unify()` multi-source dedup by `publication_id` + merge provenance.
+  - `EvidenceRanker` deterministik: objects by `(-confidence, -value, metric, claim)`; sources by `(-relevance, -year, title, id)`; items by `(-score, -confidence, -year, title, source_id)`. Isolasi eksplisit dari reranker masa depan.
+  - Serialisasi: `to_metrics_json`, `to_chunks_text`, `to_prompt_context`, `to_untrusted_evidence_block` (framing `=== BEGIN/END RETRIEVED EVIDENCE (UNTRUSTED DATA) ===`).
+  - Wiring production: `SqlAnswerSynthesizer`/`VectorAnswerSynthesizer` consume `EvidenceSet` (tidak ada raw-row-to-LLM); `AskResponse.debug.evidence_set` untuk `developer_mode`.
+- **Output:** Lapisan data `EvidenceSet` terpadu + routing deterministik + test suite unit (21) + integration (8) + E2E mock (12).
 - **Memblokir:** Fase 6 (Integrasi Graf), Fase 7 (Sintesis Jawaban), Fase 8 (Verifikasi E2E).
 - **Kriteria Penerimaan:**
-  - Hasil retrieval dari multi-sumber ternormalisasi ke skema JSON `EvidenceSet` yang identik.
-  - Unifikasi mendeduplikasi record `publication_id` identik sambil menggabungkan provenance sumbernya.
+  - Hasil retrieval multi-sumber ternormalisasi ke skema `EvidenceSet` identik.
+  - `unify()` menduplikasi record `publication_id` yang sama sambil menggabungkan provenance sumbernya.
+  - Ranking deterministik: input yang sama selalu menghasilkan urutan yang sama.
+  - Tidak ada path raw-row-to-LLM tersisa di production (`grep audit` lulus).
+- **Known Gaps:** `from_graph` mengembalikan `sources=[]` (provenance hanya di `items.provenance_ids`) — fill saat `GraphRetriever` (Fase 6) hadir. Confidence vector = passthrough `round(similarity,4)` (bukan rescale 0.70-1.0), sesuai `docs/05 §4.1`.
 
 ---
 
 ### Fase 6 — Konstruksi Knowledge Graph & Retrieval Graf (Wajib MVP)
-**Status:** `[PLANNED]`  
+**Status:** `[IMPLEMENTED — VERIFICATION PENDING]` (unit 19 + integration 6 hijau; live E2E sign-off Task 12 pending)  
 **Tujuan:** Mengimplementasikan kapabilitas Knowledge Graph yang wajib, menyelesaikan relasi entitas akademik inti dengan traversal multi-hop terbatas dan pelacakan provenance.
 
 - **Prasyarat:** Fase 1 (Materialisasi Data) dan Fase 5 (Lapisan Bukti).
@@ -310,13 +310,14 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
     - Eksekusi traversal terparameterisasi (Templat T1: Kolaborator Institusi, T2: Co-author, T3: pemetaan Topik-Institusi, T4: Pencarian Jalur Terbatas).
     - Rel traversal: `max_hops = 3` dan `LIMIT 50` ditegakkan ketat.
     - Retensi provenance: setiap relasi graf wajib mengembalikan `via_publication_ids`.
-    - Normalisasi bukti graf: konversi jalur/edge graf menjadi objek `Evidence` kanonikal dengan `source_type: "graph"`.
-- **Output:** `GraphRetriever` operasional yang mampu menjawab pertanyaan konektivitas relasional dengan provenance publikasi terverifikasi.
+    - Normalisasi bukti graf: konversi jalur/edge graf menjadi objek `Evidence` kanonikal dengan `source_type: "graph"` dan memperkaya metadata publikasi pada `EvidenceSet.sources`.
+    - Implementasi `GraphAnswerSynthesizer` terintegrasi dengan `CitationVerifier`.
+    - Wiring penuh `GraphRoute` pada `POST /api/v1/ask`.
+- **Output:** `GraphRetriever` + `GraphAnswerSynthesizer` operasional yang mampu menjawab pertanyaan konektivitas relasional dengan provenance publikasi terverifikasi.
 - **Memblokir:** Fase 7 (Retrieval Multi-Rute Hybrid), Fase 8 (Verifikasi E2E).
 - **Kriteria Penerimaan:**
   - Kueri "Which institutions collaborated with AI researchers?" menelusuri `institution_collaboration` dan mengembalikan institusi tertaut disertai `via_publication_ids` konkret.
   - Traversal rekursif dijepit keras (hard-clamp) pada 3 hop; referensi sirkular berhenti (terminate) bersih tanpa pembengkakan memori atau timeout kueri.
-
 ---
 
 ### Fase 7 — Retrieval Hybrid Multi-Rute & Sintesis Jawaban Ter-grounding

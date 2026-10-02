@@ -44,6 +44,33 @@ async def test_health_endpoint_success():
         assert embed["model"] == "BAAI/bge-m3"
         assert embed["dimension"] == 1024
 
+        # Phase 5 Evidence layer assertions
+        assert data["evidence_layer_ready"] is True
+
+
+def test_evidence_layer_health_probe_ready():
+    """Phase 5 probe returns True when the canonical Evidence API is intact."""
+    from backend.app.routers.health import check_evidence_layer_health
+
+    assert check_evidence_layer_health() is True
+
+
+def test_evidence_layer_health_probe_never_raises(monkeypatch):
+    """Phase 5 probe returns False (never raises) when the Evidence API breaks."""
+    import builtins
+
+    import backend.app.routers.health as health_module
+
+    real_import = builtins.__import__
+
+    def _broken_import(name, *args, **kwargs):
+        if name.startswith("backend.app.services.evidence"):
+            raise ImportError("simulated evidence breakage")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _broken_import)
+    assert health_module.check_evidence_layer_health() is False
+
 
 @pytest.mark.asyncio
 async def test_root_endpoint():

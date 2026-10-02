@@ -54,7 +54,7 @@ Invarian Sesi Koneksi:
 ## 2. Pertahanan Injeksi SQL & Injeksi Prompt
 
 ### 2.1 Vektor Ancaman
-1. **Injeksi SQL Klasik**: Ditutup melalui arsitektur Text-to-SQL dengan validasi AST (`sqlglot`) pada `SQLRoute`, serta parameterisasi kueri penuh (`$1`, `$2`) pada `VectorRoute`, `GraphRoute`, dan `HybridRoute`.
+1. **Injeksi SQL Klasik**: Ditutup melalui arsitektur Text-to-SQL dengan validasi AST (`sqlglot`) pada `SQLRoute`, serta parameterisasi kueri (`$1`, `$2`) pada `VectorRoute`, `GraphRoute`, dan `HybridRoute` — dengan satu pengecualian terdokumentasi: literal vektor 1024-d pada `VectorRoute` diinterpolasi (bukan `$N`) karena `asyncpg` tidak memiliki codec pgvector; aman de facto karena setiap elemen adalah float finite tervalidasi (`validate_embedding_vector`, format `f"{v:.8f}"`, tanpa teks pengguna) dan diredaksi menjadi `[vector_1024d]` pada debug (lihat `docs/05 §5.2`). Kualifikasi skema operator (`VECTOR_SCHEMA`) divalidasi sebagai identifier SQL polos di `Settings`.
 2. **Injeksi Prompt via Pertanyaan Pengguna**: Pertanyaan pengguna atau teks abstrak publikasi yang ditarik dari database bisa memuat instruksi manipulatif (*"Abaikan instruksi sebelumnya..."*).
 
 ### 2.2 Mitigasi Berlapis

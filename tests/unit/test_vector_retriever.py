@@ -239,3 +239,196 @@ def test_vector_answer_synthesizer_zero_match_under_200ms():
 
     assert synth.status == "not_found"
     assert elapsed_ms < 200.0
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_threshold_boundary_exact_passes():
+    """A chunk scoring exactly 0.65 must survive the inclusive >= gate (FR4.5 boundary)."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [
+        {
+            "publication_id": "PUB000001",
+            "title": "Boundary Paper",
+            "year": 2023,
+            "doi": None,
+            "eid": "2-s2.0-85000001",
+            "citation_count": 0,
+            "chunk_id": "PUB000001_CH001",
+            "chunk_text": "Boundary abstract text.",
+            "similarity_score": 0.65,
+        }
+    ]
+
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="boundary query",
+        threshold=0.65,
+        limit=8,
+        query_vector=[0.01] * 1024,
+    )
+
+    assert result.is_empty is False
+    assert result.match_count == 1
+    assert result.matches[0].similarity_score == 0.65
+    # The gate must be inclusive and bound as $1 (DB-enforced, not Python).
+    sql_text = mock_conn.fetch.call_args[0][0]
+    assert ">= $1" in sql_text
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_keyword_filter_ignored_honestly():
+    """VectorRoute has no keyword predicate in the Phase 4 slice: `keyword`
+    must surface in `filters_ignored`, never silently dropped or interpolated."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    filters = FilterParams(keyword="stem cell")
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="stem cell papers",
+        filters=filters,
+        query_vector=[0.01] * 1024,
+    )
+
+    assert "keyword" in result.filters_ignored
+    sql_text = mock_conn.fetch.call_args[0][0]
+    assert "keyword" not in sql_text.lower()
+
+
+def test_vector_schema_default_is_extensions():
+    """Default pgvector schema qualifier preserves the Supabase layout (audit M1)."""
+    from backend.app.core.config import Settings
+
+    assert Settings().vector_schema == "extensions"
+
+
+def test_vector_schema_rejects_non_identifier():
+    """VECTOR_SCHEMA must be a plain SQL identifier — injection fails fast (audit M1)."""
+    from pydantic import ValidationError
+
+    from backend.app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(vector_schema="extensions; DROP TABLE chunks;--")
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_sql_uses_configured_vector_schema(monkeypatch):
+    """Generated SQL must qualify the pgvector operator with the configured schema."""
+    from backend.app.core.config import Settings
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+    monkeypatch.setattr(
+        "backend.app.services.retrievers.vector_retriever.get_settings",
+        lambda: Settings(vector_schema="public"),
+    )
+
+    await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="schema override query",
+        query_vector=[0.01] * 1024,
+    )
+
+    sql_text = mock_conn.fetch.call_args[0][0]
+    assert "OPERATOR(public.<=>)" in sql_text
+    assert "::public.vector" in sql_text
+    assert "extensions." not in sql_text
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_escapes_like_wildcards():
+    """ILIKE filters escape %, _ and backslash with ESCAPE '\\' (audit D4)."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    filters = FilterParams(document_type="100%_article\\x", country="indonesia_100%")
+
+    await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="wildcard filter query",
+        filters=filters,
+        query_vector=[0.01] * 1024,
+    )
+
+    sql_text = mock_conn.fetch.call_args[0][0]
+    params = mock_conn.fetch.call_args[0][1:]
+    assert sql_text.count("ESCAPE '\\'") == 2
+    assert "%100\\%\\_article\\\\x%" in params
+    assert "%indonesia\\_100\\%%" in params
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_rejects_out_of_range_threshold_and_limit():
+    """Out-of-range threshold/limit overrides fail fast before any SQL runs."""
+    mock_conn = AsyncMock()
+
+    with pytest.raises(ValueError, match="threshold must be within"):
+        await VectorRetriever.retrieve(
+            conn=mock_conn,
+            question="bad threshold",
+            threshold=1.5,
+            query_vector=[0.01] * 1024,
+        )
+
+    with pytest.raises(ValueError, match="limit must be within"):
+        await VectorRetriever.retrieve(
+            conn=mock_conn,
+            question="bad limit",
+            limit=0,
+            query_vector=[0.01] * 1024,
+        )
+
+    assert not mock_conn.fetch.called
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_precomputed_vector_has_no_embedding_provenance():
+    """Injected vectors skip generation: embedding_ms/backend stay None."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="precomputed provenance",
+        query_vector=[0.01] * 1024,
+    )
+
+    assert result.embedding_ms is None
+    assert result.embedding_backend is None
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_generated_embedding_reports_provenance(monkeypatch):
+    """Generated path records embedding_ms and the serving backend (audit D1)."""
+    from unittest.mock import AsyncMock as AM
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+    fake_gen = AM(return_value=([0.01] * 1024, "ollama"))
+    monkeypatch.setattr(
+        "backend.app.services.retrievers.vector_retriever.generate_query_embedding_with_backend",
+        fake_gen,
+    )
+
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="generated provenance",
+    )
+
+    assert result.embedding_backend == "ollama"
+    assert result.embedding_ms is not None
+    assert result.embedding_ms >= 0.0
+
+
+def test_debug_info_accepts_embedding_backend():
+    """DebugInfo carries the optional embedding_backend without breaking old constructions."""
+    from backend.app.models.ask import DebugInfo
+
+    legacy = DebugInfo(latency_breakdown_ms={"total_ms": 1.0})
+    assert legacy.embedding_backend is None
+
+    enriched = DebugInfo(
+        latency_breakdown_ms={"total_ms": 1.0}, embedding_backend="local"
+    )
+    assert enriched.embedding_backend == "local"
