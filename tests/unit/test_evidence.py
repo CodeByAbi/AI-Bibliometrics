@@ -275,9 +275,14 @@ def test_evidence_unifier_from_graph():
             "via_publication_ids": ["PUB001", "PUB003"],
         }
     ]
+    publications = {
+        "PUB001": {"title": "Joint Study", "year": 2023, "doi": "10.1/x", "eid": None},
+        "PUB003": {"title": "Co-authorship", "year": 2024, "doi": None, "eid": "2-s2.0-1"},
+    }
     ev_set = EvidenceUnifier.from_graph(
         question="Siapa partner kolaborasi UI?",
         edges=edges,
+        publications=publications,
     )
 
     assert not ev_set.is_empty
@@ -288,10 +293,67 @@ def test_evidence_unifier_from_graph():
     assert ev.metric == "publication_count"
     assert ev.value == 8
     assert "Universitas Indonesia" in ev.claim
+    assert len(ev.sources) == 2
 
     it = ev_set.items[0]
     assert it.source_type == "graph"
     assert it.provenance_ids == ["PUB001", "PUB003"]
+
+
+def test_evidence_unifier_from_graph_missing_metadata_drops_edge():
+    """Fail-closed: edge whose via_publication_ids are absent from publications map
+    must be dropped (no uncitable claim) to preserve the zero-hallucination invariant."""
+    edges = [
+        {
+            "partner_id": "INST_002",
+            "partner_name": "Universitas Indonesia",
+            "publication_count": 8,
+            "via_publication_ids": ["PUB_MISSING_1", "PUB_MISSING_2"],
+        },
+        {
+            "partner_id": "INST_003",
+            "partner_name": "Universitas Gadjah Mada",
+            "publication_count": 3,
+            "via_publication_ids": ["PUB001"],
+        },
+    ]
+    publications = {
+        "PUB001": {"title": "Valid Study", "year": 2023, "doi": "10.2/y", "eid": None},
+    }
+    ev_set = EvidenceUnifier.from_graph(
+        question="Kolaborasi?",
+        edges=edges,
+        publications=publications,
+    )
+
+    # Only the resolvable edge survives.
+    assert len(ev_set.evidence_objects) == 1
+    assert ev_set.evidence_objects[0].value == 3
+    assert "Universitas Gadjah Mada" in ev_set.evidence_objects[0].claim
+    # The dropped edge leaves no item.
+    assert len(ev_set.items) == 1
+    assert ev_set.items[0].provenance_ids == ["PUB001"]
+
+
+def test_evidence_unifier_from_graph_all_edges_missing_metadata_is_empty():
+    """When every edge lacks resolvable provenance, EvidenceSet is empty (short-circuit)."""
+    edges = [
+        {
+            "partner_id": "INST_X",
+            "partner_name": "Institusi X",
+            "publication_count": 5,
+            "via_publication_ids": ["GHOST_PUB"],
+        }
+    ]
+    ev_set = EvidenceUnifier.from_graph(
+        question="Kolaborasi?",
+        edges=edges,
+        publications={},
+    )
+    assert ev_set.is_empty
+    assert ev_set.evidence_objects == []
+    assert ev_set.sources == []
+    assert ev_set.items == []
 
 
 def test_evidence_unifier_from_analytics():
@@ -488,3 +550,145 @@ def test_evidence_prompt_injection_defense():
     assert "=== BEGIN RETRIEVED EVIDENCE (UNTRUSTED DATA) ===" in block
     assert malicious_text in block
     assert "=== END RETRIEVED EVIDENCE ===" in block
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 hardening: EvidenceRanker determinism + unify() edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_ranker_determinism_across_repeated_runs():
+    """Ranking must be a pure function of input: same input -> identical order every run."""
+    objects = [
+        EvidenceObject(
+            claim="B claim", metric="publication_count", value=5, period="2023", confidence=1.0,
+        ),
+        EvidenceObject(
+            claim="A claim", metric="publication_count", value=9, period="2023", confidence=1.0,
+        ),
+        EvidenceObject(
+            claim="C claim", metric="citation_count", value=9, period="2023", confidence=0.8,
+        ),
+    ]
+
+    runs = [EvidenceRanker.rank_evidence_objects(list(objects)) for _ in range(3)]
+    keys = [[(ev.claim, ev.metric, ev.value) for ev in run] for run in runs]
+    assert keys[0] == keys[1] == keys[2]
+    # confidence DESC first: C (0.8) last, among 1.0 value DESC: A (9) before B (5).
+    assert [c for c, _, _ in keys[0]] == ["A claim", "B claim", "C claim"]
+
+
+def test_evidence_ranker_items_deterministic_on_permutation():
+    """Items ranked by (score, confidence, year, title, source_id) regardless of input order."""
+    items = [
+        EvidenceItem(source_id="i3", source_type="sql", content="c3", score=0.5, confidence=1.0, title="T", year=2020),
+        EvidenceItem(source_id="i1", source_type="sql", content="c1", score=0.9, confidence=1.0, title="T", year=2020),
+        EvidenceItem(source_id="i2", source_type="sql", content="c2", score=0.9, confidence=1.0, title="T", year=2021),
+    ]
+    forward = [i.source_id for i in EvidenceRanker.rank_items(list(items))]
+    backward = [i.source_id for i in EvidenceRanker.rank_items(list(reversed(items)))]
+    assert forward == backward == ["i2", "i1", "i3"]
+
+
+def test_evidence_unifier_unify_empty_list():
+    """Unify of zero inputs returns a well-formed empty EvidenceSet (query fallback '')."""
+    unified = EvidenceUnifier.unify([], query="combined")
+    assert unified.is_empty
+    assert unified.query == "combined"
+    assert unified.filters_ignored == []
+    assert unified.sql_executed is None
+
+
+def test_evidence_unifier_unify_merges_sql_executed_statements():
+    """Distinct executed SQL statements from each source are merged with '; '."""
+    sql_res = SqlRetrievalResult(
+        sql_executed="SELECT COUNT(*) FROM publications;",
+        columns=["count"],
+        rows=[{"count": 3}],
+        row_count=1,
+    )
+    ev_sql = EvidenceUnifier.from_sql("q", sql_res)
+    vec_res = VectorRetrievalResult(
+        matches=[
+            VectorMatchItem(
+                publication_id="P9",
+                title="T9",
+                year=2024,
+                doi="10.9/x",
+                eid=None,
+                citation_count=1,
+                chunk_id="P9_C1",
+                chunk_text="text",
+                similarity_score=0.8,
+            )
+        ],
+        threshold=0.65,
+        filters_ignored=[],
+        sql_executed="SELECT DISTINCT ON (p.publication_id) ...;",
+    )
+    ev_vec = EvidenceUnifier.from_vector("q", vec_res)
+
+    unified = EvidenceUnifier.unify([ev_sql, ev_vec], query="q")
+    assert "SELECT COUNT(*) FROM publications;" in (unified.sql_executed or "")
+    assert "SELECT DISTINCT ON" in (unified.sql_executed or "")
+    assert "; " in (unified.sql_executed or "")
+
+
+def test_evidence_unifier_unify_deduplicates_identical_statements():
+    """Repeated identical SQL across sources appears only once in the merged string."""
+    sql_res = SqlRetrievalResult(
+        sql_executed="SELECT 1;", columns=["x"], rows=[{"x": 1}], row_count=1,
+    )
+    ev1 = EvidenceUnifier.from_sql("q", sql_res)
+    ev2 = EvidenceUnifier.from_sql("q", sql_res)
+    unified = EvidenceUnifier.unify([ev1, ev2], query="q")
+    assert (unified.sql_executed or "").count("SELECT 1;") == 1
+
+
+def test_evidence_unifier_unify_merges_duplicate_evidence_objects():
+    """Two sets carrying the same EvidenceObject key merge sources and take max confidence."""
+    obj_low = EvidenceObject(
+        claim="same", metric="publication_count", value=7, period="2023",
+        sources=[EvidenceSourceRef(publication_id="P1", title="T1", year=2023, doi="10.1/a")],
+        confidence=0.7,
+    )
+    obj_high = EvidenceObject(
+        claim="same", metric="publication_count", value=7, period="2023",
+        sources=[
+            EvidenceSourceRef(publication_id="P1", title="T1", year=2023, doi="10.1/a"),
+            EvidenceSourceRef(publication_id="P2", title="T2", year=2023, doi="10.2/b"),
+        ],
+        confidence=0.9,
+    )
+    set_a = EvidenceSet(query="q", evidence_objects=[obj_low])
+    set_b = EvidenceSet(query="q", evidence_objects=[obj_high])
+
+    unified = EvidenceUnifier.unify([set_a, set_b], query="q")
+    assert len(unified.evidence_objects) == 1
+    merged = unified.evidence_objects[0]
+    assert merged.confidence == 0.9
+    assert {s.publication_id for s in merged.sources} == {"P1", "P2"}
+
+
+def test_evidence_object_format_citation_tag():
+    """EvidenceObject.format_citation_tag renders canonical [Title, Year, DOI/no-doi] or ''."""
+    ref = EvidenceSourceRef(publication_id="P1", title="Alpha Study", year=2022, doi="10.5/1")
+    ev = EvidenceObject(
+        claim="x", metric="citation_count", value=1, period="all-time",
+        sources=[ref], confidence=1.0,
+    )
+    assert ev.format_citation_tag() == "[Alpha Study, 2022, 10.5/1]"
+
+    no_doi_ref = EvidenceSourceRef(publication_id="P2", title="Beta Study", year=2021, doi=None)
+    ev2 = EvidenceObject(
+        claim="x", metric="citation_count", value=1, period="all-time",
+        sources=[no_doi_ref], confidence=1.0,
+    )
+    assert ev2.format_citation_tag() == "[Beta Study, 2021, no-doi]"
+
+    ev3 = EvidenceObject(
+        claim="x", metric="publication_count", value=3, period="all-time",
+        sources=[], confidence=1.0,
+    )
+    assert ev3.format_citation_tag() == ""
+
