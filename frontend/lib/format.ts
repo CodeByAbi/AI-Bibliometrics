@@ -1,8 +1,14 @@
 import type { AskResponse, SourceItem } from "./api";
 
-/** Split answer text on verified [Title, Year, DOI|no-doi] citations. */
+/**
+ * Split answer text on verified [Title, Year|n.d., DOI|no-doi] citations.
+ *
+ * The year alternative mirrors `matchCitationToSource` exactly — a citation
+ * the matcher can resolve must also be splittable, or a `n.d.` record would
+ * render as inert text while a year-bearing one renders as a link.
+ */
 export function renderAnswerParts(answer: string): Array<{ kind: "text" | "cite"; value: string }> {
-  const re = /\[([^\[\]]+?,\s*\d{4},\s*(?:10\.\S+|no-doi))\]/g;
+  const re = /\[([^\[\]]+?,\s*(?:\d{4}|n\.d\.),\s*(?:10\.\S+|no-doi))\]/g;
   const parts: Array<{ kind: "text" | "cite"; value: string }> = [];
   let last = 0;
   let m: RegExpExecArray | null;

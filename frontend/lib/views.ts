@@ -67,11 +67,19 @@ export function publicationsForAuthor(response: AskResponse | null, author: Cand
   return (linked.length ? linked : pool).slice(0, 3);
 }
 
+/** Source pool for analytics. Falls back to the fixture only when there is no
+ *  response at all — an answer set that legitimately retrieved zero sources
+ *  must chart zero sources, not silently borrow the fixture's, or the "this
+ *  answer set" caption on the chart becomes a lie. */
+function analyticsPool(response: AskResponse | null): SourceItem[] {
+  if (!response) return fixtureHybrid.sources;
+  return response.sources ?? [];
+}
+
 /** Year histogram over the current answer's sources (for the Trends chart). */
 export function yearHistogram(response: AskResponse | null): Array<{ year: number; count: number }> {
-  const pool = response?.sources?.length ? response.sources : fixtureHybrid.sources;
   const map = new Map<number, number>();
-  for (const s of pool) {
+  for (const s of analyticsPool(response)) {
     if (typeof s.year === "number") map.set(s.year, (map.get(s.year) ?? 0) + 1);
   }
   return Array.from(map.entries())
@@ -81,7 +89,7 @@ export function yearHistogram(response: AskResponse | null): Array<{ year: numbe
 
 /** Source-type distribution over the current answer's sources. */
 export function typeDistribution(response: AskResponse | null): Array<{ type: string; count: number; share: number }> {
-  const pool = response?.sources?.length ? response.sources : fixtureHybrid.sources;
+  const pool = analyticsPool(response);
   const map = new Map<string, number>();
   for (const s of pool) map.set(s.source_type, (map.get(s.source_type) ?? 0) + 1);
   const total = pool.length || 1;
