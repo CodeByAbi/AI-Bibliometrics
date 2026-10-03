@@ -1,4 +1,4 @@
-# Scopus → Research Intelligence Prototype
+# Scopus Research Intelligence Prototype
 
 > **Evidence-grounded research intelligence over Scopus publications.** Ask in natural language (ID/EN) — get factual, semantic, network, and policy answers grounded in real database records with verified `[Title, Year, DOI]` citations. Hallucination-free by design.
 
