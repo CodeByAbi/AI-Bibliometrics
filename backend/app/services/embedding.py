@@ -7,15 +7,44 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
+from collections import OrderedDict
 from typing import Any, List, Optional
 import httpx
 
 from backend.app.core.config import get_settings
 from backend.app.core.errors import AppException
+from backend.app.core.http import get_http_client
 from backend.app.core.logging import logger
 
 _st_model: Optional[Any] = None
 _st_lock = asyncio.Lock()
+
+# P3 server-* (Fase B7): bounded TTL cache for repeat query embeddings —
+# seed/replay queries skip the CPU/HTTP encode entirely. Key includes model
+# + dim so a config change can never serve stale-dimension vectors.
+_QUERY_CACHE_MAX_ENTRIES = 256
+_QUERY_CACHE_TTL_S = 3600.0
+_query_cache: OrderedDict = OrderedDict()
+
+
+def _query_cache_get(key: tuple) -> Optional[tuple]:
+    """Return ``(vector_copy, backend)`` on fresh hit, else None."""
+    try:
+        expires_at, vector, backend = _query_cache.pop(key)
+    except KeyError:
+        return None
+    if time.monotonic() >= expires_at:
+        return None
+    _query_cache[key] = (expires_at, vector, backend)  # reinsert = most-recent
+    return list(vector), backend
+
+
+def _query_cache_put(key: tuple, vector: List[float], backend: str) -> None:
+    """Store a copy; evict least-recently-used entries beyond the bound."""
+    while len(_query_cache) >= _QUERY_CACHE_MAX_ENTRIES:
+        _query_cache.popitem(last=False)
+    _query_cache[key] = (time.monotonic() + _QUERY_CACHE_TTL_S, list(vector), backend)
 
 
 def validate_embedding_vector(vector: List[float], expected_dim: int) -> None:
@@ -66,39 +95,43 @@ async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: in
     base_url = host.rstrip("/")
     ollama_model = "bge-m3" if "bge-m3" in model_name.lower() else model_name
 
-    async with httpx.AsyncClient(timeout=float(timeout_s)) as client:
-        # Try newer /api/embed first
-        try:
-            resp = await client.post(
-                f"{base_url}/api/embed",
-                json={"model": ollama_model, "input": text},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                embeddings = data.get("embeddings")
-                if embeddings and len(embeddings) > 0:
-                    return embeddings[0]
-        except Exception:
-            pass
-
-        # Fallback to /api/embeddings
+    # P3 server-*: shared client (TCP keep-alive); timeout stays per-request.
+    client = get_http_client()
+    req_timeout = float(timeout_s)
+    # Try newer /api/embed first
+    try:
         resp = await client.post(
-            f"{base_url}/api/embeddings",
-            json={"model": ollama_model, "prompt": text},
+            f"{base_url}/api/embed",
+            json={"model": ollama_model, "input": text},
+            timeout=req_timeout,
         )
-        if resp.status_code != 200:
-            raise EmbeddingError(
-                f"Ollama embedding request failed with HTTP {resp.status_code}",
-                details={"host": base_url, "model": ollama_model, "status": resp.status_code},
-            )
-        data = resp.json()
-        embedding = data.get("embedding")
-        if not embedding or not isinstance(embedding, list):
-            raise EmbeddingError(
-                "Ollama returned invalid embedding format",
-                details={"data_keys": list(data.keys())},
-            )
-        return embedding
+        if resp.status_code == 200:
+            data = resp.json()
+            embeddings = data.get("embeddings")
+            if embeddings and len(embeddings) > 0:
+                return embeddings[0]
+    except Exception:
+        pass
+
+    # Fallback to /api/embeddings
+    resp = await client.post(
+        f"{base_url}/api/embeddings",
+        json={"model": ollama_model, "prompt": text},
+        timeout=req_timeout,
+    )
+    if resp.status_code != 200:
+        raise EmbeddingError(
+            f"Ollama embedding request failed with HTTP {resp.status_code}",
+            details={"host": base_url, "model": ollama_model, "status": resp.status_code},
+        )
+    data = resp.json()
+    embedding = data.get("embedding")
+    if not embedding or not isinstance(embedding, list):
+        raise EmbeddingError(
+            "Ollama returned invalid embedding format",
+            details={"data_keys": list(data.keys())},
+        )
+    return embedding
 
 
 async def generate_query_embedding_with_backend(query: str) -> tuple[List[float], str]:
@@ -117,6 +150,11 @@ async def generate_query_embedding_with_backend(query: str) -> tuple[List[float]
     settings = get_settings()
     expected_dim = settings.embedding_dimension
     model_name = settings.embedding_model
+
+    cache_key = (clean_query, model_name, expected_dim)
+    cached = _query_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     global _st_model
     vector: Optional[List[float]] = None
@@ -161,6 +199,7 @@ async def generate_query_embedding_with_backend(query: str) -> tuple[List[float]
     # 3. Validate dimension + finiteness (guards pgvector literal build)
     validate_embedding_vector(vector, expected_dim)
 
+    _query_cache_put(cache_key, vector, backend)
     return vector, backend
 
 
@@ -183,3 +222,4 @@ def clear_embedding_model_cache() -> None:
     """Clear cached SentenceTransformer instance (for unit testing)."""
     global _st_model
     _st_model = None
+    _query_cache.clear()

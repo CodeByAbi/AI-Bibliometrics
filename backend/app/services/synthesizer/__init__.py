@@ -12,14 +12,28 @@ from backend.app.services.synthesizer.citation import (
     CitationVerificationResult,
     CitationVerifier,
 )
+from backend.app.services.synthesizer.llm import (
+    SYNTHESIS_SYSTEM_PROMPT,
+    LlmAnswerSynthesizer,
+    LlmRefineResult,
+    LlmSynthesisError,
+    build_synthesis_prompt,
+    generate_synthesis_text,
+)
 
 __all__ = [
     "CitationVerificationResult",
     "CitationVerifier",
     "GraphAnswerSynthesizer",
+    "LlmAnswerSynthesizer",
+    "LlmRefineResult",
+    "LlmSynthesisError",
+    "SYNTHESIS_SYSTEM_PROMPT",
     "SqlAnswerSynthesizer",
     "SynthesizedGraphResponse",
     "SynthesizedSqlResponse",
     "SynthesizedVectorResponse",
     "VectorAnswerSynthesizer",
+    "build_synthesis_prompt",
+    "generate_synthesis_text",
 ]

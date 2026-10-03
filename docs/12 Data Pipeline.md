@@ -1,8 +1,8 @@
 # Desain Pipeline Data & Ingestion — Scopus menuju Riset Intelijen (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `12 Data Pipeline.md` Draft v1 s.d. v3.5.0  
+**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — sinkronisasi Gold DONE terverifikasi live)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `12 Data Pipeline.md` v3.6.2 (2026-09-27)  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/00` hingga `docs/11`  
 
 > **Status Implementasi & Kesiapan Basis Data (Sinkronisasi Progress Phase 1):**  
@@ -10,7 +10,8 @@
 > 2. **Cleaning & Export — DONE:** Data Scopus **sudah melalui proses cleaning dan berhasil di-export** — tersedia sebagai 9 file `data/*_cleaned.csv` (`publications`, `chunks`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`).  
 > 3. **Vector Storage & HNSW Index — DONE (Task 1):** Seluruh 40 chunk telah memiliki embedding vector 1024-dim (`BAAI/bge-m3`) di kolom `chunks.embedding` dan indeks HNSW `idx_chunks_embedding_hnsw` (`m=16, ef_construction=64`) serta `idx_chunks_pub_id` telah aktif dan diverifikasi di basis data PostgreSQL.  
 > 4. **Tabel Edge Kolaborasi — DONE (Task 8 Bagian Edge):** `institution_collaboration` (254 baris) dan `author_collaboration` (484 baris) telah berhasil dimaterialisasi secara idempoten dari tabel junction Silver.  
-> 5. **Pemisahan Dua Fase Pipeline:**  
+> 5. **Lapisan Gold — DONE (Task 8.5, terverifikasi live 2026-10-03):** `topics` (5 baris), `topic_evolution` (25 baris), `researcher_expertise` (140 baris); `GRANT SELECT` untuk `app_readonly` terkonfirmasi pada tabel Gold.
+> 6. **Pemisahan Dua Fase Pipeline:**  
 >    - **Fase Validasi Prototipe E2E (Current):** Data prototipe siap-vektor dan siap-graf menjadi input untuk Task 2-10 (FastAPI, Retrieval, RAG Flow, Evaluasi E2E).  
 >    - **Fase Produksi Skala Besar (Future):** Pipeline batch otomatis penuh untuk ingestion berkas mentah Scopus (Bronze), pembersihan multi-tier, dan deduplikasi skala besar.
 ---
@@ -22,7 +23,7 @@ Dokumen ini mendefinisikan arsitektur **Pipeline Data & Ingestion** yang mentran
 Arsitektur pipeline data distrukturkan ke dalam 3 lapisan Medallion:
 1. **Lapisan Bronze (Penampungan Mentah - Masa Depan/Produksi)**: Penyimpanan arsip berkas mentah ekspor Scopus yang immutable beserta hash integritas SHA-256 dan metadata batch run untuk reproduktibilitas.
 2. **Lapisan Silver (Penyimpanan Relasional Kanonikal - 9 Tabel Prototipe + 2 Tabel Edge)**: Sumber kebenaran terstruktur yang telah dibersihkan, dinormalisasi, dan di-deduplikasi (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`), dilengkapi 2 tabel edge kolaborasi (`institution_collaboration`, `author_collaboration`).
-3. **Lapisan Gold (Analitik & Intelijen - 3 Tabel - PLANNED, Task 8.5)**: Pemrosesan analitik tingkat lanjut untuk mengekstrak klaster topik riset (`topics`), evolusi tren temporal (`topic_evolution`), dan skor kepakaran peneliti multi-dimensi (`researcher_expertise`).
+3. **Lapisan Gold (Analitik & Intelijen - 3 Tabel - DONE, Task 8.5 — terverifikasi live 2026-10-03)**: Pemrosesan analitik tingkat lanjut untuk mengekstrak klaster topik riset (`topics`), evolusi tren temporal (`topic_evolution`), dan skor kepakaran peneliti multi-dimensi (`researcher_expertise`).
 
 ---
 

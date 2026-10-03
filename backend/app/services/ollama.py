@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from backend.app.core.config import get_settings
+from backend.app.core.http import get_http_client
 from backend.app.core.logging import logger
 from backend.app.models.health import EmbeddingServiceHealth, LLMServiceHealth
 
@@ -24,15 +25,15 @@ async def check_ollama_health() -> tuple[LLMServiceHealth, EmbeddingServiceHealt
     error_msg: Optional[str] = None
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(f"{host}/api/tags")
-            if resp.status_code == 200:
-                connected = True
-                data = resp.json()
-                models_data = data.get("models", [])
-                available_models = [m.get("name", "") for m in models_data if isinstance(m, dict)]
-            else:
-                error_msg = f"Ollama HTTP {resp.status_code}"
+        # P3 server-*: shared client (TCP keep-alive); timeout stays per-request.
+        resp = await get_http_client().get(f"{host}/api/tags", timeout=timeout)
+        if resp.status_code == 200:
+            connected = True
+            data = resp.json()
+            models_data = data.get("models", [])
+            available_models = [m.get("name", "") for m in models_data if isinstance(m, dict)]
+        else:
+            error_msg = f"Ollama HTTP {resp.status_code}"
     except httpx.ConnectError:
         error_msg = "Ollama daemon unreachable at host"
     except httpx.TimeoutException:

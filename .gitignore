@@ -38,6 +38,16 @@ opencode.json
 outputs/
 graph-viewer/
 docs/learning/
-package-lock.json
-package.json
+/package-lock.json
+/package.json
 scripts/test_jev_api.py
+
+# Fase 7 + frontend push exclusions (build artifacts + local review notes, never commit)
+frontend/.next/
+frontend/node_modules/
+*.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+.impeccable/
+DESIGN.md
+PRODUCT.md
+plans/

@@ -1,16 +1,15 @@
 # Desain Retrieval & RAG — Hybrid Multi-Rute (SQL + Vector + Graph + Analitik)
 
-**Versi Dokumen:** 3.6.4 (Fase 6 GraphRetriever Sync — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-10-02  
-**Menggantikan:** `05 Retrieval Rag Design.md` Draft v2 s.d. v3.5.0  
+**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — sintesis LLM opt-in, prioritas routing, evidence live)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `05 Retrieval Rag Design.md` v3.6.4 (2026-10-02)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
-> **Status Implementasi (Sinkronisasi Progress 2026-10-02):**  
+> **Status Implementasi (Sinkronisasi Progress 2026-10-03):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` (DOI + year strict + Jaccard title) + `GraphRetriever` T1-T4 parameterized (T1/T2/T3/T4 AUTHOR + T4 INSTITUTION ego-BFS) + `GraphAnswerSynthesizer` + `EvidenceUnifier.from_graph` (fail-closed on missing provenance) + `EvidenceSet` + 261 tests hijau.  
-> 3. **NEXT (belum tersedia):** `HybridRoute` berstatus **BLOCKED** sampai Task 8.5 (Gold Analytics) selesai. `GraphRoute` T4 sekarang menjalankan ego-BFS berbatas (target_id selalu NULL), bukan path A-B eksplisit — ditingkatkan ke pairwise path pada Fase 9 bila perlu.  
-> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding` kini aktif dan tervalidasi; validasi jalur kolaborasi graf aktif pada tabel edge.
-
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` (DOI + year strict + Jaccard title) + `GraphRetriever` T1-T4 parameterized + `HybridRetriever` (Gold Analytics: `topics`, `topic_evolution`, `researcher_expertise`) + `EvidenceUnifier` (termasuk `from_hybrid`) + `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` + sintesis LLM opt-in Qwen2.5-Coder (fallback deterministik) + wiring penuh 4-route di `POST /api/v1/ask` + 333 tests terkumpul hijau (319 unit+integration satu run; E2E 12 mock hijau + 2 live-only) + 14/14 live E2E queries passed.  
+> 3. **Semua 4 rute RAG (SQL, Vector, Graph, Hybrid) kini LIVE dan terverifikasi.**  
+> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding`, validasi jalur kolaborasi graf pada tabel edge, serta analisis tren topik dan kepakaran peneliti pada tabel Gold kini beroperasi penuh end-to-end.
 ---
 
 ## 1. Tujuan
@@ -84,7 +83,9 @@ flowchart TD
 
 ### Spesifikasi 4 Rute Retrieval:
 
-> **Kesiapan rute:** `SQLRoute` → LIVE (Task 5). `VectorRoute` → LIVE (Task 6). `GraphRoute` → **LIVE (Task 8-retriever, T1–T4 parameterized, T4 ego-BFS berbatas; live E2E Task 12 pending)**. `HybridRoute` → **BLOCKED (menunggu Task 8.5: Gold Analytics)**.
+> **Kesiapan rute:** `SQLRoute` → LIVE (Task 5). `VectorRoute` → LIVE (Task 6). `GraphRoute` → LIVE (Task 8-retriever, T1–T4 parameterized). `HybridRoute` → **LIVE (Task 8.5, Task 9-full, Task 10-full, close-out Fase 7: Gold Analytics, EvidenceUnifier.from_hybrid, HybridAnswerSynthesizer, sintesis LLM opt-in, 333 tests terkumpul hijau + 14/14 live E2E)**.
+>
+> **Prioritas routing multi-intent (disengaja, dikunci via test):** klasifikasi first-match dengan urutan Graph > Hybrid > SQL > Vector fallback. Spesifisitas kolaborasi menang atas kata agregat — `"Berapa jumlah kolaborasi institusi ITB?"` diarahkan ke `GraphRoute`, bukan `SQLRoute` (`backend/app/services/router.py`, dikunci via `test_router_multi_intent_graph_wins_over_sql_counting`). Evaluasi Fase 8 tidak boleh menandai perilaku ini sebagai misroute.
 
 | Rute RAG | Klasifikasi Intent & Kasus Penggunaan | Lapisan Data Target | Strategi Eksekusi & Validasi |
 |---|---|---|---|
@@ -214,7 +215,10 @@ class EvidenceObject(BaseModel):
 - **`sql_executed`:** string diagnostik ber-`TEMPLATE:` prefix (bukan SQL literal), aman untuk audit/debug.
 
 ### 5.4 `HybridRoute` — Gold Analytics (Tren Topik & Kepakaran)
-- **Eksekusi**: Mengakses tabel Gold Layer `topics`, `topic_evolution`, dan `researcher_expertise` digabung dengan `authors` dan `publications`.
+- **Eksekusi**: Empat templat terparameterisasi sekuensial atas tabel Gold Layer `topics`, `topic_evolution`, dan `researcher_expertise` digabung dengan `authors` dan `publications` (tren topik, kepakaran peneliti, resolusi topik ILIKE + fallback centroid vector bergate similaritas ≥ 0.50, publikasi pendukung). Whitelist operator ditegakkan di layer Pydantic (`YearOp`), bukan sebagai string SQL.
+- **Perilaku yang disengaja (dikunci via test, bukan bug):**
+  - Jawaban `TOPIC_TRENDS` murni membawa metrik agregat Gold **tanpa** `sources` publikasi (`sources == []`) — klaim tren ter-grounding pada `EvidenceObject` numerik, bukan sitasi inline (`test_hybrid_trends_pure_carries_no_publication_sources`).
+  - `topic_name` yang tidak dikenal tidak memicu `not_found`: resolusi centroid vector memetakan ke topik terdekat di atas gate 0.50 dan jawaban dilabeli "(topik terkait)". Akibatnya `HybridRoute` hampir tidak pernah short-circuit pada filter `topic_name` — presisi grounding untuk topik tak dikenal bertumpu pada label keterkaitan ini.
 - **Kueri Analitik Kepakaran & Tren Gabungan**:
   ```sql
   -- Identifikasi Pakar Utama pada Topik Berkembang
@@ -266,6 +270,8 @@ ATURAN WAJIB (STRICT GROUNDING & EVIDENCE ENFORCEMENT):
 
 Pertanyaan Pengguna: {user_question}
 ```
+
+**Integrasi LLM close-out Fase 7 (B1):** sintesis LLM di atas adalah **opt-in** via `llm_synthesis: true` pada `AskRequest` (default `false` = renderer deterministik). Implementasi: `backend/app/services/synthesizer/llm.py` (`LlmAnswerSynthesizer.refine`) — system = 4 aturan di atas, prompt = blok UNTRUSTED + pertanyaan, timeout `OLLAMA_TIMEOUT_S=8s`, output diverifikasi `CitationVerifier`, `evidence_objects` selalu diambil dari `EvidenceSet` (tidak pernah diparse dari teks LLM). Setiap kegagalan → fallback deterministik berflag `synthesis_backend: deterministic-fallback`. Short-circuit nol-bukti terjadi SEBELUM pemanggilan LLM (0 LLM call untuk `not_found`). Bukti empiris: probe adversarial live (instruksi injeksi dalam abstrak + klaim angka fiktif 99999) diabaikan model — angka output identik dengan evidence; detail di `reports/fase7_closeout.md`. Catatan CPU: Qwen2.5-Coder-7B membutuhkan ~15 dtk untuk 64 token di CPU box ini, sehingga path LLM praktis selalu jatuh ke fallback pada timeout 8 dtk — LLM synthesis membutuhkan GPU untuk memenuhi NFR 5–10 dtk.
 
 ---
 
@@ -345,6 +351,8 @@ flowchart LR
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/05 Retrieval Rag Design.md` v3.7.1 | Close-out Fase 7: sintesis LLM opt-in (`llm_synthesis`, Qwen2.5-Coder + fallback deterministik + `synthesis_backend`); prioritas routing multi-intent didokumentasikan; perilaku TOPIC_TRENDS tanpa sources + centroid-fallback didokumentasikan; angka tests diganti hasil ukur (329 terkumpul: 315 unit+integration hijau, 14/14 live E2E) | Eksekusi review Fase 7 2026-10-03: integrasi LLM (B1-b), verifikasi live B2/B3, benchmark NFR, probe adversarial; laporan `reports/fase7_closeout.md` |
+| `docs/05 Retrieval Rag Design.md` v3.7.0 | Sinkronisasi Fase 7: `HybridRoute` dari BLOCKED ke LIVE (Task 8.5 Gold Analytics materialization, HybridRetriever, EvidenceUnifier.from_hybrid, HybridAnswerSynthesizer, unified AnswerSynthesizer, wiring POST /api/v1/ask); 4 rute RAG kini beroperasi penuh dengan 324 tests hijau | Review Phase 7 2026-10-03: seluruh komponen retrieval, unifikasi bukti, sintesis ter-grounding, dan verifikasi sitasi 4-rute telah diimplementasikan dan diverifikasi |
 | `docs/05 Retrieval Rag Design.md` v3.6.4 | Sinkronisasi Fase 6: `GraphRoute` dari BLOCKED ke LIVE (Task 8-retriever); tambah spesifikasi T2/T3/T4 (T3 wildcard-escape, T4 ego-BFS + guard siklus); `from_graph` fail-closed; `CitationVerifier` Jaccard ≥0.8 + DOI-year strict; HybridRoute masih BLOCKED (Task 8.5) | Review Phase 6 2026-10-02: kode + 261 tests membuktikan graph retrieval + evidence + synthesizer + wiring GraphRoute sudah ada; dokumen lama masih menyatakan BLOCKED |
 | `docs/05 Retrieval Rag Design.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Question Router`, `Aggregate-Shape Check`, `Double-Count Prevention`, `whitelist`, `Cosine Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/05 Retrieval Rag Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |

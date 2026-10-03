@@ -1,8 +1,8 @@
 # Roadmap Teknis — Prototipe Scopus menuju Riset Intelijen
 
-**Versi Dokumen:** 3.6.2 (Roadmap Komprehensif Selaras Arsitektur — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `11 Roadmap.md` Draft v2 s.d. v3.5.0  
+**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — B1 LLM opt-in, resolusi kontrak, evidence live)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `11 Roadmap.md` v3.7.0 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
 ---
@@ -16,19 +16,20 @@ Inspeksi repositori per **2026-09-29** menetapkan status tersinkronisasi berikut
 - **DONE — Vector Storage & Indexing (Fase 1):** Kolom `chunks.embedding` **sudah dibuat dan terisi 100% (40/40 chunk)** dengan representasi 1024-dimensi `BAAI/bge-m3`. Indeks HNSW (`idx_chunks_embedding_hnsw`) dan `idx_chunks_pub_id` sudah aktif dan terverifikasi.
 - **DONE — Materialisasi Tabel Edge (Fase 1):** Tabel derived edge `institution_collaboration` (254 edge) dan `author_collaboration` (484 edge) **sudah dimaterialisasi secara idempoten** dan diverifikasi (`CHECK (a < b)`, `via_publication_ids` valid).
 - **DONE — Kerangka Gateway API & DB Pool (Fase 2):** Backend FastAPI (`backend/app/`), pool async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware `X-Request-ID`, rate limiting, logging terstruktur, dan client Ollama terverifikasi.
-- **IMPLEMENTED — VERIFICATION PENDING — Fase 3:** Vertical Slice QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi dan uji hijau, sign-off E2E menyusul Task 12.
+- **DONE — VERIFIED — Fase 3:** Vertical Slice QueryRouter & Retrieval Terstruktur / SQL (`QuestionRouter` & `SqlRetriever` tervalidasi `sqlglot`) — implementasi, uji hijau, dan sign-off E2E Task 12 (14/14, 2026-10-03).
 - **IMPLEMENTED — VERIFICATION PENDING — Fase 4:** Mesin Retrieval Semantik / Vector (`VectorRetriever` + online embedding `BAAI/bge-m3` + `VectorAnswerSynthesizer` + `CitationVerifier` Vector-scoped) — unit + integration hijau; checklist runtime live-DB + sign-off E2E (Task 12) masih pending.
 - **IMPLEMENTED — VERIFICATION PENDING — Fase 5:** Evidence Layer generik (`EvidenceUnifier` + `EvidenceRanker` + `EvidenceSet` + `EvidenceItem`) — unit 21 + integration 9 + E2E mock 12 query hijau; live E2E (Task 12) pending; `from_graph sources` resolved di Fase 6.
-- **IMPLEMENTED — VERIFICATION PENDING — Fase 6:** Mesin Retrieval Graf (`GraphRetriever` T1–T4 + `GraphAnswerSynthesizer` + `CitationVerifier` + wiring `GraphRoute` di `POST /api/v1/ask`) — unit 19 + integration 6 hijau; live E2E (Task 12) pending.
-- **PENDING — Pasca-Fase 6:** Gold Analytics (Fase 6/Task 8.5), Sintesis Jawaban Unified & E2E (Fase 7-8).
+- **DONE — VERIFIED — Fase 6:** Mesin Retrieval Graf (`GraphRetriever` T1–T4 + `GraphAnswerSynthesizer` + `CitationVerifier` + wiring `GraphRoute` di `POST /api/v1/ask`) — terverifikasi.
+- **DONE — VERIFIED — Fase 7:** Retrieval Hybrid Multi-Rute & Sintesis Jawaban Ter-grounding (`HybridRetriever` + Gold Analytics `topics`, `topic_evolution`, `researcher_expertise` + `EvidenceUnifier.from_hybrid` + `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` + sintesis LLM opt-in Qwen2.5-Coder via Ollama dengan fallback deterministik + full wiring 4-route di `POST /api/v1/ask`) — terverifikasi: 333 tests terkumpul (319 unit+integration hijau, 12 E2E mock hijau + 2 live-only) + 14/14 live E2E queries passed (laporan: `reports/fase7_closeout.md`).
+- **NEXT — Fase 8 / Fase 11:** UI Next.js Chat 2-panel dense (Task 11) dan pengerasan baseline latensi formal.
 
-### 1.1b Pelacak Progres (Sinkronisasi 2026-09-29)
+### 1.1b Pelacak Progres (Sinkronisasi 2026-10-03)
 
 | Status | Item |
 |---|---|
-| DONE | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8 (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) |
-| IMPLEMENTED — VERIFICATION PENDING (Fase 3–6) | QueryRouter (Task 4) · EntityResolutionGate · SqlRetriever & AST Validator (Task 5) · VectorRetriever + online embedding (Task 6) · Vector/Graph-scoped Synthesizer + CitationVerifier (Task 9a) · Evidence Layer generik: EvidenceUnifier + EvidenceRanker + EvidenceSet + EvidenceItem (Task 7) · GraphRetriever T1–T4 + GraphAnswerSynthesizer (Task 8-retriever) — 261 tests passing (unit + integration) · live E2E sign-off (Task 12) pending |
-| PENDING (Fase 7+) | Gold Analytics (Task 8.5) · Unified Synthesizer (Task 9-full) · API full wiring (Task 10-full) · Frontend (Task 11) · E2E 12 Queries live (Task 12) |
+| DONE — VERIFIED | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8-edge (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) · Task 4 (QueryRouter & EntityResolutionGate) · Task 5 (SqlRetriever & AST Validator) · Task 6 (VectorRetriever + Online Embedding) · Task 7 (Evidence Layer generik: EvidenceUnifier + EvidenceRanker + EvidenceSet + EvidenceItem) · Task 8-retriever (GraphRetriever T1–T4 + GraphAnswerSynthesizer) · Task 8.5 (Gold Analytics Materialization: topics, topic_evolution, researcher_expertise) · Task 9-full (Unified AnswerSynthesizer & CitationVerifier across 4 routes) · Task 10-full (API POST /api/v1/ask full wiring across SQL, Vector, Graph, Hybrid) · Task 12 (E2E 12-query benchmark 14/14 passed) |
+| NEXT | Task 11 (Frontend Next.js UI Chat 2-panel) |
+| PLANNED / POST-MVP | Fase 9 (Apache AGE & Algoritma Graf Kompleks) · Fase 10 (Streaming & Async Workers) |
 ### 1.2 Apa yang Harus Dibangun Terlebih Dahulu?
 Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasyarat absolut adalah:
 1. **Baseline Repositori & Infrastruktur (Fase 0)**: Bangun struktur direktori proyek, Docker Compose (FastAPI + Ollama), kontrak environment, dan jalankan skrip verifikasi skema database Task 0 terhadap 9 tabel kanonikal yang sudah ada.
@@ -48,7 +49,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
   - `HybridRetriever` (Lapisan Gold `topics`, `topic_evolution`, `researcher_expertise` + Silver & `chunks`).
 - **Lapisan Bukti (Evidence Layer)**: skema `Evidence`, `EvidenceSet`, dan `EvidenceUnifier` yang memastikan tidak ada baris/chunk mentah yang melewati normalisasi.
 - **Peringkat Bukti Deterministik**: skoring eksplisit berbasis relevansi dan provenance.
-- **Sintesiser Jawaban**: pembuatan (generation) ter-grounding hanya dari bukti terverifikasi, sitasi `[Title, Year, DOI]` / `[Title, Year, no-doi]`, penanganan `not_found` / `insufficient_evidence` deterministik, dan verifikasi sitasi post-hoc.
+- **Sintesiser Jawaban**: pembuatan (generation) ter-grounding hanya dari bukti terverifikasi, sitasi `[Title, Year, DOI]` / `[Title, Year, no-doi]`, penanganan `not_found` deterministik, dan verifikasi sitasi post-hoc.
 - **Invariant Keamanan**: peran DB `app_readonly`, `SET search_path = public`, timeout statement (10 detik), pertahanan injeksi prompt (bukti diperlakukan sebagai data tidak tepercaya).
 
 ---
@@ -121,7 +122,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 1. **Source-of-Truth Invariant**: PostgreSQL Silver adalah satu-satunya canonical source of truth. pgvector, derived edge tables, dan Gold analytics adalah struktur turunan read-only.
 2. **Evidence Normalization Invariant**: Tidak ada baris database, chunk vector, atau graph edge mentah yang boleh diteruskan langsung ke LLM. Semua data retrieval WAJIB melewati `EvidenceUnifier` menjadi `EvidenceSet` ternormalisasi.
 3. **Security Invariant**: Koneksi database WAJIB menggunakan peran `app_readonly` dengan `SET search_path = public` dan `statement_timeout = 10s`. Teks hasil retrieval adalah **DATA TIDAK TERPERCAYA** dan tidak dapat mengesampingkan instruksi sistem.
-4. **Zero-Hallucination Invariant**: Jika retrieval mengembalikan 0 item bukti, sistem WAJIB mengembalikan `status: not_found` / `insufficient_evidence` secara deterministik tanpa mengeksekusi pemanggilan sintesis LLM.
+4. **Zero-Hallucination Invariant**: Jika retrieval mengembalikan 0 item bukti, sistem WAJIB mengembalikan `status: not_found` secara deterministik tanpa mengeksekusi pemanggilan sintesis LLM. (Kosakata lama `insufficient_evidence` resmi dipetakan ke `not_found`; skema `AskResponse.status` hanya mengenal `ok | not_found | needs_clarification | error`.)
 
 ---
 
@@ -321,24 +322,25 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 7 — Retrieval Hybrid Multi-Rute & Sintesis Jawaban Ter-grounding
-**Status:** `[PLANNED]`  
+**Status:** `[DONE — VERIFIED]`  
 **Tujuan:** Menyatukan keempat mesin retrieval di bawah QueryRouter dan menghadirkan sintesis bahasa natural ter-grounding dengan verifikasi sitasi otomatis dan perlindungan injeksi prompt.
 
 - **Prasyarat:** Fase 3 (SQL), Fase 4 (Vector), Fase 5 (Bukti), Fase 6 (Graf).
 - **Cakupan & Deliverable:**
   - Implementasikan `HybridRetriever`:
-    - Satu kueri terparameterisasi yang menggabungkan Gold analytics (`topics`, `topic_evolution`, `researcher_expertise`) dan jarak vector semantik dengan batasan relasional.
-    - Daftar putih (whitelist) operator (`eq`, `gt`, `gte`, `lt`, `lte`, `between`).
-  - Lengkapi orkestrasi QueryRouter 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`).
-  - Implementasikan `AnswerSynthesizer` dengan LLM Lokal (Qwen2.5-Coder-7B via Ollama):
+    - Empat templat terparameterisasi sekuensial (tren topik Gold, kepakaran peneliti Gold, resolusi topik ILIKE + fallback centroid vector bergate similaritas ≥ 0.50, publikasi pendukung) dengan batasan relasional — bukan satu kueri gabungan tunggal (keputusan desain: lebih aman dan lebih sederhana; dinormalisasi via `EvidenceUnifier.from_hybrid`).
+    - Daftar putih (whitelist) operator ditegakkan di layer Pydantic (`YearOp` Literal `eq|gt|gte|lt|lte|between` + `FilterParams` bound) sehingga string operator tidak pernah mencapai SQL.
+  - Lengkapi orkestrasi QueryRouter 4-rute (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) dengan prioritas deterministik Graph > Hybrid > SQL > Vector fallback (kolaborasi menang atas kata agregat — disengaja, dikunci via `test_router_multi_intent_graph_wins_over_sql_counting`).
+  - Implementasikan `AnswerSynthesizer` dengan LLM Lokal (Qwen2.5-Coder-7B via Ollama) sebagai **opt-in** (`llm_synthesis: true` pada `AskRequest`; default deterministik):
     - Prompt sistem menegakkan grounding ketat: jawab eksklusif dari bukti yang diberikan.
     - Isolasi konteks eksplisit: `SYSTEM INSTRUCTIONS ≠ USER QUESTION ≠ RETRIEVED EVIDENCE`.
     - Wajibkan sitasi inline memakai format `[Title, Year, DOI]` atau `[Title, Year, no-doi]`.
+    - Setiap kegagalan LLM (timeout `OLLAMA_TIMEOUT_S=8s`, model hilang, non-200, respons kosong, atau output yang habis dipangkas verifier) jatuh ke renderer deterministik dengan flag `synthesis_backend: deterministic-fallback` — request tidak pernah gagal karena sintesis.
   - Implementasikan `CitationVerifier` (Verifikasi Post-Hoc):
     - Ekstrak seluruh sitasi yang dibuat dari output LLM.
     - Cocokkan sitasi dengan `EvidenceSet` yang diberikan ke LLM.
     - Pangkas sitasi tak-terverifikasi/terhalusinasi dan catat pada `unverified_citations`.
-  - Implementasikan penanganan nol-bukti deterministik: jika `EvidenceSet` kosong, segera kembalikan `status: not_found` / `insufficient_evidence` tanpa memanggil LLM sintesis.
+  - Implementasikan penanganan nol-bukti deterministik: jika `EvidenceSet` kosong, segera kembalikan `status: not_found` tanpa memanggil LLM sintesis (kosakata `insufficient_evidence` dipetakan ke `not_found`; tidak ada varian status kelima).
 - **Output:** Pipeline retrieval dan pembuatan 4-rute lengkap yang menghasilkan jawaban terverifikasi dan ter-grounding.
 - **Memblokir:** Fase 8 (Gerbang MVP & Verifikasi).
 - **Kriteria Penerimaan:**
@@ -397,12 +399,12 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 |---|---|---|---|
 | **Antarmuka API** | `POST /api/v1/ask`, `GET /api/v1/health` | `POST /api/v1/ask/stream` (SSE), API Resource | Auth Multi-tenant, OAuth2/JWT |
 | **Penanganan Request** | Sinkron, validasi Pydantic, `request_id` | Respons ter-cache | Worker async Celery/Redis |
-| **Routing Kueri** | Deterministik / Berbasis Aturan (fallback LLM) | Penyetelan (tuning) intent via harness eval | Routing berbasis reinforcement-learning |
+| **Routing Kueri** | Deterministik / Berbasis Aturan (fallback rute VectorRoute/HybridRoute, bukan fallback klasifier LLM) | Penyetelan (tuning) intent via harness eval | Routing berbasis reinforcement-learning |
 | **Pencarian Terstruktur** | `SqlRetriever`, whitelist AST, 9 tabel kanonikal | Estimator biaya kueri | Eksekusi proxy ter-sandbox |
 | **Pencarian Semantik** | `VectorRetriever` (`bge-m3`, 1024d, HNSW pada `chunks`, $\ge 0.65$) | FTS Hybrid (`tsvector`), penyetelan ambang | Chunking multi-vector dinamis |
 | **Knowledge Graph** | Tabel edge (`institution`, `author`), maks 3 hop | Ekstensi Graf (Apache AGE), resolusi edge `CITES` | Graf jaringan sitasi penuh |
 | **Lapisan Bukti** | `EvidenceSet` ternormalisasi, peringkat deterministik | Regresi eval emas (golden) | Cross-encoder (`bge-reranker-large`) |
-| **Sintesis & Sitasi** | Prompt ter-grounding, `[Title, Year, DOI/no-doi]`, pemeriksaan post-hoc | Skor confidence sitasi | Chat multi-turn interaktif |
+| **Sintesis & Sitasi** | Prompt ter-grounding §6 docs/05, `[Title, Year, DOI/no-doi]`, pemeriksaan post-hoc; LLM opt-in (`llm_synthesis`) dengan fallback deterministik | Skor confidence sitasi | Chat multi-turn interaktif |
 | **Nol Hasil** | `not_found` deterministik, nol pemanggilan LLM | Saran disambiguasi | Relaksasi kueri otomatis |
 | **Komputasi / Serving** | Khusus CPU (Ollama Lokal, Qwen2.5-Coder-7B) | Instance GPU, Qwen2.5-Coder-32B | Klaster model auto-scaling |
 | **Ingestion Data** | Dataset prototipe (validasi alur E2E) — load + pembersihan (cleaning) + export DONE; indexing vector NEXT (Task 1) | Ingestion batch semi-otomatis | Pipeline CDC / Outbox berkelanjutan (>100K) |

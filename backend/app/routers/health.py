@@ -5,6 +5,8 @@ Docs Reference: docs/06 Api Design.md §6.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, status
 from backend.app.db.pool import check_db_health
 from backend.app.models.health import HealthResponse
@@ -53,8 +55,14 @@ def check_evidence_layer_health() -> bool:
 )
 async def get_health() -> HealthResponse:
     """Execute dependency health probes across DB, pgvector, Evidence layer, and Ollama."""
-    db_health = await check_db_health()
-    llm_health, embed_health = await check_ollama_health()
+    # P1 async-*: DB + Ollama probes are independent → run concurrently so
+    # health latency is max(probe) instead of sum(probe) (matters most when
+    # Ollama is unreachable and its timeout would otherwise be additive).
+    db_health, ollama_pair = await asyncio.gather(
+        check_db_health(),
+        check_ollama_health(),
+    )
+    llm_health, embed_health = ollama_pair
     evidence_ready = check_evidence_layer_health()
 
     # Determine overall system health status

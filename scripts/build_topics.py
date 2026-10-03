@@ -122,7 +122,7 @@ def fetch_publications_and_keywords(cur) -> Tuple[List[Dict[str, Any]], Dict[str
 
     cur.execute(
         """
-        SELECT publication_id, keyword_normalized
+        SELECT publication_id, keyword
         FROM keywords;
         """
     )
