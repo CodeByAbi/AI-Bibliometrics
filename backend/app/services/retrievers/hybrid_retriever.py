@@ -11,13 +11,18 @@ import asyncio
 import logging
 import re
 import time
-from typing import Dict, List, Literal, Optional
+from typing import Literal
+
 import asyncpg
 from pydantic import BaseModel, Field
 
 from backend.app.core.errors import DBTimeoutError
 from backend.app.models.ask import FilterParams
-from backend.app.services.embedding import generate_query_embedding, validate_embedding_vector
+from backend.app.services.embedding import (
+    generate_query_embedding,
+    validate_embedding_vector,
+)
+from backend.app.services.retrievers.sql_security import escape_like_pattern
 
 logger = logging.getLogger("hybrid_retriever")
 
@@ -65,22 +70,22 @@ class HybridPublicationMeta(BaseModel):
 
     publication_id: str
     title: str
-    year: Optional[int] = None
-    doi: Optional[str] = None
-    eid: Optional[str] = None
+    year: int | None = None
+    doi: str | None = None
+    eid: str | None = None
 
 
 class HybridRetrievalResult(BaseModel):
     """Container for HybridRetriever execution output."""
 
     intent_type: HybridIntentType
-    topics: List[HybridTopicEvolutionItem] = Field(default_factory=list)
-    experts: List[HybridExpertItem] = Field(default_factory=list)
-    publications: Dict[str, HybridPublicationMeta] = Field(default_factory=dict)
-    sql_executed: Optional[str] = None
-    target_topic_id: Optional[int] = None
-    target_topic_name: Optional[str] = None
-    filters_ignored: List[str] = Field(default_factory=list)
+    topics: list[HybridTopicEvolutionItem] = Field(default_factory=list)
+    experts: list[HybridExpertItem] = Field(default_factory=list)
+    publications: dict[str, HybridPublicationMeta] = Field(default_factory=dict)
+    sql_executed: str | None = None
+    target_topic_id: int | None = None
+    target_topic_name: str | None = None
+    filters_ignored: list[str] = Field(default_factory=list)
     execution_time_ms: float = 0.0
 
     @property
@@ -108,7 +113,7 @@ SELECT
 FROM topics t
 JOIN topic_evolution te ON te.topic_id = t.topic_id
 WHERE ($1::BIGINT IS NULL OR t.topic_id = $1)
-  AND ($2::TEXT IS NULL OR t.topic_name_normalized ILIKE $2)
+  AND ($2::TEXT IS NULL OR t.topic_name_normalized ILIKE $2 ESCAPE '\')
   AND ($3::BOOLEAN IS NULL OR te.is_emerging = $3)
   AND ($4::SMALLINT IS NULL OR te.year >= $4)
   AND ($5::SMALLINT IS NULL OR te.year <= $5)
@@ -136,25 +141,10 @@ FROM researcher_expertise re
 JOIN authors a ON a.author_id = re.author_id
 JOIN topics t ON t.topic_id = re.topic_id
 WHERE ($1::BIGINT IS NULL OR t.topic_id = $1)
-  AND ($2::TEXT IS NULL OR t.topic_name_normalized ILIKE $2)
+  AND ($2::TEXT IS NULL OR t.topic_name_normalized ILIKE $2 ESCAPE '\')
   AND ($3::VARCHAR(64) IS NULL OR re.author_id = $3)
 ORDER BY re.expertise_score DESC
 LIMIT $4;
-""".strip()
-
-# 3. Semantic Topic Search via Centroid Vector (<=>)
-SQL_SEMANTIC_TOPIC_SEARCH = """
-SELECT 
-    topic_id,
-    topic_name,
-    topic_name_normalized,
-    total_publications,
-    total_citations,
-    1 - (representation_vector <=> $1::vector) AS similarity_score
-FROM topics
-WHERE representation_vector IS NOT NULL
-ORDER BY representation_vector <=> $1::vector ASC
-LIMIT $2;
 """.strip()
 
 # 4. Publication Metadata for Supporting Citations
@@ -172,7 +162,7 @@ class HybridRetriever:
     """Deterministic, parameterized hybrid retriever combining Gold analytics, vector, and relational constraints."""
 
     @classmethod
-    def clamp_limit(cls, limit: Optional[int]) -> int:
+    def clamp_limit(cls, limit: int | None) -> int:
         """Clamp query result limit to [1, 50]."""
         if limit is None or limit <= 0:
             return DEFAULT_LIMIT
@@ -182,7 +172,7 @@ class HybridRetriever:
     def detect_intent(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
+        filters: FilterParams | None = None,
     ) -> HybridIntentType:
         """Detect intent sub-type for HybridRoute (Trends, Expertise, or Combined)."""
         ql = question.lower().strip()
@@ -220,8 +210,8 @@ class HybridRetriever:
     def extract_topic_keyword(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
-    ) -> Optional[str]:
+        filters: FilterParams | None = None,
+    ) -> str | None:
         """Extract explicit topic name or keyword candidate from filters or question text."""
         if filters and filters.topic_name:
             return filters.topic_name.strip()
@@ -246,19 +236,19 @@ class HybridRetriever:
         cls,
         conn: asyncpg.Connection,
         question: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_author_name: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
-        resolved_institution_name: Optional[str] = None,
-        limit: Optional[int] = None,
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_author_name: str | None = None,
+        resolved_institution_id: str | None = None,
+        resolved_institution_name: str | None = None,
+        limit: int | None = None,
     ) -> HybridRetrievalResult:
         """Execute parameterized Gold analytics retrieval across topics, trends, and researcher expertise."""
         start_time = time.perf_counter()
         clamped_limit = cls.clamp_limit(limit)
         intent = cls.detect_intent(question, filters)
 
-        filters_ignored: List[str] = []
+        filters_ignored: list[str] = []
         if filters:
             if filters.country is not None:
                 filters_ignored.append("country")
@@ -281,21 +271,20 @@ class HybridRetriever:
 
         # Step 1: Resolve topic candidate (by name pattern or semantic centroid vector)
         topic_kw = cls.extract_topic_keyword(question, filters)
-        resolved_topic_id: Optional[int] = None
-        resolved_topic_name: Optional[str] = None
+        resolved_topic_id: int | None = None
+        resolved_topic_name: str | None = None
 
         if topic_kw:
             # Try exact / ILIKE lookup on topics table first
-            escaped_kw = topic_kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            pattern = f"%{escaped_kw}%"
+            pattern = escape_like_pattern(topic_kw)
             try:
                 topic_row = await asyncio.wait_for(
                     conn.fetchrow(
                         """
                         SELECT topic_id, topic_name
                         FROM topics
-                        WHERE topic_name_normalized ILIKE $1
-                           OR topic_name ILIKE $1
+                        WHERE topic_name_normalized ILIKE $1 ESCAPE '\'
+                           OR topic_name ILIKE $1 ESCAPE '\'
                         ORDER BY total_publications DESC
                         LIMIT 1;
                         """,
@@ -303,7 +292,7 @@ class HybridRetriever:
                     ),
                     timeout=STATEMENT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise DBTimeoutError("HybridRetriever statement timed out (10s)") from exc
 
             if topic_row:
@@ -338,7 +327,7 @@ class HybridRetriever:
         is_emerging_filter = True if re.search(r"\b(emerging|berkembang\s*pesat|topik\s*baru)\b", question, re.IGNORECASE) else None
 
         # Step 2: Query Topic Trends if intent is TOPIC_TRENDS or COMBINED_ANALYTICS
-        topics_list: List[HybridTopicEvolutionItem] = []
+        topics_list: list[HybridTopicEvolutionItem] = []
         if intent in ("TOPIC_TRENDS", "COMBINED_ANALYTICS"):
             try:
                 rows_trends = await asyncio.wait_for(
@@ -353,7 +342,7 @@ class HybridRetriever:
                     ),
                     timeout=STATEMENT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise DBTimeoutError("HybridRetriever statement timed out (10s)") from exc
 
             for r in rows_trends:
@@ -372,7 +361,7 @@ class HybridRetriever:
                 )
 
         # Step 3: Query Researcher Expertise if intent is EXPERT_RANKING or COMBINED_ANALYTICS
-        experts_list: List[HybridExpertItem] = []
+        experts_list: list[HybridExpertItem] = []
         if intent in ("EXPERT_RANKING", "COMBINED_ANALYTICS"):
             try:
                 rows_exp = await asyncio.wait_for(
@@ -385,7 +374,7 @@ class HybridRetriever:
                     ),
                     timeout=STATEMENT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise DBTimeoutError("HybridRetriever statement timed out (10s)") from exc
 
             for r in rows_exp:
@@ -409,7 +398,7 @@ class HybridRetriever:
 
         # Step 4: Fetch supporting publication metadata for citations
         author_ids_to_fetch = list(dict.fromkeys(e.author_id for e in experts_list))
-        pubs_map: Dict[str, HybridPublicationMeta] = {}
+        pubs_map: dict[str, HybridPublicationMeta] = {}
 
         if author_ids_to_fetch:
             try:
