@@ -1,0 +1,46 @@
+# AI-Bibliometrics — dev / offline-script dependencies (2026-10-03)
+#
+# SCOPE: test runners, linters, type checkers, and the offline graph/visualisation
+# scripts. NOT needed by the running container — this file is deliberately kept
+# OUT of docker/backend.Dockerfile so the production image stays lean.
+#
+#   pip install -r requirements-dev.txt        # local dev + CI + offline scripts
+#   pip install -r requirements.txt             # runtime only (mirrors the image)
+#
+# Installs requirements.txt first (-r below), so this file is a strict superset
+# and you never have to remember both.
+
+-r requirements.txt
+
+# ---------------------------------------------------------------------------
+# Database — sync driver for offline scripts
+# ---------------------------------------------------------------------------
+# The backend speaks asyncpg only. scripts/*.py (verify_schema, migrate, grant_
+# readonly, backfill_*, build_edges, ...) import `psycopg` sync because they run
+# as one-shot CLI processes where an event loop is unnecessary. Dropping psycopg
+# from the runtime file is safe: nothing under backend/ imports it (verified).
+psycopg[binary]==3.3.6 # Driver sync scripts/verify_schema.py + scripts/migrate.py
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+pytest==9.1.1            # Test runner; dipakai CI .github/workflows/python-app.yml
+pytest-asyncio==1.4.0    # Menjalankan @pytest.mark.asyncio (asyncio_mode=auto, lihat pytest.ini)
+pytest-mock==3.16.0      # Fixture mocker untuk mocking service/Ollama di unit test
+pytest-cov==7.0.0        # pytest --cov=backend/app (gate coverage, Fase 8; lihat pyproject.toml [tool.coverage])
+
+# ---------------------------------------------------------------------------
+# Lint / format / types
+# ---------------------------------------------------------------------------
+# Versions match the toolchain verified locally (ruff 0.16.9, mypy 2.4.0) so a
+# CI failure means a real code problem, not a silent linter upgrade.
+ruff==0.16.9           # Lint + format; konfigurasi di pyproject.toml [tool.ruff]
+mypy==2.4.0            # Static typing backend/ + scripts/; konfigurasi di pyproject.toml [tool.mypy]
+
+# ---------------------------------------------------------------------------
+# Graph visualisation — scripts/visualize_graph.py (offline exploration layer)
+# ---------------------------------------------------------------------------
+# Neither module is imported anywhere under backend/ (verified): they are an
+# offline PNG/GraphML rendering tool, not a serving dependency.
+networkx==3.6.1        # Undirected collaboration graph, metrics, GraphML export
+matplotlib==3.11.2     # Static PNG rendering (Agg backend, single-hue style)
