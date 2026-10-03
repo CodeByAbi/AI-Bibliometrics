@@ -5,6 +5,7 @@ Docs Reference: docs/05 Retrieval Rag Design.md §3, docs/10 Implementation Plan
 
 from __future__ import annotations
 
+import asyncio
 import re
 import string
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -12,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import asyncpg
 from backend.app.models.ask import CandidateItem, FilterParams
+
+
+STATEMENT_TIMEOUT_S = 10.0
 
 
 RouteType = Literal["SQLRoute", "VectorRoute", "GraphRoute", "HybridRoute"]
@@ -218,13 +222,16 @@ VECTOR_PATTERNS = [
 ]
 
 
+# P7 js-*: translation table built once at import, not per normalize_text call.
+_PUNCT_TRANSLATOR = str.maketrans("", "", string.punctuation)
+
+
 def normalize_text(text: str) -> str:
     """Normalize string by lowercasing, stripping punctuation, and compressing whitespace."""
     if not text:
         return ""
     # Strip punctuation and lower
-    translator = str.maketrans("", "", string.punctuation)
-    clean = text.translate(translator).lower()
+    clean = text.translate(_PUNCT_TRANSLATOR).lower()
     return " ".join(clean.split())
 
 
@@ -233,6 +240,9 @@ def normalize_text(text: str) -> str:
 # NOTE (Phase 3 fix P0-2): geographic/entity tokens such as "indonesia"
 # must NOT be stoplisted — "Universitas Indonesia" is a real institution.
 # Only query verbs/adjectives/rank words are rejected here.
+# NOTE (top-N "by <metric>" fix): English metric words must be stoplisted too —
+# otherwise "by publication count" is extracted as author_name="publication count",
+# matches zero rows, and the gate short-circuits to not_found before SQL retrieval.
 _NON_NAME_TOKENS = frozenset({
     "top", "most", "paling", "terbanyak", "teratas", "terbaik", "utama",
     "produktif", "prolific", "productive", "active", "aktif", "cited",
@@ -243,13 +253,33 @@ _NON_NAME_TOKENS = frozenset({
     "yang", "dan", "dari", "dengan",
     "tentang", "mengenai", "terkait",
     "mana", "apa", "bagaimana", "apakah", "kapan", "dimana", "kenapa", "mengapa",
+    # English metric phrasing in top-N / ranked queries ("by <metric>").
+    # None of these can be part of a person name, so any capture containing
+    # them is query phrasing, not an entity.
+    "publication", "publications", "count", "counts", "counting",
+    "citation", "citations", "number", "numbers",
+    "statistic", "statistics", "stats",
+    "rank", "ranking", "ranked", "score", "scores",
+    "year", "years",
+    # Connectors that never appear inside a person/institution name.
+    "by", "with",
 })
 
 
 def _looks_like_name(captured: str) -> bool:
     """Reject captures containing query phrasing instead of a real name."""
     tokens = normalize_text(captured).split()
-    return bool(tokens) and not any(t in _NON_NAME_TOKENS for t in tokens)
+    if not tokens:
+        return False
+    if any(t in _NON_NAME_TOKENS for t in tokens):
+        return False
+    # Metric phrasing ("by publication count") is lowercase; real person and
+    # institution names carry at least one capital in natural queries
+    # ("Septi Gumiandari", "Universitas Indonesia"). A lowercase-only capture
+    # is never trusted as an entity: missing a lowercase-spelled name degrades
+    # gracefully to an unfiltered search, while trusting a metric phrase causes
+    # a hard false not_found before retrieval even runs.
+    return any(ch.isupper() for ch in captured)
 
 
 class QuestionRouter:
@@ -361,7 +391,7 @@ class EntityResolutionGate:
     """Disambiguation and entity validation gate against live PostgreSQL records."""
 
     @classmethod
-    async def extract_candidate_names(
+    def extract_candidate_names(
         cls,
         question: str,
         filters: Optional[FilterParams] = None,
@@ -380,9 +410,11 @@ class EntityResolutionGate:
         if not author_name:
             # e.g., "penulis Dr. Ahmad", "author John Doe", "oleh Septi Gumiandari", "by Septi Gumiandari"
             # Terminators carry \b so "in" never cuts "Indonesia"/"Informatika".
+            # "by" is a terminator too: "author Septi Gumiandari by year" must
+            # capture just the name, not "Septi Gumiandari by year".
             # Iterate all matches: "penulis mana ..." must not block a later real name.
             for auth_match in re.finditer(
-                r"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|di|in|with|yang)\b|\?|$)",
+                r"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|di|in|with|yang|by)\b|\?|$)",
                 question,
                 re.IGNORECASE,
             ):
@@ -416,7 +448,7 @@ class EntityResolutionGate:
         filters: Optional[FilterParams] = None,
     ) -> EntityResolutionResult:
         """Resolve author and institution entities, checking for ambiguous candidate sets."""
-        author_query, inst_query = await cls.extract_candidate_names(question, filters)
+        author_query, inst_query = cls.extract_candidate_names(question, filters)
 
         # Accumulators: both entities resolve jointly so a resolved author
         # never masks an ambiguous institution (and vice versa).
@@ -449,11 +481,19 @@ class EntityResolutionGate:
             elif len(exact_rows) > 1:
                 # Multiple candidates found -> needs clarification
                 candidate_items: List[CandidateItem] = []
+                # P1 async-*: one GROUP BY over ANY($1) instead of N sequential
+                # COUNT round-trips (author_id is VARCHAR — text[] comparison is safe).
+                author_count_rows = await asyncio.wait_for(
+                    conn.fetch(
+                        "SELECT author_id, COUNT(publication_id) AS cnt FROM pub_author "
+                        "WHERE author_id = ANY($1) GROUP BY author_id;",
+                        [r["author_id"] for r in exact_rows[:5]],
+                    ),
+                    timeout=STATEMENT_TIMEOUT_S,
+                )
+                author_count_by_id = {str(cr["author_id"]): int(cr["cnt"]) for cr in author_count_rows}
                 for r in exact_rows[:5]:
-                    pub_count = await conn.fetchval(
-                        "SELECT COUNT(publication_id) FROM pub_author WHERE author_id = $1;",
-                        r["author_id"],
-                    ) or 0
+                    pub_count = author_count_by_id.get(str(r["author_id"]), 0)
                     candidate_items.append(
                         CandidateItem(
                             id=r["author_id"],
@@ -540,11 +580,19 @@ class EntityResolutionGate:
                 resolved_institution_name = row["institution_name"]
             elif len(exact_insts) > 1:
                 candidate_items = []
+                # P1 async-*: one GROUP BY over ANY($1) instead of N sequential
+                # COUNT round-trips (institution_id is VARCHAR — text[] comparison is safe).
+                inst_count_rows = await asyncio.wait_for(
+                    conn.fetch(
+                        "SELECT institution_id, COUNT(publication_id) AS cnt FROM pub_institution "
+                        "WHERE institution_id = ANY($1) GROUP BY institution_id;",
+                        [r["institution_id"] for r in exact_insts[:5]],
+                    ),
+                    timeout=STATEMENT_TIMEOUT_S,
+                )
+                inst_count_by_id = {str(cr["institution_id"]): int(cr["cnt"]) for cr in inst_count_rows}
                 for r in exact_insts[:5]:
-                    pub_count = await conn.fetchval(
-                        "SELECT COUNT(publication_id) FROM pub_institution WHERE institution_id = $1;",
-                        r["institution_id"],
-                    ) or 0
+                    pub_count = inst_count_by_id.get(str(r["institution_id"]), 0)
                     candidate_items.append(
                         CandidateItem(
                             id=r["institution_id"],

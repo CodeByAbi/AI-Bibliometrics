@@ -1,16 +1,16 @@
 # Arsitektur Sistem — End-to-End (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `03 System Architecture.md` Draft v2 s.d. v3.5.0  
+**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — sinkronisasi Gold DONE terverifikasi live)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `03 System Architecture.md` v3.6.2 (2026-09-27)  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
 > **Status Implementasi & Realitas Basis Data (Sinkronisasi Progress 2026-09-29):**  
 > 1. **Database PostgreSQL:** Tim **sudah membuat database PostgreSQL**. Kredensial koneksi sudah tersedia secara internal (tidak diekspos di dokumentasi).  
 > 2. **Dataset Prototipe:** Database memuat **dataset prototipe kecil** (22 kolom pada `publications`) untuk **validasi end-to-end (E2E)**.
 > 3. **9 Tabel Relasional Silver:** Dataset prototipe ter-load pada 9 tabel kanonikal: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, dan `chunks`.  
-> 4. **Komponen Turunan (Phase 0–2 DONE):** Kolom vektor `chunks.embedding vector(1024)` + indeks HNSW (Task 1), 2 edge tables `institution_collaboration` dan `author_collaboration` (Task 8), kerangka FastAPI + DB pool + Ollama (Task 2–3) sudah DONE dan terverifikasi. 3 tabel Gold Analytics `topics`, `topic_evolution`, dan `researcher_expertise` (Task 8.5) masih PLANNED.  
-> 5. **Cleaning & Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`. NEXT: Phase 3 Vertical Slice (`QuestionRouter` + `SqlRetriever`).
+> 4. **Komponen Turunan (Phase 0–2 DONE, Gold DONE — terverifikasi live 2026-10-03):** Kolom vektor `chunks.embedding vector(1024)` + indeks HNSW (Task 1), 2 edge tables `institution_collaboration` (254 baris) dan `author_collaboration` (484 baris) (Task 8), kerangka FastAPI + DB pool + Ollama (Task 2–3), dan 3 tabel Gold Analytics `topics` (5), `topic_evolution` (25), `researcher_expertise` (140) (Task 8.5) sudah DONE dan terverifikasi live.  
+> 5. **Cleaning & Export — DONE:** Data Scopus sudah dibersihkan dan berhasil di-export sebagai 9 file `data/*_cleaned.csv`. Retrieval 4-rute + sintesis LLM opt-in DONE (Fase 7). NEXT: Fase 8 (verifikasi formal + baseline latensi + sign-off MVP).
 
 ---
 
@@ -52,8 +52,8 @@ Tingkatan data Medallion pada sistem ini:
 1. **Bronze Layer (Raw Staging - Future/Production):** Berkas arsip ekspor mentah Scopus yang immutable beserta hash SHA-256 untuk auditability dan re-ingestion (`docs/12 Data Pipeline.md`).
 2. **Silver Layer (Canonical Relational Storage - 9 Tabel Prototipe + 2 Edge Tables):** Sumber kebenaran terstruktur kanonikal yang telah dibersihkan dan dinormalisasi:
    - 9 Tabel Relasional: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, dan `chunks`.
-   - 2 Derived Edge Tables (PLANNED, Task 8): `institution_collaboration` dan `author_collaboration` yang dimaterialisasi secara idempoten dari `pub_institution` dan `pub_author`.
-3. **Gold Layer (Analytics & Intelligence - 3 Tabel - PLANNED, Task 8.5):** Tabel analitik derivatif untuk mendukung sintesis kebijakan:
+   - 2 Derived Edge Tables (DONE, Task 8 — terverifikasi live: 254 + 484 baris): `institution_collaboration` dan `author_collaboration` yang dimaterialisasi secara idempoten dari `pub_institution` dan `pub_author`.
+3. **Gold Layer (Analytics & Intelligence - 3 Tabel - DONE, Task 8.5 — terverifikasi live 2026-10-03):** Tabel analitik derivatif untuk mendukung sintesis kebijakan:
    - `topics`: Klaster topik BERTopic dan representasi vektor 1024-dimensi.
    - `topic_evolution`: Metrik time-series tahunan, growth score, dan citation acceleration.
    - `researcher_expertise`: Pemeringkatan kepakaran peneliti multi-dimensi terbobot ($\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$).
@@ -86,11 +86,11 @@ Tingkatan data Medallion pada sistem ini:
                                                                                ▼
                                                ┌───────────────────────────────────────────────────────────────┐
                                                │               Database PostgreSQL                             │
-                                               │  • Silver: 9 Tabel Relasional Kanonikal                       │
-                                               │  • Derived Edge: institution/author_collaboration (PLANNED)  │
-                                               │  • Gold Analytics: topics, topic_evolution, exp (PLANNED)     │
-                                               │  • Lapisan Semantik pgvector: chunks.embedding (PLANNED)        │
-                                               │  • Peran Koneksi Terpaksa: app_readonly (hanya SELECT)       │
+                                                │  • Silver: 9 Tabel Relasional Kanonikal                       │
+                                                │  • Derived Edge: institution/author_collaboration (DONE)      │
+                                                │  • Gold Analytics: topics, topic_evolution, exp (DONE)        │
+                                                │  • Lapisan Semantik pgvector: chunks.embedding (DONE)         │
+                                                │  • Peran Koneksi Target: app_readonly (hanya SELECT); runtime .env saat ini memakai role postgres — risiko yang diterima, lihat reports/fase7_closeout.md §B2 │
                                                └───────────────────────────────────────────────────────────────┘
 ```
 

@@ -94,13 +94,13 @@ class TestEntityResolutionGate:
     @pytest.mark.asyncio
     async def test_extract_candidate_names_from_filters(self):
         filters = FilterParams(author_name="Septi Gumiandari", institution_name="Universitas Andalas")
-        auth, inst = await EntityResolutionGate.extract_candidate_names("Who wrote this?", filters)
+        auth, inst = EntityResolutionGate.extract_candidate_names("Who wrote this?", filters)
         assert auth == "Septi Gumiandari"
         assert inst == "Universitas Andalas"
 
     @pytest.mark.asyncio
     async def test_extract_candidate_names_from_query(self):
-        auth, inst = await EntityResolutionGate.extract_candidate_names(
+        auth, inst = EntityResolutionGate.extract_candidate_names(
             "Berapa publikasi oleh Septi Gumiandari pada tahun 2025?"
         )
         assert auth is not None
@@ -108,17 +108,39 @@ class TestEntityResolutionGate:
 
     @pytest.mark.asyncio
     async def test_query_phrasing_is_not_a_name(self):
-        auth, inst = await EntityResolutionGate.extract_candidate_names(
+        auth, inst = EntityResolutionGate.extract_candidate_names(
             "Siapa 5 penulis paling produktif tahun 2025?"
         )
         assert auth is None
 
     @pytest.mark.asyncio
     async def test_institution_phrasing_is_not_a_name(self):
-        _, inst = await EntityResolutionGate.extract_candidate_names(
+        _, inst = EntityResolutionGate.extract_candidate_names(
             "Tampilkan institusi paling produktif tahun 2025?"
         )
         assert inst is None
+
+    @pytest.mark.asyncio
+    async def test_by_metric_phrasing_is_not_a_name(self):
+        """Top-N 'by <metric>' must not extract a phantom author.
+
+        Regression: 'Who were the 5 most productive authors in 2023 by
+        publication count?' extracted author_name='publication count',
+        matched zero rows, and short-circuited to not_found before SQL
+        retrieval ever ran.
+        """
+        auth, inst = EntityResolutionGate.extract_candidate_names(
+            "Who were the 5 most productive authors in 2023 by publication count?"
+        )
+        assert auth is None
+        assert inst is None
+
+    @pytest.mark.asyncio
+    async def test_by_citation_count_phrasing_is_not_a_name(self):
+        auth, _ = EntityResolutionGate.extract_candidate_names(
+            "Show top authors by citation count in 2023?"
+        )
+        assert auth is None
 
     def test_normalize_text(self):
         assert normalize_text("Gumiandari, Septi!") == "gumiandari septi"
@@ -165,6 +187,20 @@ class TestEntityResolutionNotFound:
         assert result.status == "ok"
         assert result.candidates is None
 
+    @pytest.mark.asyncio
+    async def test_top_n_by_metric_passes_gate(self):
+        """Gate must not short-circuit top-N queries to not_found.
+
+        With no entity mentioned, resolve_entities returns ok so the
+        SQLRoute retriever runs instead of the entity-gate not_found path.
+        """
+        result = await EntityResolutionGate.resolve_entities(
+            _EmptyConnStub(),
+            "Who were the 5 most productive authors in 2023 by publication count?",
+            None,
+        )
+        assert result.status == "ok"
+
 
 class _ScriptedConnStub:
     """asyncpg stub routing canned rows by query content."""
@@ -178,6 +214,11 @@ class _ScriptedConnStub:
             return self.author_exact
         if "FROM institutions" in sql and "institution_name_normalized" in sql:
             return self.inst_exact
+        # Batched GROUP BY count queries (ANY($1)) mirror fetchval → 3.
+        if "FROM pub_author" in sql:
+            return [{"author_id": r["author_id"], "cnt": 3} for r in self.author_exact]
+        if "FROM pub_institution" in sql:
+            return [{"institution_id": r["institution_id"], "cnt": 3} for r in self.inst_exact]
         return []
 
     async def fetchval(self, *args, **kwargs):
@@ -300,7 +341,7 @@ class TestInstitutionIndonesiaFix:
 
     @pytest.mark.asyncio
     async def test_universitas_indonesia_extracted(self):
-        _, inst = await EntityResolutionGate.extract_candidate_names(
+        _, inst = EntityResolutionGate.extract_candidate_names(
             "Berapa publikasi dari institusi Universitas Indonesia pada tahun 2025?"
         )
         assert inst is not None
@@ -308,7 +349,7 @@ class TestInstitutionIndonesiaFix:
 
     @pytest.mark.asyncio
     async def test_terminator_in_does_not_cut_indonesia(self):
-        _, inst = await EntityResolutionGate.extract_candidate_names(
+        _, inst = EntityResolutionGate.extract_candidate_names(
             "Institusi mana yang berkolaborasi dengan Universitas Indonesia?"
         )
         assert inst is not None
@@ -316,7 +357,7 @@ class TestInstitutionIndonesiaFix:
 
     @pytest.mark.asyncio
     async def test_bare_di_still_ignored(self):
-        _, inst = await EntityResolutionGate.extract_candidate_names(
+        _, inst = EntityResolutionGate.extract_candidate_names(
             "Paper di Indonesia?"
         )
         assert inst is None

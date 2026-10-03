@@ -67,6 +67,11 @@ class AskRequest(BaseModel):
         False,
         description="Flag untuk menyertakan metadata debug, SQL, dan latensi",
     )
+    llm_synthesis: Optional[bool] = Field(
+        False,
+        description="Opt-in sintesis naratif LLM (Qwen2.5-Coder via Ollama, docs/05 §6) "
+        "di atas EvidenceSet; fallback deterministik bila LLM tak tersedia",
+    )
 
     @field_validator("question")
     @classmethod
@@ -161,6 +166,11 @@ class DebugInfo(BaseModel):
         None,
         description="Which query-embedding backend served the request "
         '("local" | "ollama", VectorRoute only; Phase 4 audit D1)',
+    )
+    synthesis_backend: Optional[str] = Field(
+        None,
+        description="Which synthesis engine produced the answer "
+        '("deterministic" | "llm" | "deterministic-fallback"; Fase 7 B1)',
     )
     evidence_set: Optional[Dict[str, Any]] = None
 
