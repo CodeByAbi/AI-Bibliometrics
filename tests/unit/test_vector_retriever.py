@@ -199,7 +199,8 @@ async def test_vector_retriever_rejects_non_finite_precomputed_vector():
 
 @pytest.mark.asyncio
 async def test_vector_retriever_threshold_and_dedup_sql_shape():
-    """Threshold is bound as $1 and dedup uses DISTINCT ON before LIMIT 8."""
+    """Placeholder order is $1 vector / $2 ANN overfetch / $3 threshold /
+    $4 limit, and dedup uses DISTINCT ON before the final LIMIT."""
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = []
 
@@ -217,10 +218,120 @@ async def test_vector_retriever_threshold_and_dedup_sql_shape():
     sql_text = call_args[0]
     params = call_args[1:]
 
-    assert params[0] == 0.65
-    assert "DISTINCT ON (p.publication_id)" in sql_text
+    assert "DISTINCT ON (ac.publication_id)" in sql_text
     assert "ORDER BY similarity_score DESC" in sql_text
-    assert sql_text.strip().endswith("LIMIT $2;")
+    assert sql_text.strip().endswith("LIMIT $4;")
+    assert params[2] == 0.65
+    assert params[3] == 8
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_binds_embedding_instead_of_inlining_it():
+    """The 1024-d embedding must travel as $1, never be interpolated into the
+    SQL text: the operator is referenced twice, so inlining would add ~22KB of
+    query text per request and put the vector into debug output."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="bound vector",
+        query_vector=[0.01] * 1024,
+    )
+
+    assert result.embedding_backend is None
+    sql_text = mock_conn.fetch.call_args[0][0]
+    params = mock_conn.fetch.call_args[0][1:]
+    assert "0.01000000" not in sql_text
+    assert sql_text.count("OPERATOR(") == 2
+    assert params[0].startswith("[") and params[0].endswith("]")
+    assert params[0].count(",") == 1023
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_ann_cte_leads_with_distance_ordering():
+    """HNSW usability invariant: the ANN scan's ORDER BY must be led by the
+    distance operator. A `publication_id`-led sort (the pre-fix shape) cannot be
+    served by the index and degrades to a sequential scan plus top-N sort."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="ann ordering",
+        query_vector=[0.01] * 1024,
+    )
+
+    sql_text = mock_conn.fetch.call_args[0][0]
+    ann_block = sql_text.split("scored_chunks")[0]
+    assert "WITH ann_candidates AS (" in ann_block
+    # Distance is the leading sort key of the index-driven scan.
+    assert "ORDER BY (c.embedding OPERATOR(extensions.<=>) $1::extensions.vector) ASC" in ann_block
+    # Deduplication happens after the ANN window, not inside it.
+    assert "publication_id," in ann_block
+    assert "DISTINCT ON" not in ann_block
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_overfetches_ann_candidates():
+    """Dedup collapses duplicate chunks per publication, so the ANN window must
+    overfetch far beyond the requested publication count."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="overfetch",
+        limit=8,
+        query_vector=[0.01] * 1024,
+    )
+
+    params = mock_conn.fetch.call_args[0][1:]
+    assert params[1] == 200  # 8 * 25
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_overfetch_is_clamped():
+    """The ANN window is bounded on both ends: a floor for tiny limits and a
+    ceiling so a large `limit` cannot request the whole table."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+
+    await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="overfetch floor",
+        limit=1,
+        query_vector=[0.01] * 1024,
+    )
+    assert mock_conn.fetch.call_args[0][1:][1] == 100
+
+    await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="overfetch ceiling",
+        limit=50,
+        query_vector=[0.01] * 1024,
+    )
+    assert mock_conn.fetch.call_args[0][1:][1] == 1250
+
+
+@pytest.mark.asyncio
+async def test_vector_retriever_sets_hnsw_ef_search_before_querying():
+    """ef_search is widened for the dedup-on-top-of-ANN workload; a server
+    without pgvector must degrade to the vector-column error, not fail here."""
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+    mock_conn.execute.side_effect = Exception("unrecognized configuration parameter")
+
+    result = await VectorRetriever.retrieve(
+        conn=mock_conn,
+        question="ef search best effort",
+        query_vector=[0.01] * 1024,
+    )
+
+    # Tuning failure is swallowed; the ANN query still runs.
+    assert mock_conn.execute.await_count == 1
+    assert mock_conn.fetch.await_count == 1
+    assert result.is_empty is True
 
 
 def test_vector_answer_synthesizer_zero_match_under_200ms():
@@ -270,9 +381,9 @@ async def test_vector_retriever_threshold_boundary_exact_passes():
     assert result.is_empty is False
     assert result.match_count == 1
     assert result.matches[0].similarity_score == 0.65
-    # The gate must be inclusive and bound as $1 (DB-enforced, not Python).
+    # The gate must be inclusive and bound as $3 (DB-enforced, not Python).
     sql_text = mock_conn.fetch.call_args[0][0]
-    assert ">= $1" in sql_text
+    assert ">= $3" in sql_text
 
 
 @pytest.mark.asyncio
