@@ -9,12 +9,12 @@ import asyncio
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 import asyncpg
 from backend.app.core.config import get_settings
 from backend.app.core.errors import DBTimeoutError
+from backend.app.core.http import get_http_client
 from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
 from backend.app.services.retrievers.sql_security import (
@@ -321,26 +321,27 @@ class SqlRetriever:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=settings.ollama_timeout_s) as client:
-                resp = await client.post(
-                    f"{settings.ollama_host.rstrip('/')}/api/generate",
-                    json=payload,
-                )
-                if resp.status_code == 200:
-                    raw_text = resp.json().get("response", "").strip()
-                    # Strip any markdown code fence if returned
-                    raw_text = re.sub(r"^```(?:sql)?\s*", "", raw_text, flags=re.MULTILINE)
-                    raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE).strip()
-                    if not raw_text:
-                        raise SqlSecurityError(
-                            "LLM Text-to-SQL returned an empty response"
-                        )
-                    return raw_text
-                else:
-                    logger.warning("Ollama Text-to-SQL call returned HTTP %s", resp.status_code)
+            # P3 server-*: shared client (TCP keep-alive); timeout stays per-request.
+            resp = await get_http_client().post(
+                f"{settings.ollama_host.rstrip('/')}/api/generate",
+                json=payload,
+                timeout=settings.ollama_timeout_s,
+            )
+            if resp.status_code == 200:
+                raw_text = resp.json().get("response", "").strip()
+                # Strip any markdown code fence if returned
+                raw_text = re.sub(r"^```(?:sql)?\s*", "", raw_text, flags=re.MULTILINE)
+                raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE).strip()
+                if not raw_text:
                     raise SqlSecurityError(
-                        f"LLM Text-to-SQL unavailable (HTTP {resp.status_code})"
+                        "LLM Text-to-SQL returned an empty response"
                     )
+                return raw_text
+            else:
+                logger.warning("Ollama Text-to-SQL call returned HTTP %s", resp.status_code)
+                raise SqlSecurityError(
+                    f"LLM Text-to-SQL unavailable (HTTP {resp.status_code})"
+                )
         except SqlSecurityError:
             raise
         except Exception as exc:
