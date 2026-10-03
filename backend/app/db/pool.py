@@ -10,14 +10,14 @@ Enforces invariants:
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+
 import asyncpg
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import logger
 from backend.app.models.health import DatabaseHealth
 
-_pool: Optional[asyncpg.Pool] = None
+_pool: asyncpg.Pool | None = None
 
 CANONICAL_SILVER_TABLES = [
     "publications",
@@ -38,6 +38,40 @@ GOLD_TABLES = [
 ]
 
 
+def encode_vector_literal(value: object) -> str:
+    """Render a Python value as a pgvector text literal.
+
+    Registered as the asyncpg codec for the ``vector`` type so query
+    embeddings travel as bound parameters (``$1::vector``) instead of being
+    interpolated into the SQL string. Callers are still required to pass a
+    validated finite-float sequence — the codec is a transport detail, not a
+    validation boundary (see ``embedding.validate_embedding_vector``).
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(f"{float(v):.8f}" for v in value) + "]"
+    raise TypeError(f"cannot encode {type(value).__name__} as a pgvector literal")
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Per-connection setup: teach asyncpg the pgvector text representation.
+
+    Without this, asyncpg has no codec for the ``vector`` OID and a
+    ``$1::vector`` parameter fails to encode. The schema qualifier comes from
+    the validated ``VECTOR_SCHEMA`` setting, matching the layout the
+    VectorRetriever assumes for the ``<=>`` operator.
+    """
+    settings = get_settings()
+    await conn.set_type_codec(
+        "vector",
+        encoder=encode_vector_literal,
+        decoder=str,
+        format="text",
+        schema=settings.vector_schema,
+    )
+
+
 async def create_pool(
     *,
     min_size: int = 1,
@@ -55,8 +89,10 @@ async def create_pool(
         max_size=max_size,
         ssl="require",
         command_timeout=timeout_s,
+        init=_init_connection,
         server_settings={
             "statement_timeout": f"{settings.db_statement_timeout_ms}ms",
+            "idle_in_transaction_session_timeout": "30s",
             "search_path": "public",
         },
     )
@@ -70,8 +106,8 @@ async def init_pool() -> asyncpg.Pool:
         if _pool is not None and not _pool.is_closing():
             try:
                 _pool.terminate()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Stale DB pool terminate failed during init: %s", exc, exc_info=True)
         _pool = await create_pool()
         logger.info("Database connection pool initialized successfully.")
     return _pool
@@ -85,8 +121,8 @@ async def get_pool() -> asyncpg.Pool:
         if _pool is not None and not _pool.is_closing():
             try:
                 _pool.terminate()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Stale DB pool terminate failed during get_pool: %s", exc, exc_info=True)
         _pool = await create_pool()
     return _pool
 async def close_pool() -> None:
@@ -104,6 +140,17 @@ async def check_db_health() -> DatabaseHealth:
         pool = await get_pool()
         async with pool.acquire() as conn:
             user = await conn.fetchval("SELECT current_user;")
+            try:
+                is_superuser = await conn.fetchval(
+                    "SELECT rolsuper FROM pg_roles WHERE rolname = current_user;"
+                )
+                if is_superuser:
+                    logger.warning(
+                        "DB role '%s' is superuser; runtime expects unprivileged app_readonly.",
+                        user,
+                    )
+            except Exception as exc:
+                logger.debug("Superuser role probe skipped: %s", exc)
 
             # 1. Check public base tables
             table_rows = await conn.fetch(
@@ -140,7 +187,8 @@ async def check_db_health() -> DatabaseHealth:
                     total_cnt = int(counts_row["total"] or 0) if counts_row else 0
                     null_cnt = int(counts_row["missing"] or 0) if counts_row else 0
                     chunks_embedded = total_cnt > 0 and null_cnt == 0
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Chunk-embedding readiness probe failed: %s", exc, exc_info=True)
                     chunks_embedded = False
 
             pgvector_ready = pgvector_installed and chunks_embedded
