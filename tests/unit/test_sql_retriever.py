@@ -11,7 +11,7 @@ from backend.app.services.retrievers.sql_retriever import (
     SqlRetrievalResult,
     SqlRetriever,
 )
-from backend.app.services.retrievers.sql_security import SqlSecurityError
+from backend.app.services.retrievers.sql_security import SqlSecurityError, escape_like_pattern
 from backend.app.services.synthesizer.answer import (
     SqlAnswerSynthesizer,
     format_citation,
@@ -75,8 +75,10 @@ class TestSqlRetrieverGenerator:
         )
         assert sql is not None
         assert evil not in sql
-        assert evil in params
-        assert "ILIKE '%' || $" in sql
+        # LIKE wildcards are escaped and wrapped as a bound %...% pattern
+        # so the payload cannot break out of the string literal or act as a wildcard.
+        assert escape_like_pattern(evil) in params
+        assert "ESCAPE" in sql
 
     def test_resolved_ids_are_parameterized(self):
         sql, params = SqlRetriever.generate_deterministic_sql(

