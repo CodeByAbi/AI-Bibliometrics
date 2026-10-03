@@ -130,10 +130,15 @@ async def check_db_health() -> DatabaseHealth:
             chunks_embedded = False
             if "chunks" in live_tables and pgvector_installed:
                 try:
-                    null_cnt = await conn.fetchval(
-                        "SELECT COUNT(*) FROM chunks WHERE embedding IS NULL;"
+                    # P1 async-*: single scan serves both totals (COUNT + FILTER)
+                    # instead of two sequential full-table COUNT round-trips.
+                    counts_row = await conn.fetchrow(
+                        "SELECT COUNT(*) AS total, "
+                        "COUNT(*) FILTER (WHERE embedding IS NULL) AS missing "
+                        "FROM chunks;"
                     )
-                    total_cnt = await conn.fetchval("SELECT COUNT(*) FROM chunks;")
+                    total_cnt = int(counts_row["total"] or 0) if counts_row else 0
+                    null_cnt = int(counts_row["missing"] or 0) if counts_row else 0
                     chunks_embedded = total_cnt > 0 and null_cnt == 0
                 except Exception:
                     chunks_embedded = False
