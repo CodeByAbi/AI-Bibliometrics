@@ -25,8 +25,6 @@ Docs Reference: docs/05 Retrieval Rag Design.md §6-§7,
 
 from __future__ import annotations
 
-from typing import Optional
-
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +34,16 @@ from backend.app.core.logging import logger
 from backend.app.services.evidence.models import EvidenceSet
 from backend.app.services.synthesizer.answer import AnswerSynthesizer
 from backend.app.services.synthesizer.citation import CitationVerifier
+from backend.app.services.synthesizer.stats import (
+    REASON_CITATION_STRIPPED,
+    REASON_EMPTY,
+    REASON_HTTP,
+    REASON_TIMEOUT,
+    REASON_TRANSPORT,
+    REASON_UNKNOWN,
+    REASON_UNREACHABLE,
+    get_synthesis_stats,
+)
 
 # System rules verbatim from docs/05 §6 (narrative Indonesian, technical English).
 SYNTHESIS_SYSTEM_PROMPT = (
@@ -56,7 +64,18 @@ SYNTHESIS_SYSTEM_PROMPT = (
 
 
 class LlmSynthesisError(RuntimeError):
-    """Raised when the Ollama synthesis call cannot produce usable text."""
+    """Raised when the Ollama synthesis call cannot produce usable text.
+
+    ``reason`` is one of the canonical buckets from
+    :mod:`backend.app.services.synthesizer.stats` and is what
+    ``/api/v1/health`` reports as ``fallback_by_reason``. It is carried as an
+    attribute rather than parsed back out of the message so classification
+    stays explicit and cannot silently drift when log wording changes.
+    """
+
+    def __init__(self, message: str, reason: str = REASON_UNKNOWN) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class LlmRefineResult(BaseModel):
@@ -69,7 +88,7 @@ class LlmRefineResult(BaseModel):
     synthesis_backend: str = Field(
         description="One of 'llm' | 'deterministic-fallback'."
     )
-    llm_ms: Optional[float] = Field(
+    llm_ms: float | None = Field(
         default=None, description="Wall time of the Ollama call in ms (None on fallback)."
     )
 
@@ -106,24 +125,42 @@ async def generate_synthesis_text(system: str, prompt: str) -> str:
     }
     url = f"{settings.ollama_host.rstrip('/')}/api/generate"
     # P3 server-*: shared client (TCP keep-alive); timeout stays per-request.
+    # Transient network failures get one retry with backoff; 4xx/non-200
+    # responses fail fast (never retried) via the status check below.
+    from backend.app.core.retry import with_retry
+
+    async def _post_generate():
+        return await get_http_client().post(url, json=payload, timeout=settings.ollama_timeout_s)
+
     try:
-        resp = await get_http_client().post(
-            url, json=payload, timeout=settings.ollama_timeout_s
-        )
+        resp = await with_retry(_post_generate, max_attempts=2, operation="ollama-synthesis")
     except httpx.TimeoutException as exc:
-        raise LlmSynthesisError(f"Ollama synthesis timeout after {settings.ollama_timeout_s}s") from exc
+        raise LlmSynthesisError(
+            f"Ollama synthesis timeout after {settings.ollama_timeout_s}s",
+            REASON_TIMEOUT,
+        ) from exc
     except httpx.ConnectError as exc:
-        raise LlmSynthesisError("Ollama daemon unreachable for synthesis") from exc
+        raise LlmSynthesisError(
+            "Ollama daemon unreachable for synthesis", REASON_UNREACHABLE
+        ) from exc
     except Exception as exc:
-        raise LlmSynthesisError(f"Ollama synthesis transport error: {exc}") from exc
+        raise LlmSynthesisError(
+            f"Ollama synthesis transport error: {exc}", REASON_TRANSPORT
+        ) from exc
     if resp.status_code != 200:
-        raise LlmSynthesisError(f"Ollama synthesis HTTP {resp.status_code}")
+        raise LlmSynthesisError(
+            f"Ollama synthesis HTTP {resp.status_code}", REASON_HTTP
+        )
     try:
         raw_text = (resp.json().get("response", "") or "").strip()
     except Exception as exc:
-        raise LlmSynthesisError(f"Ollama synthesis returned non-JSON body: {exc}") from exc
+        raise LlmSynthesisError(
+            f"Ollama synthesis returned non-JSON body: {exc}", REASON_TRANSPORT
+        ) from exc
     if not raw_text:
-        raise LlmSynthesisError("Ollama synthesis returned an empty response")
+        raise LlmSynthesisError(
+            "Ollama synthesis returned an empty response", REASON_EMPTY
+        )
     return raw_text
 
 
@@ -137,7 +174,7 @@ class LlmAnswerSynthesizer:
         evidence_set: EvidenceSet,
         route: str = "SQLRoute",
         fallback_answer: str = "",
-        fallback_unverified: Optional[list[str]] = None,
+        fallback_unverified: list[str] | None = None,
     ) -> LlmRefineResult:
         """Attempt LLM narrative synthesis; fall back to deterministic text on any failure.
 
@@ -150,14 +187,19 @@ class LlmAnswerSynthesizer:
 
         fallback_unverified = list(fallback_unverified or [])
         prompt = build_synthesis_prompt(question, evidence_set)
+        stats = get_synthesis_stats()
         t0 = time.perf_counter()
         try:
             raw_text = await generate_synthesis_text(SYNTHESIS_SYSTEM_PROMPT, prompt)
         except LlmSynthesisError as exc:
+            # Docs/05 §7: a synthesis failure must never fail the request. It must
+            # still be COUNTED, otherwise a permanently broken LLM is
+            # indistinguishable from a working one at the HTTP layer.
+            stats.record_fallback(exc.reason)
             logger.warning(
                 "LLM synthesis unavailable, using deterministic fallback: %s",
                 exc,
-                extra={"route": route},
+                extra={"route": route, "synthesis_fallback_reason": exc.reason},
             )
             return LlmRefineResult(
                 answer=fallback_answer,
@@ -171,9 +213,13 @@ class LlmAnswerSynthesizer:
             # Degenerate case: verifier stripped everything (e.g. LLM emitted
             # only hallucinated citations). Serve the deterministic fallback
             # rather than an empty answer, but record what was stripped.
+            stats.record_fallback(REASON_CITATION_STRIPPED)
             logger.warning(
                 "LLM synthesis fully stripped by CitationVerifier; using deterministic fallback",
-                extra={"route": route},
+                extra={
+                    "route": route,
+                    "synthesis_fallback_reason": REASON_CITATION_STRIPPED,
+                },
             )
             return LlmRefineResult(
                 answer=fallback_answer,
@@ -181,6 +227,7 @@ class LlmAnswerSynthesizer:
                 synthesis_backend="deterministic-fallback",
                 llm_ms=llm_ms,
             )
+        stats.record_llm(llm_ms)
         return LlmRefineResult(
             answer=verified.cleaned_text,
             unverified_citations=verified.unverified_citations,
