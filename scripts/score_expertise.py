@@ -88,7 +88,7 @@ def score_researcher_expertise(cur) -> int:
     rows = cur.fetchall()
 
     # Fetch keywords per publication
-    cur.execute("SELECT publication_id, keyword_normalized FROM keywords;")
+    cur.execute("SELECT publication_id, keyword FROM keywords;")
     pub_kws: Dict[str, Set[str]] = {}
     for r in cur.fetchall():
         pub_kws.setdefault(str(r[0]), set()).add(str(r[1]).lower())
