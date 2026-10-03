@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.core.errors import register_error_handlers
+from backend.app.core.http import close_http_client, get_http_client
 from backend.app.core.logging import logger
 from backend.app.core.middleware import RateLimitingMiddleware, RequestTracingMiddleware
 from backend.app.db.pool import close_pool, init_pool
@@ -27,11 +28,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await init_pool()
     except Exception as exc:
         logger.error("Failed to initialize database pool on startup: %s", exc)
+    # Pre-warm shared httpx client (TCP keep-alive for Ollama calls)
+    get_http_client()
 
     yield
 
     logger.info("Shutting down AI-Bibliometrics FastAPI gateway...")
     await close_pool()
+    await close_http_client()
 
 
 def create_app() -> FastAPI:
