@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional, Sequence, Union
+
 from backend.app.models.ask import (
     EvidenceObject,
     EvidenceSourceRef,
@@ -15,6 +16,8 @@ from backend.app.models.ask import (
 )
 from backend.app.services.evidence.formatting import (
     format_citation,
+)
+from backend.app.services.evidence.formatting import (
     format_period as _format_period,
 )
 from backend.app.services.evidence.models import EvidenceItem, EvidenceSet
@@ -24,8 +27,12 @@ from backend.app.services.retrievers.graph_retriever import (
     GraphPublicationMeta,
     GraphRetrievalResult,
 )
+from backend.app.services.retrievers.hybrid_retriever import (
+    HybridRetrievalResult,
+)
 from backend.app.services.retrievers.sql_retriever import SqlRetrievalResult
 from backend.app.services.retrievers.vector_retriever import VectorRetrievalResult
+
 __all__ = ["EvidenceUnifier", "format_citation"]
 
 
@@ -491,6 +498,166 @@ class EvidenceUnifier:
             filters_ignored=filters_ign,
             sql_executed=sql_exec,
         )
+    @classmethod
+    def from_hybrid(
+        cls,
+        question: str,
+        result: HybridRetrievalResult,
+        filters: Optional[FilterParams] = None,
+    ) -> EvidenceSet:
+        """Normalize HybridRetrievalResult (topics, evolution, expertise, publications) into EvidenceSet."""
+        if result.is_empty:
+            return EvidenceSet(
+                query=question,
+                evidence_objects=[],
+                sources=[],
+                items=[],
+                filters_ignored=list(result.filters_ignored),
+                sql_executed=result.sql_executed,
+            )
+
+        period_str = _format_period(filters)
+        evidence_objects: List[EvidenceObject] = []
+        sources: List[SourceItem] = []
+        items: List[EvidenceItem] = []
+
+        # 1. Normalize supporting publication metadata into SourceItems and EvidenceSourceRefs
+        pub_refs: Dict[str, EvidenceSourceRef] = {}
+        for pid, pub in sorted(result.publications.items(), key=lambda kv: kv[0]):
+            ref = EvidenceSourceRef(
+                publication_id=pub.publication_id,
+                doi=pub.doi,
+                eid=pub.eid,
+                title=pub.title,
+                year=pub.year,
+            )
+            pub_refs[pid] = ref
+            sources.append(
+                SourceItem(
+                    publication_id=pub.publication_id,
+                    title=pub.title,
+                    year=pub.year,
+                    doi=pub.doi,
+                    source_type="analytics",
+                    relevance_score=1.0,
+                    provenance=f"publication_id:{pub.publication_id}",
+                )
+            )
+
+        # 2. Normalize topic evolution records
+        for item in result.topics:
+            emerging_tag = " (topik berkembang pesat)" if item.is_emerging else ""
+            claim_text = (
+                f"Topik '{item.topic_name}' tahun {item.year}: {item.publication_count} publikasi, "
+                f"{item.citation_count} sitasi, pertumbuhan YoY {item.growth_score:.4f}, "
+                f"akselerasi sitasi {item.citation_acceleration:.4f}{emerging_tag} ({period_str})"
+            )
+
+            evidence_objects.append(
+                EvidenceObject(
+                    claim=claim_text,
+                    metric="growth_score",
+                    value=round(item.growth_score, 4),
+                    period=str(item.year),
+                    sources=[],
+                    confidence=EvidenceRanker.calculate_analytics_confidence(),
+                )
+            )
+
+            items.append(
+                EvidenceItem(
+                    source_id=f"topic_evolution_{item.topic_id}_{item.year}",
+                    source_type="analytics",
+                    content=(
+                        f"Topik: {item.topic_name}, Tahun: {item.year}, Publikasi: {item.publication_count}, "
+                        f"Sitasi: {item.citation_count}, GrowthScore: {item.growth_score:.4f}, "
+                        f"CitationAcceleration: {item.citation_acceleration:.4f}, Emerging: {item.is_emerging}"
+                    ),
+                    score=1.0,
+                    confidence=EvidenceRanker.calculate_analytics_confidence(),
+                    metadata={
+                        "topic_id": item.topic_id,
+                        "topic_name": item.topic_name,
+                        "year": item.year,
+                        "publication_count": item.publication_count,
+                        "citation_count": item.citation_count,
+                        "growth_score": item.growth_score,
+                        "citation_acceleration": item.citation_acceleration,
+                        "recency_weight": item.recency_weight,
+                        "is_emerging": item.is_emerging,
+                    },
+                )
+            )
+
+        # 3. Normalize researcher expertise records
+        all_pub_refs = list(pub_refs.values())
+        for item in result.experts:
+            linked_sources = all_pub_refs[:2] if all_pub_refs else []
+
+            claim_text = (
+                f"Peneliti {item.author_name} teridentifikasi sebagai pakar pada topik '{item.topic_name}' "
+                f"dengan skor kepakaran {item.expertise_score:.4f} (relevansi: {item.relevance_score:.2f}, "
+                f"produktivitas: {item.productivity_score:.2f}, dampak sitasi: {item.impact_score:.2f}, "
+                f"kebaruan: {item.recency_score:.2f}, h-index topik: {item.h_index_topic}, "
+                f"kolaborator: {item.coauthor_network_size}) ({period_str})"
+            )
+
+            evidence_objects.append(
+                EvidenceObject(
+                    claim=claim_text,
+                    metric="expertise_score",
+                    value=round(item.expertise_score, 4),
+                    period=period_str,
+                    sources=linked_sources,
+                    confidence=EvidenceRanker.calculate_analytics_confidence(),
+                )
+            )
+
+            items.append(
+                EvidenceItem(
+                    source_id=f"researcher_expertise_{item.author_id}_{item.topic_id}",
+                    source_type="analytics",
+                    content=(
+                        f"Pakar: {item.author_name} (ID: {item.author_id}), Topik: {item.topic_name}, "
+                        f"Skor Kepakaran: {item.expertise_score:.4f}, Relevansi: {item.relevance_score:.2f}, "
+                        f"Produktivitas: {item.productivity_score:.2f}, Dampak: {item.impact_score:.2f}, "
+                        f"Kebaruan: {item.recency_score:.2f}, H-Index Topik: {item.h_index_topic}, "
+                        f"Publikasi Topik: {item.publication_count_topic}, Sitasi Topik: {item.citation_count_topic}, "
+                        f"Jejaring: {item.coauthor_network_size}"
+                    ),
+                    score=1.0,
+                    confidence=EvidenceRanker.calculate_analytics_confidence(),
+                    metadata={
+                        "author_id": item.author_id,
+                        "author_name": item.author_name,
+                        "topic_id": item.topic_id,
+                        "topic_name": item.topic_name,
+                        "expertise_score": item.expertise_score,
+                        "relevance_score": item.relevance_score,
+                        "productivity_score": item.productivity_score,
+                        "impact_score": item.impact_score,
+                        "recency_score": item.recency_score,
+                        "h_index_topic": item.h_index_topic,
+                        "publication_count_topic": item.publication_count_topic,
+                        "citation_count_topic": item.citation_count_topic,
+                        "coauthor_network_size": item.coauthor_network_size,
+                    },
+                )
+            )
+
+        ranked_ev = EvidenceRanker.rank_evidence_objects(evidence_objects)
+        ranked_src = EvidenceRanker.rank_sources(sources)
+        ranked_items = EvidenceRanker.rank_items(items)
+
+        return EvidenceSet(
+            query=question,
+            evidence_objects=ranked_ev,
+            sources=ranked_src,
+            items=ranked_items,
+            filters_ignored=list(result.filters_ignored),
+            sql_executed=result.sql_executed,
+        )
+
     @classmethod
     def from_analytics(
         cls,
