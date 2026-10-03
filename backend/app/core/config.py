@@ -33,6 +33,16 @@ def _project_root() -> pathlib.Path:
 load_dotenv(_project_root() / ".env", override=False)
 
 
+# Browser origins permitted by default (local development only). Overridden via
+# the comma-separated ``CORS_ORIGINS`` env var — see ``Settings.cors_origins``.
+DEFAULT_CORS_ORIGINS: list[str] = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
+
 class Settings(BaseModel):
     """Immutable runtime settings wired to the ``DB_URL`` in ``.env``."""
 
@@ -49,6 +59,19 @@ class Settings(BaseModel):
         default="extensions",
         description="PostgreSQL schema holding the pgvector extension "
         "(Supabase layout: 'extensions'; vanilla local installs: 'public').",
+    )
+    cors_origins: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_CORS_ORIGINS),
+        description="Browser origins allowed by CORSMiddleware. Comma-separated "
+        "via CORS_ORIGINS. Defaults to local dev origins only, so a deployed "
+        "frontend must set CORS_ORIGINS explicitly.",
+    )
+    rate_limit_rpm: int = Field(
+        default=60,
+        ge=1,
+        le=10_000,
+        description="Per-IP sliding-window request budget for /api/v1/ask "
+        "(docs/08 §3). Overridden via RATE_LIMIT_RPM.",
     )
 
     @field_validator("vector_schema")
@@ -72,6 +95,30 @@ def _parse_int_env(name: str, default: str) -> int:
         raise ValueError(f"Environment variable {name}={raw!r} is not a valid integer")
 
 
+def _parse_csv_env(name: str, default: list[str]) -> list[str]:
+    """Parse a comma-separated env var into an ordered, de-duplicated list.
+
+    Blank segments and surrounding whitespace/quotes are stripped. Setting the
+    variable to something that yields no usable entry is a configuration error
+    and fails fast, mirroring the ``VECTOR_SCHEMA`` validator — silently
+    falling back to localhost origins would look like a working app while every
+    real browser request is blocked by CORS.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    items: list[str] = []
+    for segment in raw.split(","):
+        value = segment.strip().strip("'\"")
+        if value and value not in items:
+            items.append(value)
+    if not items:
+        raise ValueError(
+            f"Environment variable {name} was set but produced no usable entries"
+        )
+    return items
+
+
 def _from_env() -> Settings:
     return Settings(
         db_url=(os.environ.get("DB_URL", "") or "").strip().strip("'\""),
@@ -82,6 +129,8 @@ def _from_env() -> Settings:
         embedding_dimension=_parse_int_env("EMBEDDING_DIMENSION", "1024"),
         ollama_timeout_s=_parse_int_env("OLLAMA_TIMEOUT_S", "8"),
         vector_schema=os.environ.get("VECTOR_SCHEMA", "extensions").strip(),
+        cors_origins=_parse_csv_env("CORS_ORIGINS", DEFAULT_CORS_ORIGINS),
+        rate_limit_rpm=_parse_int_env("RATE_LIMIT_RPM", "60"),
     )
 
 

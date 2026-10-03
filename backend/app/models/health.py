@@ -46,6 +46,59 @@ class EmbeddingServiceHealth(BaseModel):
     source: str = Field(default="pgvector (stored) + Ollama/HF", description="Embedding provider source")
 
 
+class SynthesisHealth(BaseModel):
+    """LLM answer-synthesis counters since process start.
+
+    Exists because synthesis degrades silently (docs/05 §7): every failure is
+    absorbed into the deterministic renderer, so HTTP status alone cannot reveal
+    that the narrative synthesis is not running at all. A ``fallback_rate`` at or
+    near ``1.0`` means the LLM path is effectively dead.
+
+    Counters are process-local and reset on restart — see
+    ``backend/app/services/synthesizer/stats.py`` for the full caveats.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    llm_calls: int = Field(
+        default=0,
+        description="Successful LLM syntheses since process start",
+    )
+    fallback_calls: int = Field(
+        default=0,
+        description="Degraded (deterministic-fallback) syntheses since start",
+    )
+    fallback_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Share of synthesis attempts served by the deterministic "
+        "renderer, 0.0-1.0",
+    )
+    fallback_by_reason: dict[str, int] = Field(
+        default_factory=dict,
+        description="Fallback counts per canonical reason (timeout, unreachable, "
+        "transport, http, empty, citation_stripped, unknown)",
+    )
+    last_llm_ms: float | None = Field(
+        default=None,
+        description="Wall time of the most recent successful LLM call in ms",
+    )
+    last_fallback_reason: str | None = Field(
+        default=None,
+        description="Canonical reason for the most recent fallback",
+    )
+    degraded: bool = Field(
+        default=False,
+        description="True once any attempt has fallen back",
+    )
+    scope: str = Field(
+        default="process",
+        description="Counter scope. Always 'process': counters reset on restart "
+        "and are not shared across workers",
+    )
+
+
 class HealthResponse(BaseModel):
     """Unified system health check response."""
 
@@ -56,6 +109,12 @@ class HealthResponse(BaseModel):
     database: DatabaseHealth
     llm_service: LLMServiceHealth
     embedding_service: EmbeddingServiceHealth
+    synthesis: SynthesisHealth = Field(
+        default_factory=SynthesisHealth,
+        description="LLM answer-synthesis counters since process start; the only "
+        "signal that distinguishes a working LLM from one that silently never "
+        "succeeds",
+    )
     evidence_layer_ready: bool = Field(
         default=False,
         description="True if Phase 5 Evidence layer (EvidenceUnifier + EvidenceRanker + EvidenceSet) imports and exposes its canonical API",

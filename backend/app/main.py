@@ -9,7 +9,9 @@ import contextlib
 from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
+from backend.app.core.config import get_settings
 from backend.app.core.errors import register_error_handlers
 from backend.app.core.http import close_http_client, get_http_client
 from backend.app.core.logging import logger
@@ -41,6 +43,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Application factory configuring middleware, routes, and security boundaries."""
 
+    settings = get_settings()
+
     app = FastAPI(
         title="AI-Bibliometrics Research Intelligence API",
         description="Evidence-grounded research intelligence and STI policy assistant API.",
@@ -57,23 +61,24 @@ def create_app() -> FastAPI:
     # 2. Add HTTP Middlewares (Starlette executes last-added outermost,
     # so add inner-most first: RateLimit -> Tracing -> CORS gives
     # CORS -> Tracing -> RateLimit execution, keeping X-Request-ID on 429s)
-    # Rate limiting: 20 requests/min per IP per docs/08 section 3
+    # Rate limiting: per-IP sliding window, docs/08 section 3. Value comes from
+    # RATE_LIMIT_RPM (default 60) rather than a literal, so a deployment can
+    # retune without a code change.
     # (innermost, runs inside tracing)
-    app.add_middleware(RateLimitingMiddleware, requests_per_minute=20)
+    app.add_middleware(
+        RateLimitingMiddleware, requests_per_minute=settings.rate_limit_rpm
+    )
 
     # Tracing: UUIDv4 request_id generation & latency measurement
     app.add_middleware(RequestTracingMiddleware)
 
-    # CORS: Restricted origins
-    origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]
+    # CORS: explicit allow-list from CORS_ORIGINS (default: local dev origins
+    # only). Never use a wildcard here — the API is credentialed
+    # (allow_credentials=True), and this endpoint must not become reachable from
+    # an arbitrary page once deployed.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
@@ -82,6 +87,20 @@ def create_app() -> FastAPI:
     # 3. Mount Routers
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(ask_router, prefix="/api/v1")
+
+    # Prometheus exposition for the synthesis fallback counters. Imported lazily
+    # so a missing prometheus_client degrades only this endpoint instead of
+    # preventing the whole gateway from booting.
+    @app.get("/metrics", tags=["Observability"])
+    async def metrics() -> Response:
+        """Expose synthesis counters in Prometheus text exposition format."""
+        from prometheus_client import CONTENT_TYPE_LATEST
+
+        from backend.app.core.metrics import render_metrics
+
+        return Response(
+            content=render_metrics(), media_type=CONTENT_TYPE_LATEST
+        )
 
     # Root alias endpoint
     @app.get("/", tags=["Root"])
@@ -92,6 +111,7 @@ def create_app() -> FastAPI:
             "status": "operational",
             "docs": "/docs",
             "health": "/api/v1/health",
+            "metrics": "/metrics",
         }
 
     return app

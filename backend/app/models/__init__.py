@@ -16,6 +16,7 @@ from backend.app.models.health import (
     EmbeddingServiceHealth,
     HealthResponse,
     LLMServiceHealth,
+    SynthesisHealth,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "HealthResponse",
     "LLMServiceHealth",
     "SourceItem",
+    "SynthesisHealth",
 ]
