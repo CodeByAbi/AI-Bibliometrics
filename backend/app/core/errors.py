@@ -6,7 +6,8 @@ Docs Reference: docs/06 Api Design.md §7, docs/08 Security.md §3.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any
+
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -25,7 +26,7 @@ class AppException(Exception):
         message: str,
         error_type: str = "internal_error",
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
-        details: Optional[Any] = None,
+        details: Any | None = None,
     ):
         super().__init__(message)
         self.message = message
@@ -62,7 +63,7 @@ class RateLimitExceededError(AppException):
 class ASTValidationError(AppException):
     """SQL AST query validation failed."""
 
-    def __init__(self, message: str, details: Optional[Any] = None):
+    def __init__(self, message: str, details: Any | None = None):
         super().__init__(
             message=message,
             error_type="sql_generation_failed",
