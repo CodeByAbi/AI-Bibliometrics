@@ -1,10 +1,9 @@
 # SRD — Dokumen Kebutuhan Sistem (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
+**Versi Dokumen:** 3.6.3 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
-**Menggantikan:** `02 SRD.md` Draft v2 s.d. v3.5.0  
+**Menggantikan:** `02 SRD.md` v3.6.2 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 > **Kontrak API & Realitas Infrastruktur:** Kontrak API target adalah `POST /api/v1/ask` dan `GET /api/v1/health` (lihat `docs/06 Api Design.md`). Seluruh modul aplikasi backend, pipeline embedding, dan antarmuka UI berstatus PLANNED / NOT IMPLEMENTED di repositori; basis data PostgreSQL prototipe yang memuat 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) sudah dibuat dan siap pakai. **Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) DONE; generate + insert embedding/vector ke pgvector (Task 1) PENDING dan belum selesai.**
 
 ---
@@ -39,7 +38,7 @@
 - FR4.1: Pertanyaan di-embed dengan model embedding yang sama dengan saat indexing `chunks`: `BAAI/bge-m3` (1024-dim, Float32).
 - FR4.2: Pencarian similaritas (similarity search; jarak Cosine pgvector `<=>`) mengembalikan top-K chunk paling relevan dari `chunks.embedding` menggunakan indeks HNSW (`m=16, ef_construction=64`).
 - FR4.3: Chunks dikaitkan kembali ke `publications.publication_id` asal untuk metadata sitasi (`[Title, Year, DOI]` / `[Title, Year, no-doi]`).
-- FR4.4: Hasil pencarian vector dideduplikasi menurut `publication_id` SEBELUM LIMIT — `DISTINCT ON (p.publication_id) LIMIT 8` berarti 8 publikasi unik, bukan baris chunk yang tumpang tindih.
+- FR4.4: Hasil pencarian vector dideduplikasi menurut `publication_id` SEBELUM LIMIT — deduplikasi dijalankan pada hasil jendela ANN dengan `DISTINCT ON (ac.publication_id)`, lalu `LIMIT 8`, sehingga hasilnya 8 publikasi unik, bukan baris chunk yang tumpang tindih. Deduplikasi harus berada DI LUAR jendela ANN: `ORDER BY publication_id` di depan operator jarak membuat plansyenya memindai penuh dan indeks HNSW tidak dapat dilayani (`docs/05 §5.2`).
 - FR4.5: Similarity Threshold Gate: kueri dengan nilai kemiripan $< 0.65$ diarahkan ke `status: not_found`, top-K tidak dipaksakan.
 
 ### FR5 — Sintesis Jawaban
