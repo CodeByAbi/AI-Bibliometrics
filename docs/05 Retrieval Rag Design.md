@@ -1,15 +1,15 @@
 # Desain Retrieval & RAG — Hybrid Multi-Rute (SQL + Vector + Graph + Analitik)
 
-**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — sintesis LLM opt-in, prioritas routing, evidence live)  
+**Versi Dokumen:** 3.8.0 (Fase 8 IN PROGRESS — gate `<200ms` nol-bukti R2a, audit `AC-RAG` ke-5 item)  
 **Tanggal Status:** 2026-10-03  
-**Menggantikan:** `05 Retrieval Rag Design.md` v3.6.4 (2026-10-02)
+**Menggantikan:** `05 Retrieval Rag Design.md` v3.7.2 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 > **Status Implementasi (Sinkronisasi Progress 2026-10-03):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
 > 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` (DOI + year strict + Jaccard title) + `GraphRetriever` T1-T4 parameterized + `HybridRetriever` (Gold Analytics: `topics`, `topic_evolution`, `researcher_expertise`) + `EvidenceUnifier` (termasuk `from_hybrid`) + `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` + sintesis LLM opt-in Qwen2.5-Coder (fallback deterministik) + wiring penuh 4-route di `POST /api/v1/ask` + 333 tests terkumpul hijau (319 unit+integration satu run; E2E 12 mock hijau + 2 live-only) + 14/14 live E2E queries passed.  
 > 3. **Semua 4 rute RAG (SQL, Vector, Graph, Hybrid) kini LIVE dan terverifikasi.**  
-> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding`, validasi jalur kolaborasi graf pada tabel edge, serta analisis tren topik dan kepakaran peneliti pada tabel Gold kini beroperasi penuh end-to-end.
+> 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding`, validasi jalur kolaborasi graf pada tabel edge, serta analisis tren topik dan kepakaran peneliti pada tabel Gold kini beroperasi penuh end-to-end.  
+> 5. **Fase 8 `[IN PROGRESS]` — gate `<200ms` nol-bukti:** target `AC-RAG-4` dikejar lewat tuning encoder CPU pada `VectorRoute` dengan parity test; opsi R2a.2 (re-scope per-route) memerlukan persetujuan owner dan R2a.3 (pre-probe leksikal) ditolak di Fase 8. Rincian di `reports/fase8_execution_plan.md` §5 dan catatan di §8.
 ---
 
 ## 1. Tujuan
@@ -160,31 +160,35 @@ class EvidenceObject(BaseModel):
 - **Model**: `BAAI/bge-m3` (Dense 1024 dimensi, Float32).
 > **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
 - **Cosine Similarity Gate**: $\ge 0.65$.
-- **Kueri SQL Terparameterisasi** (bentuk CTE — deduplikasi SEBELUM limit, FR4.4):
+- **Kueri SQL Terparameterisasi** (dua tahap — ANN ber-indeks HNSW lalu deduplikasi per naskah, FR4.4):
   ```sql
-  WITH scored_chunks AS (
-      SELECT DISTINCT ON (p.publication_id)
-          p.publication_id,
-          p.eid,
-          p.doi,
-          p.title,
-          p.year,
-          p.citation_count,
-          c.chunk_id,
-          c.chunk_text,
-          1 - (c.embedding OPERATOR(extensions.<=>) '<vector_1024d>'::extensions.vector) AS similarity_score
+  WITH ann_candidates AS (          -- $2 = overfetch ANN (25x limit, minimum 100)
+      SELECT p.publication_id, p.eid, p.doi, p.title, p.year, p.citation_count,
+             c.chunk_id, c.chunk_text,
+             (c.embedding OPERATOR(extensions.<=>) $1::extensions.vector) AS distance
       FROM chunks c
       JOIN publications p ON p.publication_id = c.publication_id
       WHERE c.embedding IS NOT NULL
-        AND (1 - (c.embedding OPERATOR(extensions.<=>) '<vector_1024d>'::extensions.vector)) >= $1  -- $1 = ambang 0.65
-      ORDER BY p.publication_id, (c.embedding OPERATOR(extensions.<=>) '<vector_1024d>'::extensions.vector) ASC
+        -- filter publikasi (year / document_type / country / author / institution) di $5..
+      ORDER BY (c.embedding OPERATOR(extensions.<=>) $1::extensions.vector) ASC
+      LIMIT $2
+  ),
+  scored_chunks AS (               -- $3 = ambang 0.65
+      SELECT DISTINCT ON (ac.publication_id)
+          ac.publication_id, ac.eid, ac.doi, ac.title, ac.year, ac.citation_count,
+          ac.chunk_id, ac.chunk_text,
+          1 - ac.distance AS similarity_score
+      FROM ann_candidates ac
+      WHERE (1 - ac.distance) >= $3
+      ORDER BY ac.publication_id, ac.distance ASC
   )
   SELECT *
   FROM scored_chunks
   ORDER BY similarity_score DESC
-  LIMIT $2;  -- $2 = 8 publikasi unik
+  LIMIT $4;                        -- $4 = 8 publikasi unik
   ```
-   > Catatan implementasi: literal vektor diinterpolasi (bukan `$N`) karena `asyncpg` tidak memiliki codec pgvector — aman de facto karena setiap elemen adalah float finite tervalidasi dengan format tetap (`f"{v:.8f}"`), tanpa teks pengguna, dan diredaksi menjadi `[vector_1024d]` pada debug. Ambang, filter, ID, dan limit tetap terparameterisasi (`$N`). Kualifikasi skema mengikuti setting `VECTOR_SCHEMA` tervalidasi (default `extensions` = layout Supabase, terverifikasi live `extensions/vector 0.8.2`; instalasi lokal vanilla memakai `public`) — nilai selain identifier SQL polos ditolak fail-fast saat startup. CTE dalam tidak ber-`LIMIT` sehingga `LIMIT 8` luar = 8 publikasi unik (bukan 8 baris chunk).
+   > **Kenapa dua tahap (invarian index):** indeks HNSW hanya memasok baris terurut berdasarkan jarak. Bentuk satu-tahap `DISTINCT ON (p.publication_id) … ORDER BY p.publication_id, <jarak>` menempatkan `publication_id` di depan operator jarak, sehingga plansyenya memindai penuh + top-N sort dan indeks HNSW tidak pernah dipakai. Karena itu deduplikasi harus berada DI LUAR jendela ANN: jendela ANN diurutkan murni oleh operator `<=>` (yang membuat HNSW tetap bisa dipakai), baru `DISTINCT ON` dijalankan pada hasilnya. Konsekuensinya jendela ANN harus *overfetch* (`ANN_OVERFETCH_MULTIPLIER = 25`, minimum 100, maksimum 2000) — `DISTINCT ON` membuang semua chunk duplikat dari satu naskah, sehingga `LIMIT 8` langsung atas chunk akan sering menyusut di bawah 8 publikasi.
+   > Catatan implementasi: literal vektor **di-bind** sebagai `$1`, bukan diinterpolasi — `asyncpg` memperoleh codec `vector` dari `pool._init_connection` (`backend/app/db/pool.py`), dan binding wajib karena operator `<=>` dirujuk dua kali (proyeksi + `ORDER BY`) sehingga interpolasi akan menambah ~22KB teks kueri per parse/plan. Vektor tetap wajib melewati `validate_embedding_vector` (float finite, dimensi 1024) — codec adalah detail transport, bukan batas validasi. `hnsw.ef_search` dinaikkan ke `100` per koneksi (`set_config(..., false)`) karena default 40 disesuaikan untuk scan `LIMIT k` biasa, sedangkan recall efektif menyusut saat deduplikasi ditumpuk di atas hasil ANN. Kualifikasi skema mengikuti setting `VECTOR_SCHEMA` tervalidasi (default `extensions` = layout Supabase, terverifikasi live `extensions/vector 0.8.2`; instalasi lokal vanilla memakai `public`) — nilai selain identifier SQL polos ditolak fail-fast saat startup.
 
 ### 5.3 `GraphRoute` — Jaringan Kolaborasi
 - **Status:** `[IMPLEMENTED — VERIFICATION PENDING]` — unit 19 + integration 6 + E2E mock hijau; live E2E (Task 12) pending.
@@ -312,6 +316,10 @@ flowchart LR
 - [ ] **AC-RAG-4**: Hasil kueri kosong menghasilkan short-circuit deterministik (`status: not_found`, 0 panggilan LLM, latensi < 200ms).
 - [ ] **AC-RAG-5**: Modul `CitationVerifier` memvalidasi seluruh sitasi inline secara post-hoc di level kode (§7) dengan dukungan `[Judul, Tahun, DOI]` dan `[Judul, Tahun, no-doi]`.
 
+> **Catatan Fase 8 — `AC-RAG-4` sedang dikejar (2026-10-03).** Baseline `reports/fase7_closeout.md` §5 mengukur `not_found` via `VectorRoute` = 246ms (194ms di luar target 200ms), dengan 193ms di antaranya `model.encode` bge-m3 pada CPU untuk kueri baru. Kueri berulang sudah gratis karena query-embedding cache (`_QUERY_CACHE`, TTL 3600 detik, 256 entri, `backend/app/services/embedding.py:25-46`), sehingga angka 246ms adalah cold path.
+>
+> Rute SQL, Graph, dan Hybrid sudah berada di bawah 200ms (119–122ms), sehingga gap hanya ada pada `VectorRoute` yang memang wajib melakukan dense retrieval. Urutan pengerjaan yang disetujui: **R2a.1** tuning encoder CPU (`torch.inference_mode()` + `set_num_threads`) dengan parity test pengunci cosine ≈ 1.0 terhadap vektor pra-perubahan — **R2a.2** re-scope `AC-RAG-4` menjadi per-route (mengubah kriteria penerimaan, perlu persetujuan owner) — dan **R2a.3** pre-probe leksikal sebelum embedding **ditolak di Fase 8** karena korpus prototipe hanya 40 chunk / 20 publikasi sehingga false-negative tidak dapat diukur, dan risiko merusak nilai semantik `VectorRoute`. Detail di `reports/fase8_execution_plan.md` §5.
+
 ---
 
 ## 9. Matriks Konsistensi Keputusan (Lintas Dokumen)
@@ -351,6 +359,7 @@ flowchart LR
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/05 Retrieval Rag Design.md` v3.8.0 | Tambah status item 5 (Fase 8 IN PROGRESS) dan Catatan Fase 8 pada §8: `AC-RAG-4` (latensi nol-bukti `<200ms`) statusnya **dikejar**, dipecah menjadi R2a.1 (tuning encoder CPU + parity test, eksekusi), R2a.2 (re-scope per-route, perlu persetujuan owner), R2a.3 (pre-probe leksikal, ditolak di Fase 8); dicatat bahwa query-embedding cache sudah membuat kueri berulang gratis sehingga gap hanya pada cold path, dan rute SQL/Graph/Hybrid sudah di bawah 200ms | Gate Fase 7 ditutup dengan target `<200ms` nol-bukti dicatat sebagai MARGINAL (`reports/fase7_closeout.md` §5 R2); owner memutuskan untuk mengejar target tersebut pada 2026-10-03. Detail di `reports/fase8_execution_plan.md` §5 |
 | `docs/05 Retrieval Rag Design.md` v3.7.1 | Close-out Fase 7: sintesis LLM opt-in (`llm_synthesis`, Qwen2.5-Coder + fallback deterministik + `synthesis_backend`); prioritas routing multi-intent didokumentasikan; perilaku TOPIC_TRENDS tanpa sources + centroid-fallback didokumentasikan; angka tests diganti hasil ukur (329 terkumpul: 315 unit+integration hijau, 14/14 live E2E) | Eksekusi review Fase 7 2026-10-03: integrasi LLM (B1-b), verifikasi live B2/B3, benchmark NFR, probe adversarial; laporan `reports/fase7_closeout.md` |
 | `docs/05 Retrieval Rag Design.md` v3.7.0 | Sinkronisasi Fase 7: `HybridRoute` dari BLOCKED ke LIVE (Task 8.5 Gold Analytics materialization, HybridRetriever, EvidenceUnifier.from_hybrid, HybridAnswerSynthesizer, unified AnswerSynthesizer, wiring POST /api/v1/ask); 4 rute RAG kini beroperasi penuh dengan 324 tests hijau | Review Phase 7 2026-10-03: seluruh komponen retrieval, unifikasi bukti, sintesis ter-grounding, dan verifikasi sitasi 4-rute telah diimplementasikan dan diverifikasi |
 | `docs/05 Retrieval Rag Design.md` v3.6.4 | Sinkronisasi Fase 6: `GraphRoute` dari BLOCKED ke LIVE (Task 8-retriever); tambah spesifikasi T2/T3/T4 (T3 wildcard-escape, T4 ego-BFS + guard siklus); `from_graph` fail-closed; `CitationVerifier` Jaccard ≥0.8 + DOI-year strict; HybridRoute masih BLOCKED (Task 8.5) | Review Phase 6 2026-10-02: kode + 261 tests membuktikan graph retrieval + evidence + synthesizer + wiring GraphRoute sudah ada; dokumen lama masih menyatakan BLOCKED |
