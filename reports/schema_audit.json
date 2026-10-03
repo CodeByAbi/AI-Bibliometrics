@@ -1,8 +1,11 @@
 {
-  "generated_at": "2026-10-02T21:25:52.919507+00:00",
+  "generated_at": "2026-10-03T20:18:42.506646+00:00",
   "driver": "psycopg3",
   "target": "postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres",
   "db_user": "postgres",
+  "auditor_is_superuser": false,
+  "privilege_checked_role": "app_readonly",
+  "runtime_role_exists": true,
   "status": "MATCH",
   "errors": [],
   "warnings": [
@@ -31,6 +34,7 @@
     "extra column (prototype-tolerated): chunks.embedding_version",
     "extra column (prototype-tolerated): chunks.embedding_dimension"
   ],
+  "fk_index_gaps": [],
   "tables": {
     "publications": {
       "missing_columns": [],
