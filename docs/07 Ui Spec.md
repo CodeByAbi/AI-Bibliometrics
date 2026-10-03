@@ -1,13 +1,13 @@
-# Spesifikasi UI — Anti-Slop, Dense Layout (Consolidated Hybrid Master Blueprint)
+﻿# Spesifikasi UI — Anti-Slop, Dense Layout (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `07 Ui Spec.md` Draft v2 s.d. v3.5.0  
+**Versi Dokumen:** 3.7.0 (Task 11 IN PROGRESS — pemetaan audit `AC-UI-1..7` ke implementasi on-disk)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `07 Ui Spec.md` v3.6.2 (2026-09-27)  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 
 > **Status Implementasi (Sinkronisasi Progress 2026-09-29):**  
 > 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal untuk validasi end-to-end. Kredensial diamankan secara internal.  
-> 2. **Implementasi UI (PLANNED, Task 11):** Spesifikasi antarmuka Next.js di bawah ini normatif untuk fase implementasi. Kerangka backend FastAPI + DB pool + Ollama (Phase 0–2) sudah DONE; direktori `frontend/` masih PLANNED.
+> 2. **Implementasi UI (`[IN PROGRESS]`, Task 11):** Implementasi **sudah ada** di working tree pada `frontend/components/Workspace/` (±2.600 baris) plus test vitest (±900 baris), seluruhnya **untracked** dan belum diverifikasi. Audit terhadap `AC-UI-1..7` (§6) adalah workstream E Fase 8 (`reports/fase8_execution_plan.md` §7). Pemetaan AC ke komponen: `AC-UI-1` → `WorkspaceCanvas.tsx` + `Workspace.tsx`; `AC-UI-2` → `EvidenceCard.tsx` + `ProvenanceRail.tsx`; `AC-UI-3` → `StateBar.tsx`; `AC-UI-4` → `PipelineTrail.tsx`; `AC-UI-5` → `ClarifyPanel.tsx`; `AC-UI-6` → `NotFoundPanel.tsx`; `AC-UI-7` → `ErrorBoundary.tsx` + `lib/errors.ts`. **Normatif:** bila implementasi menyimpang dari spesifikasi di bawah, `docs/07` yang di-update — bukan ACS baru tanpa persetujuan.  
 > 3. **Sinkronisasi Progress 2026-09-29:** Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) **DONE**; vector storage + HNSW (Task 1) **DONE**; edge tables (Task 8) **DONE**.
 
 ---
@@ -149,6 +149,8 @@ Menampilkan blok kode SQL/CTE `font-mono`, alasan perutean (routing), serta rinc
 - [ ] **AC-UI-6**: Status `not_found` menampilkan (render) banner netral tanpa halusinasi LLM.
 - [ ] **AC-UI-7**: Status error menampilkan pesan ramah tanpa kebocoran SQL mentah/traceback.
 
+> **Status pencentangan (Fase 8, 2026-10-03):** seluruh 7 item masih `[ ]` dan **tidak boleh** dicentang hanya karena komponen ada di disk. Pencentangan menuntut bukti: nama test vitest atau smoke live untuk status terkait, dan `npm run verify` + `npm run build` hijau. Item yang gagal diuji tetap dicentang dengan catatan deviasi tertulis, bukan dibiarkan `[ ]` atau dipalsukan. Lihat `reports/fase8_execution_plan.md` §7–§8.
+
 ---
 
 ## 7. Matriks Konsistensi Keputusan (Lintas Dokumen)
@@ -188,6 +190,7 @@ Menampilkan blok kode SQL/CTE `font-mono`, alasan perutean (routing), serta rinc
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/07 UI Spec.md` v3.7.0 | Status Implementasi item 2 dari "PLANNED, `frontend/` masih PLANNED" ke `[IN PROGRESS]` dengan pemetaan `AC-UI-1..7` ke komponen on-disk di `frontend/components/Workspace/`; §6 diberi aturan pencentangan berbasis bukti; versi naik ke 3.7.0 | Implementasi UI sudah ada di working tree (±2.600 baris + ±900 baris test, untracked) sehingga statement "`frontend/` masih PLANNED" sudah tidak benar; audit `AC-UI-1..7` adalah workstream E Fase 8 (`reports/fase8_execution_plan.md` §7) |
 | `docs/07 UI Spec.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Dense Layout`, `Vector Storage`, `Dynamic 4-Route`, dll); sync status Phase 0–2 DONE | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/07 UI Spec.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/07 UI Spec.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; vector storage PENDING | Sinkronisasi progress aktual 2026-09-27 |

@@ -1,3 +1,5 @@
+import { NetworkError, isAbortError, parseBackendError, withRetry } from "./errors";
+
 export type RouteKind = "SQLRoute" | "VectorRoute" | "GraphRoute" | "HybridRoute";
 export type StatusKind = "ok" | "not_found" | "needs_clarification" | "error";
 export type SourceType = "sql" | "vector" | "graph" | "analytics";
@@ -52,6 +54,10 @@ export interface AskResponse {
     sql_executed?: string | null;
     route_reasoning?: string | null;
     latency_breakdown_ms?: Record<string, number> | null;
+    scored_chunks?: Array<Record<string, unknown>> | null;
+    embedding_backend?: string | null;
+    synthesis_backend?: string | null;
+    evidence_set?: Record<string, unknown> | null;
   } | null;
 }
 
@@ -64,17 +70,33 @@ export async function postAsk(
   signal?: AbortSignal,
   filters?: Record<string, string | number | null | undefined>,
 ): Promise<AskResponse> {
-  const res = await fetch(`${API_BASE}/api/v1/ask`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, filters: filters ?? {}, developer_mode: developerMode }),
-    signal,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Backend ${res.status}: ${text.slice(0, 200) || res.statusText}`);
-  }
-  return (await res.json()) as AskResponse;
+  // One id per user action, minted outside the retry closure: a retry is the
+  // same request, so the backend trace stays a single correlated record.
+  const requestId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const doFetch = async (): Promise<AskResponse> => {
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/api/v1/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
+        body: JSON.stringify({ question, filters: filters ?? {}, developer_mode: developerMode }),
+        signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw new NetworkError(error instanceof Error ? `Backend unreachable: ${error.message}` : "Backend unreachable");
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw await parseBackendError(res, text);
+    }
+    return (await res.json()) as AskResponse;
+  };
+  // One transient retry (5xx/429/network only — never 4xx, never aborts).
+  return withRetry(doFetch, { maxAttempts: 2 });
 }
 
 /* ------------------------------------------------------------------ */

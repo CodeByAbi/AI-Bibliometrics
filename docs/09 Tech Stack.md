@@ -1,10 +1,9 @@
 # Tech Stack — Rekomendasi & Rasional (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris; tanpa perubahan keputusan teknis)  
+**Versi Dokumen:** 3.6.3 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris; tanpa perubahan keputusan teknis)  
 **Tanggal Status:** 2026-09-27  
-**Menggantikan:** `09 Tech Stack.md` Draft v2 s.d. v3.6.1  
+**Menggantikan:** `09 Tech Stack.md` v3.6.2 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 > **Status Implementasi & Realitas Stack (Sinkronisasi Progress 2026-09-29):**  
 > 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal.  
 > 2. **Implementasi Aplikasi (Phase 0–2 DONE):** Kerangka FastAPI (`backend/app/`), pool async, `GET /api/v1/health`, kontrak `POST /api/v1/ask`, middleware tracing, rate limiting, logging terstruktur, dan client Ollama sudah terverifikasi (23 tests pass). `frontend/` masih PLANNED (Task 11).
@@ -55,7 +54,7 @@ Batasan keras: khusus CPU, tanpa budget GPU untuk fase MVP. Ini membatasi piliha
 - **(a) Kolom vektor + metadata pada `chunks` (Task 1):** `embedding vector(1024)` + `embedding_model DEFAULT 'BAAI/bge-m3'` + `embedding_version DEFAULT 'v1.0'` + `embedding_dimension DEFAULT 1024`. Kaitan kembali ke artikel asal via `chunks.publication_id FK → publications.publication_id` (tidak ada kolom baru).
 - **(b) Format input embedding (terkunci):** teks terkonstruksi `Title: {title}\nAbstract: {abstract}` dari `publications.title` + `chunks.chunk_text` (`section = 'title_abstract'`), batch 32–64, idempotent resume (`docs/12 §4`, `docs/10 Task 1a–1d`).
 - **(c) Indeks HNSW:** `idx_chunks_embedding_hnsw USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)` + `idx_chunks_pub_id ON chunks (publication_id)` + `ANALYZE chunks` setelah Task 1c.
-- **(d) Kontrak retrieval `VectorRoute`:** operator `<=>` (cosine), gerbang `>= 0.65` (di bawah ambang → `status: not_found` deterministik tanpa LLM), `DISTINCT ON (p.publication_id) LIMIT 8` = 8 publikasi unik + join metadata `title/year/doi/eid` untuk sitasi `[Judul, Tahun, DOI]` / `[Judul, Tahun, no-doi]` (`docs/05 §5.2`).
+- **(d) Kontrak retrieval `VectorRoute`:** operator `<=>` (cosine), gerbang `>= 0.65` (di bawah ambang → `status: not_found` deterministik tanpa LLM), jendela ANN ber-*overfetch* (25× limit, min 100, maks 2000) yang diurutkan murni oleh operator jarak, lalu `DISTINCT ON` di luar jendela + `LIMIT 8` = 8 publikasi unik + join metadata `title/year/doi/eid` untuk sitasi `[Judul, Tahun, DOI]` / `[Judul, Tahun, no-doi]` (`docs/05 §5.2`). Vektor kueri di-*bind* sebagai `$1` lewat codec `vector` (`pool._init_connection`), bukan diinterpolasi.
 - **(e) Indeks vektor turunan kedua (Task 8.5, PLANNED):** `topics.representation_vector vector(1024)` (centroid `BAAI/bge-m3` rata-rata anggota klaster) + `idx_topics_rep_vector_hnsw USING hnsw (representation_vector vector_cosine_ops) WITH (m = 16, ef_construction = 64)` untuk routing semantik topik pada `HybridRoute` (`docs/04 §7.1`). Bukan pengganti `chunks.embedding`.
 
 ---

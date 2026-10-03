@@ -1,10 +1,9 @@
 # Keamanan — MVP Akses Internal (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `08 Security.md` Draft v2 s.d. v3.5.0  
+**Versi Dokumen:** 3.8.1 (Fase 8 — R1 dicatat sebagai tindakan pemilik, guard primer tidak berubah)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `08 Security.md` v3.8.0
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 > **Status Implementasi & Kesiapan Basis Data (Sinkronisasi Progress 2026-09-27):**  
 > 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal dan tidak pernah diekspos di kode atau repositori.  
 > 2. **Kontrol Keamanan Runtime:** Seluruh akses kueri dari backend FastAPI diwajibkan menggunakan role database berhak-baca-saja (`app_readonly`), validasi AST `sqlglot`, parameterisasi kueri, statement timeout 10 detik, dan perlindungan isolasi prompt.
@@ -41,6 +40,10 @@ Invarian Sesi Koneksi:
 - **`SET search_path = public` per session** saat backend membuat koneksi dari pool. Menutup vektor manipulasi `search_path` dari SELECT yang lolos whitelist (mencegah akses objek dengan nama sama di skema lain).
 - **Jalankan ulang grant setelah membuat objek baru di schema `public`**: Saat tabel edge (`institution_collaboration`, `author_collaboration`), kolom `chunks.embedding`, atau tabel Gold (`topics`, `topic_evolution`, `researcher_expertise`) dibuat di kemudian hari, jalankan ulang `GRANT SELECT` untuk `app_readonly`.
 
+> **Status nyata per 2026-10-03 (risiko R1, masih terbuka):** `.env` `DB_URL` masih menunjuk role **`postgres`**, bukan `app_readonly` (terverifikasi lewat `check_db_health()`; `rolsuper=false`, tetapi merupakan owner). Konsekuensinya **penolakan write tidak ditegakkan pada level role**; guard primer yang aktif adalah AST whitelist `sqlglot` + templat terparameterisasi. `GRANT SELECT app_readonly` sendiri sudah terkonfirmasi pada tabel Silver, Edge, dan Gold.
+>
+> **Keputusan owner 2026-10-03:** migrasi `.env` ke `app_readonly` **tidak dieksekusi agent** pada Fase 8. Yang dilakukan adalah mendokumentasikan prosedur (DDL di atas) + langkah verifikasi ulang `role` melalui `GET /api/v1/health` di `reports/fase8_signoff.md` sebagai tindakan pemilik. **R1 tidak menutup risiko ini** dan harus tetap terbuka di luar Fase 8.
+
 ### 1.2 Batas Koneksi & Timeout
 - **Timeout Statement**: Diatur di tingkat koneksi (`SET statement_timeout = '10s'`) untuk mencegah kueri tidak efisien atau pemindaian (scan) vector tanpa indeks membebani database bersama.
 - **Pooling Koneksi (Connection Pooling)**: Pool koneksi asynchronous (`asyncpg` / `psycopg3`) dengan batas maksimum konkurensi terkontrol dari backend FastAPI.
@@ -54,7 +57,7 @@ Invarian Sesi Koneksi:
 ## 2. Pertahanan Injeksi SQL & Injeksi Prompt
 
 ### 2.1 Vektor Ancaman
-1. **Injeksi SQL Klasik**: Ditutup melalui arsitektur Text-to-SQL dengan validasi AST (`sqlglot`) pada `SQLRoute`, serta parameterisasi kueri (`$1`, `$2`) pada `VectorRoute`, `GraphRoute`, dan `HybridRoute` — dengan satu pengecualian terdokumentasi: literal vektor 1024-d pada `VectorRoute` diinterpolasi (bukan `$N`) karena `asyncpg` tidak memiliki codec pgvector; aman de facto karena setiap elemen adalah float finite tervalidasi (`validate_embedding_vector`, format `f"{v:.8f}"`, tanpa teks pengguna) dan diredaksi menjadi `[vector_1024d]` pada debug (lihat `docs/05 §5.2`). Kualifikasi skema operator (`VECTOR_SCHEMA`) divalidasi sebagai identifier SQL polos di `Settings`.
+1. **Injeksi SQL Klasik**: Ditutup melalui arsitektur Text-to-SQL dengan validasi AST (`sqlglot`) pada `SQLRoute`, serta parameterisasi kueri (`$1`..`$N`) pada `VectorRoute`, `GraphRoute`, dan `HybridRoute`. **Tidak ada lagi pengecualian parameterisasi**: literal vektor 1024-d pada `VectorRoute` semula diinterpolasi karena `asyncpg` tidak memiliki codec pgvector, namun kini di-*bind* sebagai `$1` lewat codec `vector` yang didaftarkan di `pool._init_connection` (`backend/app/db/pool.py`). Vektor tetap wajib melewati `validate_embedding_vector` (float finite, dimensi 1024) sebelum di-*bind* — codec adalah detail transport, bukan batas validasi — dan karena di-*bind*, vektor 1024-d tidak pernah muncul di teks kueri maupun di `sql_executed` yang dilaporkan pada debug. Kualifikasi skema operator (`VECTOR_SCHEMA`) divalidasi sebagai identifier SQL polos di `Settings`.
 2. **Injeksi Prompt via Pertanyaan Pengguna**: Pertanyaan pengguna atau teks abstrak publikasi yang ditarik dari database bisa memuat instruksi manipulatif (*"Abaikan instruksi sebelumnya..."*).
 
 ### 2.2 Mitigasi Berlapis
@@ -75,8 +78,9 @@ Invarian Sesi Koneksi:
 
 ## 3. Keamanan Tingkat Aplikasi
 
-- **Pembatasan Laju (Rate Limiting)**: Diterapkan pada tingkat Gateway FastAPI (misal: 20 request/menit per IP) untuk mencegah perulangan tak sengaja yang menghabiskan komputasi CPU model.
-- **CORS Terbatas (Restricted)**: Dibatasi hanya ke origin domain frontend yang sah, bukan wildcard `*`.
+- **Pembatasan Laju (Rate Limiting)**: Diterapkan pada tingkat Gateway FastAPI dengan sliding window **60 request/menit per IP** (`RATE_LIMIT_RPM`, default 60) untuk mencegah perulangan tak sengaja yang menghabiskan komputasi CPU model. Nilai dapat dikonfigurasi per deployment tanpa mengubah kode. Endpoint operasional (`/api/v1/health`, `/metrics`, `/docs`) dikecualikan agar scraper tidak bisa mengunci dirinya sendiri dengan 429.
+- **Trustworthy Proxy (Penting untuk Bucket Per-IP)**: Rate limiter mengunci `request.client.host`. Agar nilai tersebut mencerminkan IP asli saat aplikasi berada di belakang reverse proxy (Caddy / tunnel), uvicorn harus dijalankan dengan `--proxy-headers --forwarded-allow-ips=<IP/CIDR proxy>` (dikonfigurasi lewat `TRUSTED_PROXY_IPS` di `docker-compose.yml`). **Tanpa itu, seluruh situs berbagi satu bucket** dan kena 429 secara global. Larangan keras: `TRUSTED_PROXY_IPS` **tidak boleh** `*`, karena uvicorn akan memercayai `X-Forwarded-For` kiriman klien sehingga siapa pun bisa memakai IP baru setiap request untuk melewati rate limit. Aplikasi juga **tidak** membaca `X-Forwarded-For` secara langsung di kodenya.
+- **CORS Terbatas (Restricted)**: Dibatasi hanya ke origin domain frontend yang sah, bukan wildcard `*`. Allow-list dibaca dari env var **`CORS_ORIGINS`** (comma-separated; default hanya empat origin lokal dev). API memakai `allow_credentials=True`, sehingga wildcard **tidak pernah** boleh dipakai sebagai pengganti. Nilai yang disetel tapi menghasilkan nol entri **gagal cepat saat startup** (`Settings`) alih-alih diam-diam kembali ke daftar localhost yang memblokir seluruh request browser asli.
 - **Respons Error Tersanitasi (Sanitized)**: Respons error ke pengguna hanya mengembalikan `error_type` dan pesan deskriptif aman; pengecualian database mentah dan stack trace internal tidak pernah bocor ke klien.
 
 ---
@@ -85,6 +89,12 @@ Invarian Sesi Koneksi:
 
 - Log request mencatat: `timestamp`, `request_id` (UUIDv4), `route`, query/filter metadata, latensi, dan status keberhasilan — **tanpa** menyimpan kredensial atau rahasia koneksi.
 - Logging disimpan secara lokal di container/host backend tanpa pengiriman ke pihak ketiga eksternal selama fase internal MVP.
+- **Penghitung fallback sintesis LLM**: `docs/05 §7` mensyaratkan kegagalan sintesis tidak pernah menggagalkan request — setiap kegagalan diserap oleh renderer deterministik. Konsekuensinya, status HTTP **tidak dapat** membedakan "LLM hidup" dari "LLM mati total": deployment yang sintesisnya belum pernah berhasil sekali pun tetap terlihat `status: "ok"`. Untuk menutup celah ini, `GET /api/v1/health` melaporkan blok `synthesis` (`llm_calls`, `fallback_calls`, `fallback_rate`, `fallback_by_reason`, `last_llm_ms`, `degraded`), dan angka yang sama diekspos dalam format Prometheus lewat **`GET /metrics`**.
+  - **Fallback rate mendekati `1.0` berarti jalur LLM praktis mati** — kondisi yang akan terjadi bila model 7B dijalankan di atas CPU dengan `OLLAMA_TIMEOUT_S=8` (butuh ~64 tok/s untuk 512 token; CPU hanya menghasilkan 2–12 tok/s).
+  - Reason kanonik: `timeout`, `unreachable`, `transport`, `http`, `empty`, `citation_stripped`, `unknown`.
+  - **Batas cakupan**: penghitung bersifat **process-local** dan **reset setiap restart**; ia bukan history. Ia juga **tidak dibagi antar-worker** — selama container berjalan dengan satu worker (default compose) hal ini aman, tetapi begitu diskalakan ke N worker, `fallback_rate` harus diagregasi lintas proses, bukan dibaca dari satu proses saja.
+  - `/metrics` tidak diautentikasi dan membocorkan identifier model beserta rasio kegagalan; saat produksi, batasi path ini di edge (Caddy/tunnel).
+- Status sistem `healthy` **tidak** dipengaruhi oleh `synthesis.degraded`: renderer deterministik tetap melayani request dengan sukses, jadi sistem memang operasional. Penghitung dilaporkan untuk operator, bukan sebagai sinyal outage.
 
 ---
 
@@ -138,6 +148,8 @@ Invarian Sesi Koneksi:
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/08 Security.md` v3.8.1 | §1.1 diberi blok "Status nyata per 2026-10-03 (risiko R1)": `.env DB_URL` masih role `postgres` sehingga penolakan write tidak ditegakkan di level role, guard primer tetap AST whitelist + templat terparameterisasi; keputusan owner 2026-10-03 menetapkan migrasi ke `app_readonly` sebagai prosedur dokumentasi + langkah verifikasi `role` lewat `/api/v1/health`, tanpa agent menyentuh `.env`, dan R1 dinyatakan tetap terbuka | Risiko R1 dari `reports/fase7_closeout.md` §2 belum tertutup; Fase 8 memverifikasi, bukan diam-diam mengubah kredensial. Menyeimbangkan pernyataan "Peran Read-Only (Wajib)" dengan kenyataan runtime agar tidak terbaca sudah terpenuhi |
+| `docs/08 Security.md` v3.8.0 | CORS jadi env var `CORS_ORIGINS` (fail-fast bila nol entri) + aturan trust proxy (`TRUSTED_PROXY_IPS`, larangan `*`); rate limit 20 → **60 rpm** (`RATE_LIMIT_RPM`) + endpoint operasional dikecualikan; dokumentasikan penghitung `synthesis` fallback + `/metrics` beserta batas cakupan process-local | 2026-10-03 |
 | `docs/08 Security.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Vector Storage`, `Dynamic 4-Route`, `Vector Similarity Gate`, dll); sync status Task 1 + Task 8 DONE | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/08 Security.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/08 Security.md` v3.5.0 | Menandai cleaning + cleaned export DONE; menegaskan re-grant `app_readonly` pasca-pembuatan kolom embedding/tabel edge/Gold | Sinkronisasi progress aktual 2026-09-27 |

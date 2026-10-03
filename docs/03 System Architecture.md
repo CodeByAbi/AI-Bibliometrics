@@ -1,10 +1,9 @@
 # Arsitektur Sistem — End-to-End (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — sinkronisasi Gold DONE terverifikasi live)  
+**Versi Dokumen:** 3.7.2 (Fase 7 Close-out — sinkronisasi Gold DONE terverifikasi live)  
 **Tanggal Status:** 2026-10-03  
-**Menggantikan:** `03 System Architecture.md` v3.6.2 (2026-09-27)  
+**Menggantikan:** `03 System Architecture.md` v3.7.1 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 > **Status Implementasi & Realitas Basis Data (Sinkronisasi Progress 2026-09-29):**  
 > 1. **Database PostgreSQL:** Tim **sudah membuat database PostgreSQL**. Kredensial koneksi sudah tersedia secara internal (tidak diekspos di dokumentasi).  
 > 2. **Dataset Prototipe:** Database memuat **dataset prototipe kecil** (22 kolom pada `publications`) untuk **validasi end-to-end (E2E)**.
@@ -101,7 +100,7 @@ Tingkatan data Medallion pada sistem ini:
 | Rute RAG | Lapisan Data Target | Strategi Eksekusi & Validasi | Jenis Objek Bukti yang Dihasilkan |
 |---|---|---|---|
 | **`SQLRoute`** | Silver Relasional (`publications`, `authors`, `institutions`, `funding`, `keywords`, `pub_author`, `pub_institution`, `publication_references`) | Text-to-SQL $\rightarrow$ Validasi AST `sqlglot` $\rightarrow$ Penegakan `LIMIT 50`. | `publication_count`, `citation_count`, total pendanaan. |
-| **`VectorRoute`** | Silver Vector (`chunks.embedding vector(1024)`) JOIN `publications` | Embedding kueri `BAAI/bge-m3` $\rightarrow$ Kosinus HNSW $\rightarrow$ `DISTINCT ON (publication_id) LIMIT 8`. Gerbang kosinus $\ge 0.65$. | Ringkasan abstrak ilmiah, kemiripan semantik, tautan DOI. |
+| **`VectorRoute`** | Silver Vector (`chunks.embedding vector(1024)`) JOIN `publications` | Embedding kueri `BAAI/bge-m3` $\rightarrow$ jendela ANN ber-indeks HNSW (urut operator jarak, *overfetch* 25×) $\rightarrow$ `DISTINCT ON (publication_id)` di luar jendela $\rightarrow$ `LIMIT 8`. Gerbang kosinus $\ge 0.65$. | Ringkasan abstrak ilmiah, kemiripan semantik, tautan DOI. |
 | **`GraphRoute`** | Derived Edge (`institution_collaboration`, `author_collaboration`) | Recursive CTE Terparameterisasi (Templat T1–T4) $\rightarrow$ Kedalaman `max_hops = 3`. | Bukti kolaborasi institusi/penulis via `via_publication_ids`. |
 | **`HybridRoute`** | Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`) + Silver & `chunks` | Gabungan (join) analitik multi-tabel terparameterisasi $\rightarrow$ Ekstraksi metrik deret waktu & skor kepakaran. | `growth_score`, `citation_acceleration`, `expertise_score` terbobot ($w_1\text{--}w_4$). |
 

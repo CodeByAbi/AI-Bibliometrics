@@ -158,6 +158,12 @@ def main() -> int:
                     help="Optional CA bundle path for full chain verification "
                          "(libpq sslrootcert). Needed on machines whose default "
                          "root.crt cannot validate the server's private CA.")
+    ap.add_argument("--role", default="app_readonly",
+                    help="Runtime role whose SELECT grants Gate 3 verifies. Must be "
+                         "checked by NAME, not by the auditing identity: an owner "
+                         "holds every privilege implicitly, so auditing grants as "
+                         "the owner is vacuous. Falls back to current_user when the "
+                         "role does not exist.")
     args = ap.parse_args()
 
     dsn = os.environ.get(args.dsn_env, "").strip().strip("'\"")
@@ -222,14 +228,65 @@ def main() -> int:
                     conn.rollback()
 
             cur.execute(
+                "SELECT rolsuper FROM pg_roles WHERE rolname = current_user;"
+            )
+            auditor_is_superuser = bool(cur.fetchone()[0])
+
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s);",
+                (args.role,),
+            )
+            runtime_role_exists = bool(cur.fetchone()[0])
+
+            # Gate 3 checks the RUNTIME role, not the auditor. Querying
+            # role_table_grants for current_user is vacuous when the audit runs
+            # as the table owner: the owner holds every privilege implicitly, so
+            # the check always passes and can never detect a missing grant.
+            # has_table_privilege() accounts for inherited membership too.
+            privilege_target = args.role if runtime_role_exists else db_user
+            if runtime_role_exists:
+                cur.execute(
+                    """
+                    SELECT c.relname
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public' AND c.relkind = 'r'
+                      AND has_table_privilege(%s, c.oid, 'SELECT')
+                    """,
+                    (privilege_target,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.role_table_grants
+                    WHERE grantee = current_user AND privilege_type = 'SELECT'
+                      AND table_schema = 'public';
+                    """
+                )
+            granted = {r[0] for r in cur.fetchall()}
+
+            # Gate 4: foreign-key column index coverage. A composite PK only
+            # indexes its leading column, so the reverse side of every junction
+            # needs its own index or FK lookups and ON DELETE CASCADE degrade to
+            # sequential scans. indkey is a 0-based int2vector: an FK column is
+            # covered when it is the LEADING column of some index.
+            cur.execute(
                 """
-                SELECT table_name
-                FROM information_schema.role_table_grants
-                WHERE grantee = current_user AND privilege_type = 'SELECT'
-                  AND table_schema = 'public';
+                SELECT c.conrelid::regclass::text AS tbl, a.attname AS col
+                FROM pg_constraint c
+                JOIN pg_attribute a
+                  ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                WHERE c.contype = 'f'
+                  AND c.connamespace = 'public'::regnamespace
+                  AND NOT EXISTS (
+                      SELECT 1 FROM pg_index i
+                      WHERE i.indrelid = c.conrelid AND i.indkey[0] = a.attnum
+                  )
+                ORDER BY tbl, col;
                 """
             )
-            granted = {r[0] for r in cur.fetchall()}
+            fk_index_gaps = [(r[0], r[1]) for r in cur.fetchall()]
     # Gate 1: table + column presence (hard), type drift (warning).
     for table, expected_cols in EXPECTED.items():
         rep = {"missing_columns": [], "type_drift": {}, "extra_columns": []}
@@ -257,10 +314,30 @@ def main() -> int:
         if not hit:
             warnings.append(f"no index covering {table}.{col} (AC-DB-3 wants it indexed)")
 
-    # Gate 3: SELECT grants for the auditing role (informational, no write probes ever).
+    # Gate 3: SELECT grants for the RUNTIME role (informational, no write probes).
+    if auditor_is_superuser:
+        warnings.append(
+            f"auditor '{db_user}' is a superuser: schema inspection is authoritative, "
+            "but it cannot demonstrate privilege containment (see Gate 3 on "
+            f"'{privilege_target}')"
+        )
+    if not runtime_role_exists:
+        warnings.append(
+            f"runtime role '{args.role}' does not exist; Gate 3 fell back to the "
+            f"auditing role '{db_user}' (run scripts/grant_readonly.py first)"
+        )
     for table in EXPECTED:
         if table in live and table not in granted:
-            warnings.append(f"role '{db_user}' lacks SELECT on {table}")
+            warnings.append(f"role '{privilege_target}' lacks SELECT on {table}")
+
+    # Gate 4: foreign-key column index coverage. Advisory rather than an error:
+    # a missing FK index degrades performance, it does not corrupt the schema.
+    # Resolution: database/migrations/004_index_and_integrity_hardening.sql
+    for tbl, col in fk_index_gaps:
+        warnings.append(
+            f"FK column {tbl}.{col} is not the leading column of any index "
+            "(FK lookups and ON DELETE CASCADE will sequentially scan)"
+        )
 
     if not vector_ext:
         notes.append("extension 'vector' absent (expected: Task 1 PENDING, AC-DB-5/6).")
@@ -270,10 +347,14 @@ def main() -> int:
         "driver": _DRIVER,
         "target": public_label(dsn),
         "db_user": db_user,
+        "auditor_is_superuser": auditor_is_superuser,
+        "privilege_checked_role": privilege_target,
+        "runtime_role_exists": runtime_role_exists,
         "status": "MATCH" if not errors else "MISMATCH",
         "errors": errors,
         "warnings": warnings,
         "notes": notes,
+        "fk_index_gaps": [{"table": t, "column": c} for t, c in fk_index_gaps],
         "tables": table_reports,
         "chunk_stats": {"chunks": chunk_stats[0], "distinct_publications": chunk_stats[1]}
         if chunk_stats
@@ -285,7 +366,11 @@ def main() -> int:
         json.dump(result, f, indent=2, ensure_ascii=False)
     with open(os.path.join(args.out_dir, "schema_audit.md"), "w", encoding="utf-8") as f:
         f.write(f"# Schema Audit — {result['generated_at']}\n\n")
-        f.write(f"**Status: {result['status']}** · target `{result['target']}` · role `{db_user}`\n\n")
+        f.write(f"**Status: {result['status']}** · target `{result['target']}` · "
+                f"auditor `{db_user}` · grants checked for `{privilege_target}`\n\n")
+        f.write(f"- Auditor is superuser: **{auditor_is_superuser}**\n")
+        f.write(f"- Runtime role `{args.role}` exists: **{runtime_role_exists}**\n")
+        f.write(f"- FK columns lacking a leading-column index: **{len(fk_index_gaps)}**\n\n")
         for section in ("errors", "warnings", "notes"):
             items = result[section]
             f.write(f"## {section} ({len(items)})\n")

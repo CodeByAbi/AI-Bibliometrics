@@ -1,0 +1,33 @@
+# AI-Bibliometrics — Docker build context filter.
+#
+# Docs Reference: docs/08 Security.md §1 (secret handling).
+#
+# WHY AN ALLOWLIST: the build context is the repo root (`context: .` in
+# docker-compose.yml), and Docker ships EVERY file in it to the daemon —
+# including gitignored ones. `.gitignore` has no effect on this. An allowlist
+# fails closed, so a newly added secret file is excluded by default instead of
+# leaking because someone forgot to update a denylist.
+#
+# PATTERN NOTE: use `**`, never a bare `*`. Docker matches .dockerignore
+# patterns against the full path and `*` does NOT cross a `/` separator, so a
+# bare `*` would only filter root-level entries and `backend/**` would still
+# ship in full.
+#
+# WHEN YOU ADD A PATH THE IMAGE NEEDS, add an explicit `!` re-allow below.
+# A forgotten re-allow fails the build loudly, which is the intended behaviour.
+
+# Deny everything, at any depth.
+**
+
+# Re-allow exactly what docker/backend.Dockerfile consumes:
+#   - requirements.txt  (pip install -r)
+#   - backend/          (COPY backend/ ./backend/)
+!requirements.txt
+!backend/**
+
+# ...then drop build noise from inside those re-allowed trees.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache

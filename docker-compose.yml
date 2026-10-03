@@ -12,14 +12,38 @@ services:
       - .env
     environment:
       OLLAMA_HOST: http://ollama:11434
+    # Override the Dockerfile CMD so proxy trust stays a deploy-time decision
+    # (the same image runs locally with no proxy and behind Caddy/tunnel later).
+    #
+    # --proxy-headers makes uvicorn populate request.client.host from
+    # X-Forwarded-For / X-Real-Ip, which is what RateLimitingMiddleware keys on.
+    # Without it, every request arrives with client.host = the proxy's IP and the
+    # whole site collapses into ONE shared rate-limit bucket (site-wide 429s).
+    #
+    # !! SECURITY: never set TRUSTED_PROXY_IPS to `*`. uvicorn would then honour a
+    # client-supplied X-Forwarded-For, so anyone could spoof a fresh IP per
+    # request and bypass rate limiting entirely. List only the real proxy
+    # IP/CIDR. Default 127.0.0.1 is correct when nothing proxies the app.
+    command:
+      - uvicorn
+      - backend.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips=${TRUSTED_PROXY_IPS:-127.0.0.1}
     ports:
       - "8000:8000"
     depends_on:
       - ollama
 
   ollama:
-    # Tag pinned at Task 3 (Ollama setup) once the model-serving version is validated.
-    image: ollama/ollama:latest
+    # Pinned to an explicit version AND digest (Task 3 follow-up). Reproducible
+    # and self-documenting: the version is readable in this file, the digest
+    # guarantees bit-identical bits. Digest is the linux/amd64+arm64 index for
+    # 0.35.1 (pushed 2026-10-02). Bump both together.
+    image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
     ports:
       # Host port defaults to 11435 to avoid clash with native Ollama Desktop
       # (which already listens on 11434). Container port stays 11434 so

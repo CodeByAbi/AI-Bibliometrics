@@ -6,7 +6,7 @@
 |---|---|
 | **Architecture** | Bronze → Silver (9 canonical tables) → Gold (pgvector + 2 edge tables + 3 analytics tables) → 4-route FastAPI RAG |
 | **API Contract** | `POST /api/v1/ask` + `GET /api/v1/health` (see `docs/06 Api Design.md`). Legacy `POST /api/query` is **SUPERSEDED** and must not be implemented |
-| **Doc Status** | `docs/03`, `docs/05`, `docs/06`, `docs/10`, `docs/11`, `docs/12` synced to **v3.7.1** (Fase 7 close-out, 2026-10-03) |
+| **Doc Status** | `docs/06` and `docs/08` bumped to **v3.8.0** (CORS via `CORS_ORIGINS`, rate limit 60 rpm, proxy trust model, synthesis fallback counters + `GET /metrics`; 2026-10-03). `docs/03`, `docs/05`, `docs/10`, `docs/11` synced to **v3.7.2** and `docs/02`, `docs/04`, `docs/09` to **v3.6.3** (ANN/index hardening sync, 2026-10-03); `docs/12` remains at v3.7.1 |
 | **Implementation Status** | **Phase 0–7 DONE — VERIFIED.** 4-route retrieval + evidence layer + deterministic synthesis (+ opt-in LLM) live on `POST /api/v1/ask`; 14/14 live E2E queries pass. **Frontend IMPLEMENTED** (Next.js 14 workspace UI wired to the live API contract; formal UI sign-off pending Fase 8) |
 
 **Contents:** [Overview](#overview) · [Problem](#problem) · [Solution](#solution) · [Key Capabilities](#key-capabilities) · [Architecture](#architecture) · [End-to-End Data Flow](#end-to-end-data-flow) · [Tech Stack](#tech-stack) · [Project Structure](#project-structure) · [Implementation Progress](#implementation-progress) · [Frontend](#frontend) · [Backend API](#backend-api) · [Data and Database](#data-and-database) · [RAG Architecture](#rag-architecture) · [Security and Grounding](#security-and-grounding) · [Quick Start](#quick-start) · [Testing](#testing) · [Prototype Dataset](#prototype-dataset) · [Current Limitations](#current-limitations) · [Roadmap](#roadmap) · [Documentation](#documentation) · [Development Notes](#development-notes) · [License](#license)
@@ -81,7 +81,7 @@ Consistent with `docs/03 System Architecture.md`. Status of each component refle
 ```text
 Next.js Frontend
         ↓
-FastAPI Gateway (request_id, rate limit 20/min/IP, Pydantic validation)
+FastAPI Gateway (request_id, rate limit 60/min/IP, Pydantic validation)
         ↓
 QuestionRouter + EntityResolutionGate
         ↓
@@ -215,7 +215,7 @@ Delivered and verified live (2026-10-03): 9 Silver tables loaded, `chunks.embedd
 
 ### Phase 2 — FastAPI Gateway & API Foundation — DONE
 
-Delivered and verified: FastAPI + Pydantic v2, `asyncpg` pool, UUIDv4 `X-Request-ID` tracing, 20 req/min/IP rate limiting, structured JSON logging, standardized errors, `GET /api/v1/health` (DB/pgvector/Ollama checks) and `POST /api/v1/ask`. `/api/query` remains superseded.
+Delivered and verified: FastAPI + Pydantic v2, `asyncpg` pool, UUIDv4 `X-Request-ID` tracing, 60 req/min/IP rate limiting, structured JSON logging, standardized errors, `GET /api/v1/health` (DB/pgvector/Ollama checks) and `POST /api/v1/ask`. `/api/query` remains superseded.
 
 ### Phase 3 — Structured Query Vertical Slice — DONE
 

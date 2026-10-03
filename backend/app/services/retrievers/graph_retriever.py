@@ -11,10 +11,11 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
-from pydantic import BaseModel, ConfigDict, Field
+from collections.abc import Sequence
+from typing import Any
 
 import asyncpg
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.core.errors import DBTimeoutError
 from backend.app.models.ask import FilterParams
@@ -37,10 +38,10 @@ class GraphEdgeResult(BaseModel):
     partner_id: str
     partner_name: str
     publication_count: int
-    via_publication_ids: List[str] = Field(default_factory=list)
-    path_nodes: Optional[List[str]] = None
-    hop_count: Optional[int] = None
-    extra_metadata: Dict[str, Any] = Field(default_factory=dict)
+    via_publication_ids: list[str] = Field(default_factory=list)
+    path_nodes: list[str] | None = None
+    hop_count: int | None = None
+    extra_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphPublicationMeta(BaseModel):
@@ -49,10 +50,10 @@ class GraphPublicationMeta(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     publication_id: str
-    title: Optional[str] = None
-    year: Optional[int] = None
-    doi: Optional[str] = None
-    eid: Optional[str] = None
+    title: str | None = None
+    year: int | None = None
+    doi: str | None = None
+    eid: str | None = None
 
 
 class GraphRetrievalResult(BaseModel):
@@ -61,12 +62,12 @@ class GraphRetrievalResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     template_type: str  # "T1", "T2", "T3", "T4"
-    edges: List[GraphEdgeResult] = Field(default_factory=list)
-    publications: Dict[str, GraphPublicationMeta] = Field(default_factory=dict)
-    sql_executed: Optional[str] = None
-    target_entity_name: Optional[str] = None
-    target_entity_id: Optional[str] = None
-    filters_ignored: List[str] = Field(default_factory=list)
+    edges: list[GraphEdgeResult] = Field(default_factory=list)
+    publications: dict[str, GraphPublicationMeta] = Field(default_factory=dict)
+    sql_executed: str | None = None
+    target_entity_name: str | None = None
+    target_entity_id: str | None = None
+    filters_ignored: list[str] = Field(default_factory=list)
     execution_time_ms: float = 0.0
 
     @property
@@ -124,7 +125,7 @@ FROM institutions i
 JOIN pub_institution pi ON pi.institution_id = i.institution_id
 JOIN publications p ON p.publication_id = pi.publication_id
 JOIN keywords k ON k.publication_id = p.publication_id
-    WHERE (k.keyword_normalized ILIKE $1 ESCAPE '\' OR k.keyword ILIKE $1 ESCAPE '\')
+    WHERE k.keyword ILIKE $1 ESCAPE '\'
 GROUP BY i.institution_id, i.institution_name
 ORDER BY publication_count DESC
 LIMIT $2;
@@ -222,14 +223,14 @@ class GraphRetriever:
     """Deterministic, parameterized knowledge-graph retriever for collaboration networks."""
 
     @classmethod
-    def clamp_limit(cls, limit: Optional[int]) -> int:
+    def clamp_limit(cls, limit: int | None) -> int:
         """Clamp query result limit to [1, 50] (FR7.2)."""
         if limit is None or limit <= 0:
             return DEFAULT_LIMIT
         return min(limit, MAX_LIMIT)
 
     @classmethod
-    def clamp_hops(cls, hops: Optional[int]) -> int:
+    def clamp_hops(cls, hops: int | None) -> int:
         """Clamp traversal depth to [1, 3] (FR7.2)."""
         if hops is None or hops <= 0:
             return DEFAULT_MAX_HOPS
@@ -239,10 +240,10 @@ class GraphRetriever:
     def detect_template(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
-    ) -> Tuple[str, Dict[str, Any]]:
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_institution_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         """Determine which template (T1-T4) to execute based on entities and intent."""
         ql = question.lower().strip()
 
@@ -319,13 +320,13 @@ class GraphRetriever:
         cls,
         conn: asyncpg.Connection,
         question: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_author_name: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
-        resolved_institution_name: Optional[str] = None,
-        limit: Optional[int] = None,
-        max_hops: Optional[int] = None,
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_author_name: str | None = None,
+        resolved_institution_id: str | None = None,
+        resolved_institution_name: str | None = None,
+        limit: int | None = None,
+        max_hops: int | None = None,
     ) -> GraphRetrievalResult:
         """Execute parameterized graph collaboration traversal with safety guardrails."""
         start_time = time.perf_counter()
@@ -339,7 +340,7 @@ class GraphRetriever:
             resolved_institution_id=resolved_institution_id,
         )
 
-        filters_ignored: List[str] = []
+        filters_ignored: list[str] = []
         if filters:
             if filters.year is not None or filters.year_from is not None or filters.year_to is not None:
                 filters_ignored.append("year")
@@ -373,11 +374,11 @@ class GraphRetriever:
                     conn.fetch(sql, inst_id, clamped_limit),
                     timeout=STATEMENT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise DBTimeoutError("GraphRetriever statement timed out (10s)") from exc
 
-            edges: List[GraphEdgeResult] = []
-            all_pub_ids: List[str] = []
+            edges: list[GraphEdgeResult] = []
+            all_pub_ids: list[str] = []
             for r in rows:
                 via_pubs = list(r["via_publication_ids"] or [])
                 all_pub_ids.extend(via_pubs)
@@ -429,7 +430,7 @@ class GraphRetriever:
                     conn.fetch(sql, auth_id, clamped_limit),
                     timeout=STATEMENT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise DBTimeoutError("GraphRetriever statement timed out (10s)") from exc
 
             edges = []
@@ -489,7 +490,7 @@ class GraphRetriever:
                     conn.fetch(sql, pattern, clamped_limit),
                     timeout=STATEMENT_TIMEOUT_S,
                 )
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise DBTimeoutError("GraphRetriever statement timed out (10s)") from exc
 
             edges = []
@@ -547,7 +548,7 @@ class GraphRetriever:
                 conn.fetch(sql, source_id, clamped_hops, target_id, clamped_limit),
                 timeout=STATEMENT_TIMEOUT_S,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise DBTimeoutError("GraphRetriever statement timed out (10s)") from exc
 
         edges = []
@@ -589,7 +590,7 @@ class GraphRetriever:
         cls,
         conn: asyncpg.Connection,
         publication_ids: Sequence[str],
-    ) -> Dict[str, GraphPublicationMeta]:
+    ) -> dict[str, GraphPublicationMeta]:
         """Fetch publication details for supporting provenance IDs."""
         if not publication_ids:
             return {}
@@ -606,7 +607,7 @@ class GraphRetriever:
             logger.warning("Failed to fetch publication metadata for graph edges: %s", exc)
             return {}
 
-        meta_map: Dict[str, GraphPublicationMeta] = {}
+        meta_map: dict[str, GraphPublicationMeta] = {}
         for r in rows:
             pid = str(r["publication_id"])
             meta_map[pid] = GraphPublicationMeta(

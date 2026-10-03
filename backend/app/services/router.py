@@ -8,12 +8,13 @@ from __future__ import annotations
 import asyncio
 import re
 import string
-from typing import Any, Dict, List, Literal, Optional, Tuple
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Any, Literal
 
 import asyncpg
-from backend.app.models.ask import CandidateItem, FilterParams
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from backend.app.models.ask import CandidateItem, FilterParams
+from backend.app.services.retrievers.sql_security import escape_like_pattern
 
 STATEMENT_TIMEOUT_S = 10.0
 
@@ -29,7 +30,7 @@ class RouteDecision(BaseModel):
     route: RouteType
     reasoning: str
     answered_via_fallback: bool = False
-    extracted_entities: Dict[str, Any] = Field(default_factory=dict)
+    extracted_entities: dict[str, Any] = Field(default_factory=dict)
 
 
 class EntityResolutionResult(BaseModel):
@@ -38,12 +39,12 @@ class EntityResolutionResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: Literal["ok", "needs_clarification", "not_found"] = "ok"
-    candidates: Optional[List[CandidateItem]] = None
-    resolved_author_id: Optional[str] = None
-    resolved_author_name: Optional[str] = None
-    resolved_institution_id: Optional[str] = None
-    resolved_institution_name: Optional[str] = None
-    clarification_message: Optional[str] = None
+    candidates: list[CandidateItem] | None = None
+    resolved_author_id: str | None = None
+    resolved_author_name: str | None = None
+    resolved_institution_id: str | None = None
+    resolved_institution_name: str | None = None
+    clarification_message: str | None = None
 
 
 YearOp = Literal["eq", "gt", "gte", "lt", "lte", "between"]
@@ -60,9 +61,9 @@ class YearFilter(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     op: YearOp
-    year: Optional[int] = Field(None, ge=1900, le=2026)
-    year_from: Optional[int] = Field(None, ge=1900, le=2026)
-    year_to: Optional[int] = Field(None, ge=1900, le=2026)
+    year: int | None = Field(None, ge=1900, le=2026)
+    year_from: int | None = Field(None, ge=1900, le=2026)
+    year_to: int | None = Field(None, ge=1900, le=2026)
 
     @model_validator(mode="after")
     def _check_op_fields(self):
@@ -77,8 +78,8 @@ class YearFilter(BaseModel):
 
 def build_year_filter(
     question: str,
-    filters: Optional[FilterParams] = None,
-) -> Optional[YearFilter]:
+    filters: FilterParams | None = None,
+) -> YearFilter | None:
     """Derive a typed year constraint: explicit filters win, free text second.
 
     Free-text coverage (ID/EN, deterministic):
@@ -150,15 +151,15 @@ def build_year_filter(
 
 def build_extracted_entities(
     question: str,
-    filters: Optional[FilterParams] = None,
-) -> Dict[str, Any]:
+    filters: FilterParams | None = None,
+) -> dict[str, Any]:
     """Build the typed entity contract for RouterOutput (FR2.3).
 
     Sources: explicit FilterParams first, free-text YearFilter second.
     Keys: year_filter, country, author_name, institution_name, keyword,
     topic_name, document_type (only when present).
     """
-    entities: Dict[str, Any] = {}
+    entities: dict[str, Any] = {}
     year_filter = build_year_filter(question, filters)
     if year_filter is not None:
         entities["year_filter"] = year_filter.model_dump(exclude_none=True)
@@ -289,7 +290,7 @@ class QuestionRouter:
     def classify_route(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
+        filters: FilterParams | None = None,
     ) -> RouteDecision:
         """Classify user query and structured filters into target RAG route."""
         q = question.strip()
@@ -394,11 +395,11 @@ class EntityResolutionGate:
     def extract_candidate_names(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
-    ) -> Tuple[Optional[str], Optional[str]]:
+        filters: FilterParams | None = None,
+    ) -> tuple[str | None, str | None]:
         """Extract possible author and institution candidate names from query or filters."""
-        author_name: Optional[str] = None
-        institution_name: Optional[str] = None
+        author_name: str | None = None
+        institution_name: str | None = None
 
         if filters:
             if filters.author_name:
@@ -445,33 +446,36 @@ class EntityResolutionGate:
         cls,
         conn: asyncpg.Connection,
         question: str,
-        filters: Optional[FilterParams] = None,
+        filters: FilterParams | None = None,
     ) -> EntityResolutionResult:
         """Resolve author and institution entities, checking for ambiguous candidate sets."""
         author_query, inst_query = cls.extract_candidate_names(question, filters)
 
         # Accumulators: both entities resolve jointly so a resolved author
         # never masks an ambiguous institution (and vice versa).
-        resolved_author_id: Optional[str] = None
-        resolved_author_name: Optional[str] = None
-        resolved_institution_id: Optional[str] = None
-        resolved_institution_name: Optional[str] = None
+        resolved_author_id: str | None = None
+        resolved_author_name: str | None = None
+        resolved_institution_id: str | None = None
+        resolved_institution_name: str | None = None
 
         # 1. Author resolution
         if author_query and len(author_query) >= 3:
             norm_name = normalize_text(author_query)
 
             # Exact match check
-            exact_rows = await conn.fetch(
-                """
-                SELECT author_id, author_name, author_name_normalized
-                FROM authors
-                WHERE author_name_normalized = $1
-                   OR author_name ILIKE $2
-                LIMIT 10;
-                """,
-                norm_name,
-                author_query,
+            exact_rows = await asyncio.wait_for(
+                conn.fetch(
+                    """
+                    SELECT author_id, author_name, author_name_normalized
+                    FROM authors
+                    WHERE author_name_normalized = $1
+                       OR author_name ILIKE $2 ESCAPE '\'
+                    LIMIT 10;
+                    """,
+                    norm_name,
+                    author_query,
+                ),
+                timeout=STATEMENT_TIMEOUT_S,
             )
 
             if len(exact_rows) == 1:
@@ -480,7 +484,7 @@ class EntityResolutionGate:
                 resolved_author_name = row["author_name"]
             elif len(exact_rows) > 1:
                 # Multiple candidates found -> needs clarification
-                candidate_items: List[CandidateItem] = []
+                candidate_items: list[CandidateItem] = []
                 # P1 async-*: one GROUP BY over ANY($1) instead of N sequential
                 # COUNT round-trips (author_id is VARCHAR — text[] comparison is safe).
                 author_count_rows = await asyncio.wait_for(
@@ -513,17 +517,20 @@ class EntityResolutionGate:
                 )
             else:
                 # Partial ILIKE search if not exact
-                partial_rows = await conn.fetch(
-                    """
-                    SELECT a.author_id, a.author_name, COUNT(pa.publication_id) AS pub_count
-                    FROM authors a
-                    LEFT JOIN pub_author pa ON pa.author_id = a.author_id
-                    WHERE a.author_name ILIKE $1
-                    GROUP BY a.author_id, a.author_name
-                    ORDER BY pub_count DESC
-                    LIMIT 10;
-                    """,
-                    f"%{author_query}%",
+                partial_rows = await asyncio.wait_for(
+                    conn.fetch(
+                        """
+                        SELECT a.author_id, a.author_name, COUNT(pa.publication_id) AS pub_count
+                        FROM authors a
+                        LEFT JOIN pub_author pa ON pa.author_id = a.author_id
+                        WHERE a.author_name ILIKE $1 ESCAPE '\'
+                        GROUP BY a.author_id, a.author_name
+                        ORDER BY pub_count DESC
+                        LIMIT 10;
+                        """,
+                        escape_like_pattern(author_query),
+                    ),
+                    timeout=STATEMENT_TIMEOUT_S,
                 )
                 if len(partial_rows) > 1:
                     candidates = [
@@ -562,16 +569,19 @@ class EntityResolutionGate:
             norm_inst = normalize_text(inst_query)
 
             # Exact match check
-            exact_insts = await conn.fetch(
-                """
-                SELECT institution_id, institution_name, country
-                FROM institutions
-                WHERE institution_name_normalized = $1
-                   OR institution_name ILIKE $2
-                LIMIT 10;
-                """,
-                norm_inst,
-                inst_query,
+            exact_insts = await asyncio.wait_for(
+                conn.fetch(
+                    """
+                    SELECT institution_id, institution_name, country
+                    FROM institutions
+                    WHERE institution_name_normalized = $1
+                       OR institution_name ILIKE $2 ESCAPE '\'
+                    LIMIT 10;
+                    """,
+                    norm_inst,
+                    inst_query,
+                ),
+                timeout=STATEMENT_TIMEOUT_S,
             )
 
             if len(exact_insts) == 1:
@@ -612,17 +622,20 @@ class EntityResolutionGate:
                 )
             else:
                 # Partial search
-                partial_insts = await conn.fetch(
-                    """
-                    SELECT i.institution_id, i.institution_name, i.country, COUNT(pi.publication_id) AS pub_count
-                    FROM institutions i
-                    LEFT JOIN pub_institution pi ON pi.institution_id = i.institution_id
-                    WHERE i.institution_name ILIKE $1
-                    GROUP BY i.institution_id, i.institution_name, i.country
-                    ORDER BY pub_count DESC
-                    LIMIT 10;
-                    """,
-                    f"%{inst_query}%",
+                partial_insts = await asyncio.wait_for(
+                    conn.fetch(
+                        """
+                        SELECT i.institution_id, i.institution_name, i.country, COUNT(pi.publication_id) AS pub_count
+                        FROM institutions i
+                        LEFT JOIN pub_institution pi ON pi.institution_id = i.institution_id
+                        WHERE i.institution_name ILIKE $1 ESCAPE '\'
+                        GROUP BY i.institution_id, i.institution_name, i.country
+                        ORDER BY pub_count DESC
+                        LIMIT 10;
+                        """,
+                        escape_like_pattern(inst_query),
+                    ),
+                    timeout=STATEMENT_TIMEOUT_S,
                 )
                 if len(partial_insts) > 1:
                     candidates = [

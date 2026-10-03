@@ -1,8 +1,8 @@
 # Desain API — Spesifikasi Teknis & Kontrak API (/api/v1)
 
-**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — kontrak llm_synthesis + synthesis_backend, sinkronisasi Gold)  
+**Versi Dokumen:** 3.8.0 (Observability — blok `synthesis` pada `/api/v1/health` + endpoint `GET /metrics`)  
 **Tanggal Status:** 2026-10-03  
-**Menggantikan:** `06 Api Design.md` v3.6.2 s.d. v3.7.0  
+**Menggantikan:** `06 Api Design.md` v3.7.1  
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`
 
 > **Status Implementasi (Sinkronisasi Progress Fase 7 Close-out):**  
@@ -60,7 +60,8 @@ flowchart TD
 | Path Endpoint | Metode HTTP | Status Implementasi | Fase Target | Deskripsi & Kesenjangan (Gap) |
 |---|---|---|---|---|
 | `/api/v1/ask` | `POST` | `FOUNDATION DONE` | Fase 2 (Gateway) / Fase 3 (Routing) | Endpoint primer RAG riset; skema `AskRequest`, `AskResponse`, dan `EvidenceObject` aktif. |
-| `/api/v1/health` | `GET` | `DONE` | Fase 2 | Endpoint pemeriksaan kesehatan & dependensi (PostgreSQL, pgvector, Ollama) terverifikasi. |
+| `/api/v1/health` | `GET` | `DONE` | Fase 2 | Endpoint pemeriksaan kesehatan & dependensi (PostgreSQL, pgvector, Ollama) terverifikasi; melapor blok penghitung `synthesis` (lihat §6). |
+| `/metrics` | `GET` | `DONE` | Fase 2 (observability) | Eksposisi Prometheus untuk penghitung fallback sintesis; di luar kontrak RAG utama, tanpa autentikasi (lihat §6.1). |
 | `/api/query` | `POST` | `SUPERSEDED` | Historis Draft v2 | Desain awal v2; **resmi digantikan (superseded) oleh `/api/v1/ask`**. |
 | `/api/v1/ask/stream` | `POST` | `POST-MVP` | Fase 10 (Masa Depan) | Sintesis streaming SSE token-per-token; ditunda ke pasca-MVP. |
 | Endpoint Resource (`/papers`, `/authors`, `/topics`) | `GET` | `POST-MVP` | Fase 10 (Masa Depan) | Detail metadata individual; ditunda ke pasca-MVP. |
@@ -250,11 +251,39 @@ Memeriksa integritas backend dan kesiapan koneksi ke PostgreSQL, `pgvector`, lap
     "model": "BAAI/bge-m3",
     "dimension": 1024
   },
+  "synthesis": {
+    "llm_calls": 12,
+    "fallback_calls": 0,
+    "fallback_rate": 0.0,
+    "fallback_by_reason": {},
+    "last_llm_ms": 1432.7,
+    "last_fallback_reason": null,
+    "degraded": false,
+    "scope": "process"
+  },
   "evidence_layer_ready": true
 }
 ```
 
 `evidence_layer_ready` adalah probe Fase 5 tanpa DB: `true` hanya bila `EvidenceUnifier` mengekspos `from_sql`/`from_vector`/`from_graph`/`from_analytics`/`unify`, `EvidenceRanker` mengekspos `rank_evidence_objects`/`rank_sources`/`rank_items`, dan `EvidenceSet` mengekspos `is_empty`/`to_metrics_json`/`to_chunks_text`/`to_untrusted_evidence_block`. Probe tidak pernah melempar (gagal → `false`, respons tetap tersanitasi). Status sistem `healthy` mensyaratkan `silver_tables_ready && pgvector_ready && evidence_layer_ready`; selain itu `degraded` (atau `unhealthy` bila DB `disconnected`).
+
+Blok `synthesis` ada karena `docs/05 §7` mewajibkan kegagalan sintesis tidak pernah menggagalkan request: setiap kegagalan diserap renderer deterministik, sehingga status HTTP tidak dapat membedakan LLM yang hidup dari LLM yang mati total. `fallback_rate` mendekati `1.0` menandakan jalur sintesis praktis tidak berjalan. Reason kanonik: `timeout`, `unreachable`, `transport`, `http`, `empty`, `citation_stripped`, `unknown`. Penghitung bersifat **process-local** dan **reset setiap restart** (`scope: "process"`), serta tidak dibagi antar-worker. `synthesis.degraded` **tidak** menurunkan `status` sistem, sebab renderer deterministik tetap melayani request dengan sukses. Angka yang sama tersedia dalam format Prometheus lewat `GET /metrics`.
+
+---
+
+## 6.1 Eksposisi Metrik: `GET /metrics`
+
+Endpoint observability (di luar kontrak RAG utama) yang mengekspos penghitung sintesis dalam format Prometheus text exposition, memakai `prometheus-client`. `SynthesisStats` di `backend/app/services/synthesizer/stats.py` tetap menjadi satu-satunya sumber kebenaran; `backend/app/core/metrics.py` hanya menjadikannya adapter collector, sehingga `/metrics` dan blok `synthesis` pada `/api/v1/health` tidak mungkin berbeda.
+
+| Metrik | Tipe | Arti |
+|---|---|---|
+| `aibiblio_synthesis_llm_total{model}` | counter | Sintesis LLM sukses sejak start proses |
+| `aibiblio_synthesis_fallback_total{model,reason}` | counter | Fallback per reason kanonik (di-zero-fill agar seri eksis sebelum kegagalan pertama) |
+| `aibiblio_synthesis_fallback_ratio` | gauge | `fallback_calls / total_calls`; mendekati `1.0` berarti LLM praktis mati |
+| `aibiblio_synthesis_calls_current` | gauge | Total percobaan sintesis pada proses ini |
+| `aibiblio_synthesis_last_llm_ms` | gauge | Durasi panggilan LLM sukses terakhir (`0` bila belum ada) |
+
+Endpoint ini dikecualikan dari rate limiting (agar scraper tidak mengunci dirinya sendiri dengan 429) dan **tidak diautentikasi** — ia membocorkan identifier model serta rasio kegagalan, sehingga saat produksi harus dibatasi di edge (Caddy/tunnel). `prometheus_client` diimpor secara lazy di dalam handler agar dependensi yang hilang hanya menurunkan endpoint ini, dan tidak menghambat gateway untuk boot.
 
 ---
 
@@ -321,6 +350,7 @@ Semua pengecualian (*exception*) internal ditangkap di gerbang batas (boundary) 
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/06 Api Design.md` v3.8.0 | Tambah blok `synthesis` pada respons `/api/v1/health` (`llm_calls`, `fallback_calls`, `fallback_rate`, `fallback_by_reason`, `last_llm_ms`, `degraded`, `scope`) agar kegagalan LLM yang senyap menjadi terlihat; tambah §6.1 `GET /metrics` (Prometheus text exposition, di luar kontrak RAG utama) | 2026-10-03 |
 | `docs/06 Api Design.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`system boundary layer`, `EvidenceObject`, `Question Router`, `Rate Limit Check`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/06 Api Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/06 Api Design.md` v3.5.0 | Menandai cleaning + cleaned export DONE; mengklarifikasi contoh `health` (`pgvector_ready`/`gold_tables_ready: true`) baru berlaku pasca-Task 1/8.5 | Sinkronisasi progress aktual 2026-09-27 |

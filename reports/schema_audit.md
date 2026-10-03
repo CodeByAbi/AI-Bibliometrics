@@ -1,6 +1,10 @@
-# Schema Audit — 2026-10-02T21:25:52.919507+00:00
+# Schema Audit — 2026-10-03T20:18:42.506646+00:00
 
-**Status: MATCH** · target `postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` · role `postgres`
+**Status: MATCH** · target `postgresql://postgres@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres` · auditor `postgres` · grants checked for `app_readonly`
+
+- Auditor is superuser: **False**
+- Runtime role `app_readonly` exists: **True**
+- FK columns lacking a leading-column index: **0**
 
 ## errors (0)
 _none_

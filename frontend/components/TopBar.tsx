@@ -14,9 +14,14 @@ interface TopBarProps {
 }
 
 /**
- * Calm top chrome translated from the HTML mockup: brand + ⌘K context pill,
- * scrollable 8-state segmented switcher, provenance toggle, researcher avatar.
- * Icons are lucide (no Material Symbols); styling lives in globals.css.
+ * Calm top chrome: brand, ⌘K context pill, the view switcher, the provenance
+ * toggle, and the researcher avatar.
+ *
+ * The view switcher is a labelled `<nav>` with `aria-current="page"` rather
+ * than a `tablist`: these eight controls swap the region below them rather
+ * than selecting among peer tab panels, so a tab role would promise a
+ * tabpanel that does not exist. Every control is also a real focus stop, which
+ * is what keyboard users expect from view navigation.
  */
 export function TopBar({
   activeView,
@@ -28,15 +33,17 @@ export function TopBar({
   onToggleSidebar,
 }: TopBarProps) {
   return (
-    <header className="topbar" role="banner">
+    <header className="topbar">
       <button
         type="button"
         className="menu-btn topbar-menu"
+        data-menu-toggle
         onClick={onToggleSidebar}
         aria-label={sideOpen ? "Close research library" : "Open research library"}
         aria-expanded={sideOpen}
+        aria-controls="research-library"
       >
-        {sideOpen ? <X size={17} /> : <Menu size={17} />}
+        {sideOpen ? <X size={17} aria-hidden /> : <Menu size={17} aria-hidden />}
       </button>
 
       <button type="button" className="topbar-brand" onClick={() => onSwitch("answer")} title="Back to research brief">
@@ -52,17 +59,17 @@ export function TopBar({
         <kbd>⌘K</kbd>
       </span>
 
-      <nav className="topbar-tabs" role="tablist" aria-label="Workspace views">
+      <nav className="topbar-tabs" aria-label="Workspace views">
         {VIEW_TABS.map((t) => {
-          const selected = activeView === t.view;
+          const current = activeView === t.view;
           return (
             <button
               key={t.id}
+              id={t.id}
               type="button"
-              role="tab"
-              aria-selected={selected}
               className="topbar-tab"
-              data-active={selected}
+              data-active={current}
+              aria-current={current ? "page" : undefined}
               onClick={() => onSwitch(t.view)}
               title={t.tab}
             >
@@ -76,6 +83,7 @@ export function TopBar({
         type="button"
         className="topbar-prov"
         aria-pressed={provenanceOpen}
+        aria-controls={provenanceOpen ? "provenance-inspector" : undefined}
         onClick={onToggleProvenance}
         title="Toggle technical grounding provenance details"
       >

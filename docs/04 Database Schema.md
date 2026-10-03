@@ -1,10 +1,9 @@
 # Skema Database — Arsitektur Data & Spesifikasi Skema Kanonikal (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
+**Versi Dokumen:** 3.6.3 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
 **Tanggal Status:** 2026-09-27  
-**Menggantikan:** `04 Database Schema.md` Draft v1 s.d. v3.5.0  
+**Menggantikan:** `04 Database Schema.md` v3.6.2 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 > **Status Implementasi & Source of Truth (Sinkronisasi Progress 2026-09-29):**  
 > 1. **PostgreSQL Database — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**. Seluruh kredensial koneksi telah diamankan secara internal (tidak diekspos di dokumentasi).  
 > 2. **Dataset Prototipe (Validasi E2E) — DONE:** Database memuat **dataset prototipe kecil** (~20 naskah, 40 chunk, 138 author, 107 institusi, 22 kolom metadata naskah pada `publications`) untuk validasi alur end-to-end.  
@@ -185,7 +184,6 @@ CREATE TABLE IF NOT EXISTS institution_collaboration (
     CHECK (institution_a < institution_b)             -- Kunci kanonikal: mencegah duplikasi simetris (A,B)/(B,A)
 );
 
-CREATE INDEX idx_inst_collab_a ON institution_collaboration (institution_a);
 CREATE INDEX idx_inst_collab_b ON institution_collaboration (institution_b);
 CREATE INDEX idx_inst_collab_weight ON institution_collaboration (weight DESC);
 
@@ -200,10 +198,11 @@ CREATE TABLE IF NOT EXISTS author_collaboration (
     CHECK (author_a < author_b)                       -- Kunci kanonikal: author_a selalu < author_b
 );
 
-CREATE INDEX idx_author_collab_a ON author_collaboration (author_a);
 CREATE INDEX idx_author_collab_b ON author_collaboration (author_b);
 CREATE INDEX idx_author_collab_weight ON author_collaboration (weight DESC);
 ```
+
+> **Catatan indeks (Task 004):** indeks `idx_inst_collab_a` / `idx_author_collab_a` **dihapus** — keduanya persis merupakan awalan (leading prefix) dari composite `PRIMARY KEY (…_a, …_b)`, sehingga indeks kedua tidak menambah jalur akses apa pun. Indeks `_b` tetap dipertahankan karena satu-satunya jalur untuk hop terbalik pada Recursive CTE T1–T4 dan untuk `ON DELETE CASCADE` dari tabel induk.
 
 > **Keputusan Arsitektur Graf (Graph Strategy):**  
 > Penelusuran jaringan kolaborasi pada MVP dijalankan via **Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4)** pada tabel edge di atas. Untuk kebutuhan graf pasca-MVP (Phase 9), sistem menetapkan **Apache AGE** sebagai ekstensi native PostgreSQL pilihan.
@@ -238,6 +237,8 @@ CREATE INDEX idx_topics_name_norm ON topics (topic_name_normalized);
 CREATE INDEX idx_topics_total_pub ON topics (total_publications DESC);
 CREATE INDEX idx_topics_rep_vector_hnsw ON topics USING hnsw (representation_vector vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 ```
+
+> **Status indeks `idx_topics_rep_vector_hnsw`:** `topics` holds 5 rows on the prototype. An HNSW index pays off only above roughly 10k rows; at this cardinality it is pure write amplification with no read benefit. Create it conditionally once the topic count justifies it, and drop it while the table stays small.
 
 ### 7.2 Tabel `topic_evolution` (Akselerasi & Tren Waktu Topik - PLANNED, Task 8.5)
 Menyimpan metrik evolusi temporal tahunan untuk mengidentifikasi topik yang sedang berkembang (*emerging topics*) atau mengalami penurunan.
@@ -286,6 +287,41 @@ CREATE TABLE IF NOT EXISTS researcher_expertise (
 CREATE INDEX idx_researcher_exp_rank ON researcher_expertise (topic_id, expertise_score DESC);
 CREATE INDEX idx_researcher_exp_author ON researcher_expertise (author_id);
 ```
+
+> **Koreksi tipe + batasan (Task 004, `database/migrations/004_index_and_integrity_hardening.sql`):**
+> - Kolom sub-skor `relevance_score` / `productivity_score` / `impact_score` / `recency_score` diperlebar dari `NUMERIC(6,4)` menjadi `NUMERIC(8,4)`. `NUMERIC(6,4)` hanya muat sampai `99.9999`, sedangkan rentang yang dispesifikasikan di §7.3 adalah `[0, 100]` dan `scripts/score_expertise.py` memang membatasi setiap sub-skor di `100.0` — sehingga nilai `100.0000` akan melebihi kapasitas `NUMERIC(6,4)`. Kisaran `expertise_score` sudah `NUMERIC(8,4)` sejak awal.
+> - Rentang yang dispesifikasikan §7.3 sekarang ditegakkan sebagai `CHECK` constraint: kelima skor `BETWEEN 0 AND 100`, serta `h_index_topic` / `publication_count_topic` / `citation_count_topic` / `coauthor_network_size >= 0`. `topic_evolution` mendapat `publication_count`/`citation_count`/`recency_weight >= 0`; `topics` mendapat total non-negatif dan `first_publication_year <= latest_publication_year`; `publications.citation_count >= 0`; kedua tabel edge mendapat `weight >= 0`. `growth_score` dan `citation_acceleration` sengaja dibiarkan tanpa batas karena bersifat signed (topik bisa menurun).
+> - Constraint ditambahkan `NOT VALID` lalu dipromosikan dengan `VALIDATE CONSTRAINT` — lock `SHARE UPDATE EXCLUSIVE`, tidak memblokir `SELECT`/`INSERT`/`UPDATE`.
+> - `topics.updated_at` kini dipelihara trigger `trg_topics_updated_at` (`public.touch_topics_updated_at()`); sebelumnya hanya punya `DEFAULT` sehingga stale diam-diam pada setiap `UPDATE`.
+
+---
+
+## 7.4 Cakupan Indeks.Foreign Key (Task 004)
+
+Composite PK `(publication_id, <x>)` hanya mengindeks kolom pertama, sehingga sisi `<x>` dari setiap junction butuh indeks sendiri. Tanpa indeks tersebut, setiap kueri ber-scope penulis/institusi dan setiap `ON DELETE CASCADE` dari tabel induk turun ke sequential scan.
+
+| Tabel | Kolom FK | Indeks | Alasan |
+|---|---|---|---|
+| `pub_author` | `author_id` | `idx_pub_author_author_id (author_id, publication_id)` | Sisi terbalik junction penulis |
+| `pub_institution` | `institution_id` | `idx_pub_institution_institution_id (institution_id, publication_id)` | Sisi terbalik junction institusi |
+| `keywords` | `publication_id` | `idx_keywords_publication_id` | Skor/filter per naskah |
+| `funding` | `publication_id` | `idx_funding_publication_id` | Analisis pendanaan per naskah |
+| `publication_references` | `publication_id` | `idx_publication_refs_publication_id` | Citasi keluar per naskah |
+| `chunks` | `publication_id` | `idx_chunks_pub_id` | Sudah ada sejak Task 1 |
+
+Indeks pendukung yang ditambahkan bersama:
+
+| Indeks | Kueri yang dilayani |
+|---|---|
+| `idx_publications_citation_count (citation_count DESC)` | Template "most cited" selalu `ORDER BY citation_count DESC` |
+| `idx_publications_year (year)` | Year scoping yang dipakai hampir semua template SQL |
+| `idx_institutions_country_trgm` (GIN `gin_trgm_ops`) | `country ILIKE '%…%'` |
+| `idx_institutions_name_trgm` (GIN `gin_trgm_ops`) | `institution_name ILIKE '%…%'` |
+| `idx_authors_name_trgm` (GIN `gin_trgm_ops`) | `author_name ILIKE '%…%'` |
+
+> **Kenapa trigram:** `SqlRetriever` dan `VectorRetriever` memancarkan `ILIKE '%nilai%'` (wildcard di depan) untuk resolusi entitas. B-tree tidak pernah dapat melayani pola berawalan `%`, sehingga setiap filter entitas sebelumnya memindai seluruh tabel. Kolom `*_normalized` yang sudah diindeks (AC-DB-3) tidak menolong karena kueri tidak memakainya. Indeks GIN trigram menutup celah tersebut tanpa mengubah semantik kueri.
+
+> **Layout skema `pg_trgm`:** migration 004 menyelesaikan skema `pg_trgm` dari katalog (`pg_extension`/`pg_namespace`) sebelum qualify `gin_trgm_ops`, karena Supabase memasangnya di `extensions`, bukan `public`.
 
 #### Formula Perhitungan Skor Kepakaran (`ExpertiseScore`):
 $$\text{ExpertiseScore} = w_1 \cdot \text{Relevance} + w_2 \cdot \text{Productivity} + w_3 \cdot \text{Impact} + w_4 \cdot \text{Recency}$$
@@ -410,7 +446,7 @@ erDiagram
 | Rute RAG | Lapisan Data yang Diakses | Pola Kueri SQL / Vector / Graph | Output Bukti Terstruktur |
 |---|---|---|---|
 | **`SQLRoute`** | Lapisan Silver (`publications`, `authors`, `institutions`, `funding`, `pub_author`, `pub_institution`, `keywords`, `publication_references`) | SQL SELECT / Agregasi terparameterisasi (`COUNT`, `AVG`, `GROUP BY`) dengan validasi AST `sqlglot`. | Faktual bibliometrik, ranking produktivitas, statistik pendanaan. |
-| **`VectorRoute`** | Silver Vector (`chunks.embedding`) JOIN `publications` | `chunks.embedding <=> query_vec` (Kosinus HNSW $\ge 0.65$) dengan `DISTINCT ON (p.publication_id) LIMIT 8`. | Bukti semantik naskah relevan, ringkasan abstrak, sitasi DOI/no-doi. |
+| **`VectorRoute`** | Silver Vector (`chunks.embedding`) JOIN `publications` | `chunks.embedding <=> query_vec` (Kosinus HNSW $\ge 0.65$) dalam jendela ANN ber-*overfetch*, lalu `DISTINCT ON (publication_id)` di luar jendela + `LIMIT 8`. | Bukti semantik naskah relevan, ringkasan abstrak, sitasi DOI/no-doi. |
 | **`GraphRoute`** | Lapisan Edge (`institution_collaboration`, `author_collaboration`) | Recursive CTE Terparameterisasi (Templat T1–T4) dengan batasan kedalaman `max_hops = 3`. | Jaringan kolaborasi, partner institusi, bukti co-authorship via `via_publication_ids`. |
 | **`HybridRoute`** | Lapisan Gold (`topics`, `topic_evolution`, `researcher_expertise`) + Silver & `chunks` | Gabungan (join) analitik multi-tabel: pencarian klaster topik, akselerasi tren, dan pemeringkatan kepakaran. | Tren topik tahunan, skor kepakaran multi-dimensi, sintesis kebijakan. |
 

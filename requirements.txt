@@ -1,59 +1,92 @@
-# AI-Bibliometrics — backend dependencies (Phase 0 lock, 2026-09-28)
+# AI-Bibliometrics — backend runtime dependencies (2026-10-03)
+#
+# SCOPE: everything the running FastAPI container needs, and nothing else.
+# Offline/CI tooling lives in requirements-dev.txt — keep it OUT of here or
+# pytest/ruff/mypy end up in the production image.
+#
+# Dev + offline-script deps that ARE pinned in requirements-dev.txt:
+#   pytest, pytest-asyncio, pytest-mock, pytest-cov, ruff, mypy,
+#   networkx, matplotlib   (scripts/visualize_graph.py + tests/unit/test_visualize_graph.py)
+#
+# ---------------------------------------------------------------------------
+# !! torch variant pinning — READ BEFORE EDITING !!
+# ---------------------------------------------------------------------------
+# This stack is CPU-only by design (docs/09: Ollama CPU, bge-m3 on CPU, no GPU
+# in the local/dev compose stack). But `torch==2.14.0` resolves to a DIFFERENT
+# default per platform:
+#
+#   * Windows dev venv  -> torch 2.14.0+cpu   (506 MB, no nvidia_* packages)
+#   * Linux slim (image)-> torch 2.14.0+cu13  (1.2 GB) + 16 nvidia_* packages
+#                          = 3.2 GB of CUDA libraries that can NEVER be used,
+#                            because there is no GPU and no CUDA runtime.
+#
+# Measured on this repo's image: site-packages 5.9 GB, of which nvidia_* =
+# 3.2 GB. The image shipped at 6.24 GB. The extra 3.2 GB buys nothing.
+#
+# So the CPU wheel index is pinned explicitly below. `+cpu` is a LOCAL VERSION
+# LABEL on a PyPI-published wheel — not a PEP 440 local version, and not
+# `--find-links`. It resolves normally from PyPI with no extra index.
+#
+# Do NOT "simplify" this back to plain `torch==`. That silently reintroduces
+# 3.2 GB of dead CUDA libraries on every Linux build, and nothing fails — the
+# image just gets 5x bigger. This is pinned at requirements.txt:41-45 for the
+# same reason docker-compose.yml pins the Ollama digest: bit-reproducibility.
+# If a future GPU host needs CUDA, that is a deliberate new decision (separate
+# requirements file / build arg), not a casual version edit here.
+# ---------------------------------------------------------------------------
 
-# API / Backend 
+# API / Backend
 fastapi==0.141.1       # POST /api/v1/ask + GET /api/v1/health; validasi Pydantic v2, X-Request-ID
 uvicorn==0.54.0        # ASGI server; dipakai docker/backend.Dockerfile CMD
 pydantic==2.13.5       # Skema AskRequest/AskResponse/EvidenceObject (docs/05 §4.1, docs/06 §5)
 
-# Database — PostgreSQL / Supabase, role app_readonly 
-# Pilihan driver async (asyncpg vs psycopg3) 
-# pool async siap tanpa menebak — BUKAN duplikasi, dan tidak menambah keputusan baru.
-asyncpg==0.31.0        # Kandidat pool async #1 untuk runtime FastAPI (statement_timeout 10s)
-psycopg[binary]==3.3.6 # Kandidat #2 + driver sync scripts/verify_schema.py (import psycopg)
+# Database — PostgreSQL / Supabase, role app_readonly
+# Backend uses asyncpg exclusively (backend/app/core/db.py, 6 import sites).
+# psycopg is NOT runtime: it is the sync driver for scripts/*.py + migrate.py,
+# so it lives in requirements-dev.txt, not here.
+asyncpg==0.31.0        # Pool async runtime FastAPI (statement_timeout 10s)
 
-# RAG / Retrieval — SQL AST gate 
+# RAG / Retrieval — SQL AST gate
 sqlglot==30.20.0       # Validator whitelist 9 tabel kanonikal, root Select, LIMIT 50, COUNT(DISTINCT publication_id)
 
 # Vector / Embedding — online query embedding (Phase 4, Task 6)
+# Backend imports this lazily inside _load_sentence_transformer()
+# (backend/app/services/embedding.py:78), NOT at module top level, so a missing
+# wheel degrades to the Ollama bge-m3 HTTP fallback instead of crashing import.
+# torch==2.14.0+cpu is pinned for the reason documented above: plain
+# `torch==2.14.0` drags 3.2 GB of unusable CUDA libs into the Linux image.
+torch==2.14.0+cpu
 sentence-transformers==6.1.0  # Local BAAI/bge-m3 1024-dim query embedding; fallback endpoint embedding Ollama bila load lokal gagal
 
 # Utilities
 httpx==0.28.1           # Klien HTTP async untuk Ollama service & testing API
 python-dotenv==1.2.3   # Baca DB_URL/OLLAMA_HOST untuk skrip lokal; di Compose nilai dari env_file (.env tak pernah di-commit)
 
-# Graph visualization — scripts/visualize_graph.py (offline exploration layer)
-networkx==3.6.1        # Undirected collaboration graph, metrics, GraphML export
-matplotlib==3.11.2     # Static PNG rendering (Agg backend, single-hue style)
-
-# Testing — pytest suite (Task 2/12: tests/unit + tests/integration + live-db tests/test_phase1_validation.py)
-pytest==9.1.1            # Test runner; dipakai CI .github/workflows/python-app.yml
-pytest-asyncio==1.4.0    # Menjalankan @pytest.mark.asyncio (asyncio_mode=auto, lihat pytest.ini)
-pytest-mock==3.16.0      # Fixture mocker untuk mocking service/Ollama di unit test
+# Observability — /metrics (Prometheus text format) untuk synthesis fallback counters.
+# Dipisah dari stats.py yang sengaja stdlib-only, supaya logika counter tetap
+# importable & testable tanpa dependency ini.
+prometheus-client==0.26.0  # CollectorRegistry + generate_latest; custom collector bridging SynthesisStats
 
 # ---------------------------------------------------------------------------
 # TBD / FUTURE — SENGAJA TIDAK DI-INSTALL. Jangan uncomment sebelum Task terkait
 # (docs/09 §9). Mencantumkan di sini sebagai komentar agar tidak ada technical
 # decision baru yang tersembunyi di lockfile.
 # ---------------------------------------------------------------------------
-# Task 1 (TBD-4): batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py.
-#   Model embedding SUDAH di-pin di bawah (sentence-transformers==6.1.0; torch +
-#   safetensors datang transitif) dan dipakai bersama oleh batch offline (Task 1)
-#   dan online query-embedding Fase 4 (Task 6): SentenceTransformer lokal
-#   sebagai primer + fallback endpoint embedding Ollama (backend/app/services/embedding.py).
+# Task 1 (TBD-4): batch embedding BAAI/bge-m3 1024-dim via scripts/embed_chunks.py
+#   — memakai torch+sentence-transformers yang sudah di-pin di atas, dengan
+#   encoder contract yang SAMA dengan runtime (normalize_embeddings=False).
 # Task 1c: pgvector (paket PyPI, helper insert vector) — ekstensi DB `vector`
 #   sudah DONE server-side; paket Python baru dibutuhkan saat skrip embedding ada.
 # Task 3/6/9 (TBD-3/TBD-5): httpx — klien HTTP standar ke Ollama (Qwen2.5-Coder-7B)
 #   dan test API. Docs hanya mengunci "klien HTTP standar", bukan library-nya.
-# Task 2/12: pytest + pytest-asyncio + pytest-mock di-pin di atas untuk
-#   tests/unit + tests/integration (gate coverage pytest-cov menyusul Fase 8).
 # Task 8.5: pandas / scikit-learn / bertopic untuk Gold analytics
 #   (topics, topic_evolution, researcher_expertise) — docs/09 §8 menulis
 #   "BERTopic/co-word + Pandas/sklearn/NetworkX" sebagai alternatif, belum final.
-#   (networkx kini juga di-pin di atas untuk visualisasi graf kolaborasi.)
+#   (networkx + matplotlib sudah di-pin di requirements-dev.txt untuk
+#   scripts/visualize_graph.py.)
 # DITOLAK / DITUNDA eksplisit per docs (jangan ajukan ulang tanpa ADR):
 #   langchain, llama-index (ditolak docs/09 §5); celery, redis (Fase 10);
 #   apache-age / ext graf mandiri (evaluasi Fase 9); supabase-py (akses via
 #   driver Postgres langsung); openpyxl/numpy langsung (cleaning DONE, tanpa
-#   kode xlsx; numpy datang transitif via stack ML bila Task 1/8.5 dimulai).
+#   kode xlsx).
 # Secret/credential (DB_URL, password, API key, isi .env) TIDAK PERNAH masuk file ini.
-

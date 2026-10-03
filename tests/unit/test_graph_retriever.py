@@ -19,6 +19,7 @@ from backend.app.services.retrievers.graph_retriever import (
     DEFAULT_MAX_HOPS,
     MAX_ALLOWED_HOPS,
     MAX_LIMIT,
+    SQL_TEMPLATE_T3,
     GraphEdgeResult,
     GraphPublicationMeta,
     GraphRetrievalResult,
@@ -469,3 +470,11 @@ class TestGraphAnswerSynthesizer:
         assert len(resp.evidence_objects) == 0
         assert len(resp.sources) == 0
         assert len(resp.unverified_citations) == 0
+
+
+class TestGraphT3TemplateColumns:
+    """T3 must only reference live keywords columns (no keyword_normalized)."""
+
+    def test_t3_references_only_live_keyword_columns(self):
+        assert "keyword_normalized" not in SQL_TEMPLATE_T3
+        assert "k.keyword ILIKE $1 ESCAPE" in SQL_TEMPLATE_T3

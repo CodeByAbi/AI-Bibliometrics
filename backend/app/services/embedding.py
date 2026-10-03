@@ -9,15 +9,14 @@ import asyncio
 import math
 import time
 from collections import OrderedDict
-from typing import Any, List, Optional
-import httpx
+from typing import Any
 
 from backend.app.core.config import get_settings
 from backend.app.core.errors import AppException
 from backend.app.core.http import get_http_client
 from backend.app.core.logging import logger
 
-_st_model: Optional[Any] = None
+_st_model: Any | None = None
 _st_lock = asyncio.Lock()
 
 # P3 server-* (Fase B7): bounded TTL cache for repeat query embeddings —
@@ -28,7 +27,7 @@ _QUERY_CACHE_TTL_S = 3600.0
 _query_cache: OrderedDict = OrderedDict()
 
 
-def _query_cache_get(key: tuple) -> Optional[tuple]:
+def _query_cache_get(key: tuple) -> tuple | None:
     """Return ``(vector_copy, backend)`` on fresh hit, else None."""
     try:
         expires_at, vector, backend = _query_cache.pop(key)
@@ -40,14 +39,14 @@ def _query_cache_get(key: tuple) -> Optional[tuple]:
     return list(vector), backend
 
 
-def _query_cache_put(key: tuple, vector: List[float], backend: str) -> None:
+def _query_cache_put(key: tuple, vector: list[float], backend: str) -> None:
     """Store a copy; evict least-recently-used entries beyond the bound."""
     while len(_query_cache) >= _QUERY_CACHE_MAX_ENTRIES:
         _query_cache.popitem(last=False)
     _query_cache[key] = (time.monotonic() + _QUERY_CACHE_TTL_S, list(vector), backend)
 
 
-def validate_embedding_vector(vector: List[float], expected_dim: int) -> None:
+def validate_embedding_vector(vector: list[float], expected_dim: int) -> None:
     """Validate embedding dims are finite floats (guards pgvector literal build)."""
     if len(vector) != expected_dim:
         raise EmbeddingError(
@@ -65,7 +64,7 @@ def validate_embedding_vector(vector: List[float], expected_dim: int) -> None:
 class EmbeddingError(AppException):
     """Exception raised when query embedding generation fails (503, not 500)."""
 
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(
             message=message,
             error_type="embedding_service_unavailable",
@@ -82,7 +81,7 @@ def _load_sentence_transformer(model_name: str) -> Any:
     return SentenceTransformer(model_name, model_kwargs={"use_safetensors": True})
 
 
-def _encode_local_sync(model: Any, text: str) -> List[float]:
+def _encode_local_sync(model: Any, text: str) -> list[float]:
     """Synchronous CPU encoding of single query text."""
     embedding = model.encode(text, normalize_embeddings=False)
     if hasattr(embedding, "tolist"):
@@ -90,15 +89,18 @@ def _encode_local_sync(model: Any, text: str) -> List[float]:
     return list(embedding)
 
 
-async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: int) -> List[float]:
+async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: int) -> list[float]:
     """Generate embedding vector via Ollama HTTP API."""
+    from backend.app.core.retry import is_retriable_http_status, with_retry
+
     base_url = host.rstrip("/")
     ollama_model = "bge-m3" if "bge-m3" in model_name.lower() else model_name
 
     # P3 server-*: shared client (TCP keep-alive); timeout stays per-request.
     client = get_http_client()
     req_timeout = float(timeout_s)
-    # Try newer /api/embed first
+    # Try newer /api/embed first (single attempt + fallback; retry applies
+    # to the legacy endpoint below so total latency stays bounded).
     try:
         resp = await client.post(
             f"{base_url}/api/embed",
@@ -110,15 +112,22 @@ async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: in
             embeddings = data.get("embeddings")
             if embeddings and len(embeddings) > 0:
                 return embeddings[0]
-    except Exception:
-        pass
+        elif is_retriable_http_status(resp.status_code):
+            logger.warning("Ollama /api/embed transient HTTP %s; trying /api/embeddings", resp.status_code)
+        else:
+            logger.warning("Ollama /api/embed HTTP %s (non-retriable); trying /api/embeddings", resp.status_code)
+    except Exception as exc:
+        logger.debug("Ollama /api/embed attempt failed, falling back to /api/embeddings: %s", exc)
 
-    # Fallback to /api/embeddings
-    resp = await client.post(
-        f"{base_url}/api/embeddings",
-        json={"model": ollama_model, "prompt": text},
-        timeout=req_timeout,
-    )
+    # Fallback to /api/embeddings with one transient retry (timeouts/connect only).
+    async def _post_legacy():
+        return await client.post(
+            f"{base_url}/api/embeddings",
+            json={"model": ollama_model, "prompt": text},
+            timeout=req_timeout,
+        )
+
+    resp = await with_retry(_post_legacy, max_attempts=2, operation="ollama-embeddings")
     if resp.status_code != 200:
         raise EmbeddingError(
             f"Ollama embedding request failed with HTTP {resp.status_code}",
@@ -134,7 +143,7 @@ async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: in
     return embedding
 
 
-async def generate_query_embedding_with_backend(query: str) -> tuple[List[float], str]:
+async def generate_query_embedding_with_backend(query: str) -> tuple[list[float], str]:
     """Generate query embedding, also reporting which backend served it.
 
     Returns ``(vector, backend)`` where ``backend`` is ``"local"``
@@ -157,9 +166,9 @@ async def generate_query_embedding_with_backend(query: str) -> tuple[List[float]
         return cached
 
     global _st_model
-    vector: Optional[List[float]] = None
+    vector: list[float] | None = None
     backend = "local"
-    local_err: Optional[Exception] = None
+    local_err: Exception | None = None
 
     # 1. Try local SentenceTransformer in threadpool
     try:
@@ -203,7 +212,7 @@ async def generate_query_embedding_with_backend(query: str) -> tuple[List[float]
     return vector, backend
 
 
-async def generate_query_embedding(query: str) -> List[float]:
+async def generate_query_embedding(query: str) -> list[float]:
     """Generate 1024-dimensional dense float vector for search query.
 
     Attempts local SentenceTransformer first, falling back to Ollama endpoint.

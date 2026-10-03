@@ -1,10 +1,9 @@
 # Rencana Implementasi — Urutan Build Menuju End-to-End (Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — B1 LLM opt-in, evidence live, angka tests terukur)
-**Tanggal Status:** 2026-10-03
-**Menggantikan:** `10 Implementation Plan.md` v3.6.4 (2026-10-02)
+**Versi Dokumen:** 3.8.0 (Fase 8 IN PROGRESS — rencana eksekusi gerbang sign-off MVP + Task 11)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `10 Implementation Plan.md` v3.7.2 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`. Dokumen ini adalah execution-oriented layer — bukan pengganti `docs/03 System Architecture.md`, `docs/05 Retrieval Rag Design.md`, `docs/06 Api Design.md`, `docs/11 Roadmap.md`, atau `docs/12 Data Pipeline.md`. Detail kanonikal dirujuk, tidak diduplikasi.
-
 > **Catatan Audit (2026-09-29 — wajib dibaca sebelum eksekusi):**
 > 1. **Hierarki sumber kebenaran:** Level 1 (kode + migration/schema + tests + runtime terverifikasi) > Level 2 (`docs/03`, `docs/05`, `docs/06`, `docs/04`, `docs/08`) > Level 3 (`docs/11`, `docs/10`) > Level 4 (snapshot status lama).
 > 2. **Legenda status baku:** `[DONE — VERIFIED]` (kode + test + evidence runtime ada) · `[IMPLEMENTED — VERIFICATION PENDING]` (kode + sebagian test ada, verifikasi runtime/E2E belum lengkap) · `[IN PROGRESS]` (sedang dikerjakan aktif) · `[NEXT]` (tugas berikutnya yang siap dikerjakan, preconditions terpenuhi) · `[BLOCKED]` (menunggu dependency) · `[PLANNED]` (terjadwal, preconditions belum terpenuhi) · `[POST-MVP]` · `[FUTURE]`. Label `[DONE]` tanpa evidence tidak digunakan.
@@ -19,8 +18,8 @@
 >
 > ### Progress Tracker
 > **DONE — VERIFIED:** Database setup · Prototype data preparation · Cleaning · Cleaned data export · Task 0 (Schema Audit) · Task 1a–1d (Prepare, Generate, Store pgvector, Validate HNSW) · Task 8-edge (Edge Materialization) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Client & Health) · Task 4 (QuestionRouter & EntityResolutionGate) · Task 5 (SqlRetriever & AST gate) · Task 6 (VectorRetriever) · Task 7 (EvidenceUnifier & EvidenceRanker & EvidenceSet) · Task 8-retriever (GraphRetriever T1–T4 + GraphAnswerSynthesizer) · Task 8.5 (Gold Analytics Materialization: topics, topic_evolution, researcher_expertise) · Task 9-full (Unified AnswerSynthesizer & CitationVerifier across 4 routes) · Task 10-full (API `POST /api/v1/ask` full wiring across SQL, Vector, Graph, Hybrid) · Task 12 (E2E 12 queries benchmark 14/14 passed mock + live).
-> **NEXT:** Task 11 (Frontend Next.js Chat UI 2-panel dense).
-> **PLANNED:** Task 11 (Frontend Next.js UI).
+> **IN PROGRESS:** Fase 8 (Gerbang Sign-Off MVP: workstream A–G, rencana di `reports/fase8_execution_plan.md`).
+> **NEXT:** Task 11 (Frontend Next.js Chat UI 2-panel — audit `AC-UI-1..7`, `npm run verify`, commit).
 ## 0. Matriks Status Implementasi
 
 | Komponen | Status Saat Ini | Status Target | Gap & Aksi |
@@ -39,8 +38,10 @@
 | **Gold Analytics (`topics`, `topic_evolution`, `researcher_expertise`)** | `[DONE — VERIFIED]` | MVP | 3 tabel Gold (5 topics, 25 topic_evolution, 140 researcher_expertise) termaterialisasi idempoten via `scripts/build_topics.py` dan `scripts/score_expertise.py`, hak `SELECT` diberikan ke `app_readonly` (Task 8.5). |
 | **Unified AnswerSynthesizer (semua route)** | `[DONE — VERIFIED]` | MVP | `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` / `UnifiedAnswerSynthesizer` mengonsumsi `EvidenceSet` terverifikasi di seluruh 4 route dengan `CitationVerifier` post-hoc (Task 9-full). |
 | **API `POST /api/v1/ask` full wiring** | `[DONE — VERIFIED]` | MVP | 4 route (`SQLRoute`, `VectorRoute`, `GraphRoute`, `HybridRoute`) terintegrasi penuh dengan metrik latensi, zero-evidence short-circuit deterministik, dan diagnostik developer_mode (Task 10-full). |
-| **UI Next.js** | `[PLANNED]` | MVP | Spec `docs/07` ada; implementasi berikutnya (Task 11). |
-| **Verifikasi E2E 12 queries** | `[DONE — VERIFIED]` | MVP sign-off | 14/14 tests hijau pada benchmark 12 kueri (mock + live DB), seluruh route memenuhi latensi budget (Task 12). |
+| **UI Next.js** | `[IN PROGRESS]` | MVP | Implementasi ada di working tree (`frontend/components/Workspace/`); belum audit `AC-UI-1..7`, belum `npm run verify`, belum commit (Task 11 + workstream E Fase 8). |
+| **Verifikasi E2E 12 queries** | `[DONE — VERIFIED]` | MVP sign-off | 14/14 tests hijau pada benchmark 12 kueri (mock + live DB), seluruh route memenuhi latensi budget (Task 12). Formalisasi sisanya (coverage gate, artefak baseline latensi, 24 AC) berjalan di Fase 8 workstream A/D/F. |
+
+> **Catatan Fase 8 (2026-10-03):** baris `[IMPLEMENTED — VERIFICATION PENDING]` di atas **tidak** merupakan kontradiksi dengan Progress Tracker. Status itu akurat hari ini karena verifikasi formal belum dijalankan ulang. Workstream B Fase 8 (§1.1) menjalankan ulang seluruh suite + coverage gate, dan hanya setelah itu baris-baris tersebut boleh dinaikkan ke `[DONE — VERIFIED]`. Kriteria pegangan: nama test atau baris laporan, bukan asumsi.
 
 ---
 
@@ -63,6 +64,24 @@
 ```
 
 > Nomor task tidak diubah. Task 8 dipecah dokumentatif menjadi `8-edge` (DONE) vs `8-retriever` (NEXT); Task 8.5 tetap Gold; Task 9 dipecah menjadi `9a` (Vector-scoped, sudah ada) vs `9-full` (unified, PLANNED).
+
+### 1.1 Fase 8 — Rencana Eksekusi Gerbang Sign-Off MVP
+
+Task 12 (benchmark 12 kueri) sudah lolos 14/14 live dan 333 tests hijau, sehingga **Fase 8 tidak menambah fitur baru**. Fase 8 memformalkan bukti yang sudah ada. Rinci 7 workstream ada di `reports/fase8_execution_plan.md`; normative di `docs/11 Roadmap.md` §Fase 8.
+
+| # | Workstream | Deliverable | Status |
+|---|---|---|---|
+| A | Baseline tooling | `pytest-cov` terpasang; coverage gate ≥80% pada `router`/`retrievers`/`sql_security`/`synthesizer`; `.gitignore` artefak coverage | `[PLANNED]` |
+| B | Verification run | Re-run `tests/unit` + `tests/integration`, `E2E_LIVE=1 tests/e2e`, dan `--cov=backend/app`; tutup gap <80%; tutup sisa TBD-5 | `[PLANNED]` |
+| C | R2a gate `<200ms` nol-bukti | Tuning encoder bge-m3 CPU (`torch.inference_mode()` + `set_num_threads`) + parity test; checkpoint owner bila R2a.2 (re-scope `AC-RAG-4`) diperlukan; R2a.3 (pre-probe leksikal) ditolak di Fase 8 | `[PLANNED]` |
+| D | Baseline latensi formal | Spek environment + breakdown per-route dari `debug` → `reports/fase8_latency_baseline.md` vs NFR1 | `[PLANNED]` |
+| E | Task 11 Frontend | Audit `AC-UI-1..7`, tutup gap, `npm run verify` + `npm run build`, smoke live 7 status, commit `feat/task-11-frontend` | `[PLANNED]` |
+| F | Checklist AC | 24 item (`AC-DB-1..9`, `AC-RAG-1..5`, `AC-API-1..4`, `AC-PIPE-1..6`, `AC-UI-1..7`) dicentang dengan pointer bukti | `[PLANNED]` |
+| G | Rekonsiliasi + sign-off | Tutup kontradiksi §0 dokumen ini dan status stale `docs/11`; sync `docs/01`+`docs/02`; `reports/fase8_signoff.md`; bump versi | `[PLANNED]` |
+
+**Keputusan owner dipatok 2026-10-03:** **R1** migrasi `.env DB_URL` ke `app_readonly` hanya didokumentasikan (tindakan pemilik, `.env` tidak disentuh agent) · **R2a** target `<200ms` nol-bukti dikejar pada workstream C · **R2b** sintesis LLM ±14,7 detik CPU tetap deviasi diterima (GPU → Fase 10) · **D1** sinkronisasi `docs/01` dan `docs/02` masuk workstream G.
+
+**Known Gaps Fase 8:** 24 item AC masih `[ ]` di `docs/04/05/06/07/12` · `pytest-cov` belum terpasang (`requirements.txt:53`) · `frontend/coverage/` masih untracked dan belum masuk `.gitignore` · working tree dirty luas (14 file backend + 20 file frontend termodifikasi, 22 file `Workspace/` untracked) sehingga tidak boleh di-merge tanpa review pemilik.
 
 ### Task 0 — Schema Audit `[DONE — VERIFIED]`
 
@@ -120,7 +139,7 @@
 - **Acceptance Criteria:** Health + pool + tracing + rate-limit + envelope error bekerja; `POST /api/v1/ask` skeleton tervalidasi Pydantic.
 - **Evidence of Completion:** File di atas ada; tests pool/health/middleware hijau.
 - **Downstream Impact:** Unlock Task 3 (Ollama health) dan Task 4–6 (wiring retriever).
-- **Known Gaps:** Ketidakkonsistenan dokumentasi rate-limit (`60 rpm` di versi lama Plan vs `20/min/IP` di `docs/08 §3`/`README`) — implementasi mengikuti kode aktual; Plan tidak menciptakan angka baru. `TBD-1 asyncpg vs psycopg3` (`docs/09`) tetap TBD; kode memakai `asyncpg`.
+- **Known Gaps:** ~~Ketidakkonsistenan dokumentasi rate-limit (`60 rpm` di versi lama Plan vs `20/min/IP` di `docs/08 §3`/`README`)~~ — **RESOLVED 2026-10-03**: kode, `docs/08 §3`, dan README diselaraskan ke **60 rpm** (nilai yang sejak awal dicatat Plan), kini dikonfigurasi lewat `RATE_LIMIT_RPM`. `TBD-1 asyncpg vs psycopg3` (`docs/09`) tetap TBD; kode memakai `asyncpg`.
 
 ### Task 3 — Setup Ollama & Model Qwen2.5-Coder-7B `[DONE — VERIFIED]`
 
@@ -182,17 +201,17 @@
 - **Objective:** Menjawab discovery semantik ID/EN via embedding + pgvector HNSW dengan dedup + gate deterministik.
 - **Why This Exists:** Satu-satunya jalur konseptual (topik/konsep, bukan keyword eksak) di atas `chunks.embedding`.
 - **Preconditions / Dependencies:** Task 1 DONE (40 vektor + HNSW); Task 3 DONE (fallback Ollama); Task 4 DONE-parsial (route); `docs/05 §5.2`, `docs/02 FR4`.
-- **Scope:** Online query embedding (`SentenceTransformer` lokal via threadpool + `safetensors`, fallback Ollama `/api/embed` → `/api/embeddings`, dimension integrity check = 1024, empty guard); retrieval pgvector `<=>` dengan `DISTINCT ON (p.publication_id)` (best chunk per publikasi) + outer `ORDER BY similarity_score DESC` + `LIMIT 8` (= 8 publikasi unik); cosine gate `>= 0.65` (di bawah → `not_found`); structured filters bila didukung + tracking `filters_ignored`; parameterized SQL + `statement_timeout 10s`; zero-match short-circuit deterministik (`status: not_found`, 0 evidence, 0 LLM call, <200ms).
+- **Scope:** Online query embedding (`SentenceTransformer` lokal via threadpool + `safetensors`, fallback Ollama `/api/embed` → `/api/embeddings`, dimension integrity check = 1024, empty guard); retrieval pgvector `<=>` **dua tahap**: jendela ANN ber-indeks HNSW yang diurutkan murni oleh operator jarak dengan *overfetch* 25× limit, lalu `DISTINCT ON (ac.publication_id)` di luar jendela (best chunk per publikasi) + `ORDER BY similarity_score DESC` + `LIMIT 8` (= 8 publikasi unik); cosine gate `>= 0.65` (di bawah → `not_found`); structured filters bila didukung + tracking `filters_ignored`; vektor ter-*bind* sebagai `$1` via codec `vector` (`pool._init_connection`) + parameterized SQL lainnya + `statement_timeout 10s`; zero-match short-circuit deterministik (`status: not_found`, 0 evidence, 0 LLM call, <200ms).
 - **Out of Scope:** `EvidenceUnifier` generik (Task 7); Gold/reranker baru (tidak ada); perubahan threshold/indeks (terkunci).
 - **Implementation Surface:** `backend/app/services/embedding.py` (152 baris: `_load_sentence_transformer`, `_embed_via_ollama`, `generate_query_embedding`, dim-check); `backend/app/services/retrievers/vector_retriever.py` (244 baris: `DEFAULT_THRESHOLD=0.65`, `DEFAULT_LIMIT=8`, `filters_ignored`, `vec_literal`, `DISTINCT ON`, timeout); `backend/app/routers/ask.py:195-245` (wiring + `vector_retrieval_ms/synthesis_ms/total_ms` + `developer_mode` diagnostics `scored_chunks`).
-- **Data / Database Dependency:** `chunks.embedding vector(1024)` + `idx_chunks_embedding_hnsw (m=16, ef_construction=64, vector_cosine_ops)` + `idx_chunks_pub_id`; kueri kanonikal `SELECT DISTINCT ON (p.publication_id) … 1-(embedding <=> $1) AS similarity … WHERE similarity >= $1 ORDER BY p.publication_id, distance ASC … ORDER BY similarity_score DESC LIMIT 8` (`docs/05 §5.2`); cosine gate `>= 0.65` (`BAAI/bge-m3`).
+- **Data / Database Dependency:** `chunks.embedding vector(1024)` + `idx_chunks_embedding_hnsw (m=16, ef_construction=64, vector_cosine_ops)` + `idx_chunks_pub_id` + indeks FK sisi terbalik junction (`database/migrations/004`); kueri kanonikal dua tahap `WITH ann_candidates AS (SELECT … ORDER BY (embedding OPERATOR(extensions.<=>) $1::extensions.vector) ASC LIMIT $2), scored_chunks AS (SELECT DISTINCT ON (ac.publication_id) … WHERE (1 - ac.distance) >= $3) SELECT * … ORDER BY similarity_score DESC LIMIT $4` (`docs/05 §5.2`); cosine gate `>= 0.65` (`BAAI/bge-m3`).
 - **API / Contract Dependency:** `AskResponse{route: VectorRoute, sources[]{source_type: vector, relevance_score, provenance}, filters_ignored[], debug{latency_breakdown}}`; filter `FilterParams` yang tak teresolusi wajib muncul di `filters_ignored` (jujur, bukan diam-diam diabaikan).
 - **Security / Guardrails:** `app_readonly` + parameterized (threshold/filters/IDs/limit sebagai `$N`); `vec_literal` hanya float terformat (`f"{v:.8f}"`, debug diredaksi `[vector_1024d]`); timeout ganda (server-side pool + `asyncio.wait_for` → `DBTimeoutError`); teks retrieval = `UNTRUSTED DATA` (tidak pernah dieksekusi).
 - **Test & Verification:** Unit: `unit/test_embedding.py` (5: lokal 1024-d, mismatch, Ollama fallback, dual-fail) + `unit/test_vector_retriever.py` (5: CTE, zero-match, filter binding, synthesis ok/not_found); integration: `integration/test_vector_ask_endpoint.py` (4: ok/not_found/diagnostics/filters) dalam 177; runtime pending: `SELECT COUNT(*) WHERE embedding IS NULL = 0` + `<=>` live + latensi `vector_retrieval_ms`; E2E: Task 12 (Top-8 unik, threshold behavior).
 - **Acceptance Criteria:** `LIMIT 8` = 8 publikasi unik (dedup terbukti); skor `< 0.65` → `not_found` deterministik; `filters_ignored` akurat; tidak ada query tak-parameterized dari teks user.
 - **Evidence of Completion:** File embedding + retriever + wiring latensi ada; 177-test collection mencakup vector suites hijau. Sisa runtime checklist dicatat di Known Gaps (bukan klaim DONE penuh).
 - **Downstream Impact:** Unlock Task 9a (sintesis Vector) dan Task 10-parsial (`VectorRoute` wired). Tidak unlock Graph/Hybrid/Gold.
-- **Known Gaps:** (1) Checklist runtime live-DB belum dilampirkan sebagai artefak; (2) `vec_literal` diinterpolasi (float-only, aman de facto) — tetap dicatat untuk audit keamanan berikutnya; (3) `requirements.txt` belum mem-pin `sentence-transformers/torch` (TBD `docs/09`).
+- **Known Gaps:** (1) `requirements.txt` belum mem-pin `sentence-transformers/torch` (TBD `docs/09`); (2) pada 40 chunk, plansyenya tetap memilih `idx_chunks_pub_id` + sort dan bukan HNSW — benar secara biaya pada kardinalitas ini, dan berpindah ke indeks HNSW otomatis saat korpus membesar (`docs/05 §5.2`). ~~Checklist runtime live-DB belum dilampirkan sebagai artefak~~ — SELESAI: `tests/integration/test_vector_live_hnsw.py` kini mem-EXPLAIN pernyataan produksi yang diambil dari `VectorRetriever.build_query` (bukan paraphrase) plus uji distinctness/urutan skor/latensi. ~~`vec_literal` diinterpolasi~~ — SELESAI: vektor kini di-*bind* sebagai `$1` lewat codec `vector`.
 - **Rollback / Failure Consideration:** Bila model lokal gagal load → fallback Ollama; bila keduanya gagal → error envelope (bukan jawaban halusinasi); bila HNSW hilang → kueri tetap benar tapi lambat ( dramatis di >100K; prototipe 40 chunk tidak kritis).
 
 ### Task 7 — EvidenceUnifier & EvidenceRanker `[IMPLEMENTED — VERIFICATION PENDING]`
@@ -329,9 +348,9 @@
 - **Evidence of Completion:** 333 tests terkumpul di seluruh repo (319 unit+integration hijau satu run; E2E 12 mock hijau + 2 live-only; live E2E 14/14 passed); benchmark E2E 12 kueri hijau di mock dan live DB.
 - **Downstream Impact:** Unlock Task 11 (Frontend Next.js UI).
 - **Known Gaps:** Tidak ada.
-### Task 11 — Frontend Next.js (Gaya Padat Notion/Linear) `[PLANNED]`
+### Task 11 — Frontend Next.js (Gaya Padat Notion/Linear) `[IN PROGRESS]`
 
-- **Status:** `[PLANNED]`
+- **Status:** `[IN PROGRESS]` — implementasi sudah ada di working tree (`frontend/components/Workspace/`: 22 file, ±2.600 baris + ±900 baris test vitest, seluruhnya **untracked**); belum diaudit terhadap `AC-UI-1..7`, belum `npm run verify`, belum di-commit. Audit dikerjakan pada workstream E Fase 8.
 - **Objective:** Chat UI 2-panel dense untuk demo + Dev-Mode inspection.
 - **Why This Exists:** Demo MVP membutuhkan permukaan jujur (status, sitasi, sumber, latensi) di atas Task 10.
 - **Preconditions / Dependencies:** Task 10-parsial cukup untuk mulai; Task 10-full untuk 4-route; `docs/07 UI Spec.md` sebagai spec kanonikal.
@@ -347,9 +366,9 @@
 - **Downstream Impact:** Unlock demo + UAT.
 - **Known Gaps:** `frontend/` belum ada implementasi; token desain (`bg #FFFFFF`, `accent #2563EB`, `Inter 14px`, `JetBrains Mono 13px`) mengikuti `docs/07 §3`.
 
-### Task 12 — Verifikasi End-to-End & Baseline Latensi `[PLANNED]`
+### Task 12 — Verifikasi End-to-End & Baseline Latensi `[IN PROGRESS]`
 
-- **Status:** `[PLANNED]` (`[BLOCKED]` sampai Task 7/8/9-full/10-full; vertical slice SQL+Vector dapat di-pre-run)
+- **Status:** `[IN PROGRESS]` — **benchmark 12 kueri sudah `[DONE — VERIFIED]`** (14/14 live E2E, `reports/fase7_closeout.md` §3), tetapi bagian formalisasi Task 12 belum: coverage gate, baseline latensi sebagai artefak mandiri, dan pencentangan 24 checklist AC. Ketiganya adalah workstream A, D, dan F Fase 8 (§1.1).
 - **Objective:** Gerbang sign-off MVP: 12 kueri kanonikal lintas 4 route di atas data nyata + baseline latensi CPU.
 - **Why This Exists:** Satu-satunya bukti E2E bahwa grounding + sitasi + latensi terpenuhi bersamaan.
 - **Preconditions / Dependencies:** Dataset prototipe (~20 publikasi, 40 chunk, 138 authors, 107 institusi — lihat §2); Task 4–10-full; `docs/02` (FR0–FR7, NFR1–NFR6) + `docs/01 §5` (sukses MVP: Top-N benar, Top-8 unik, `needs_clarification` untuk `j. wang`, 0 unverified, no destructive SQL, `not_found` saat kosong, e2e ≤15s CPU).
@@ -380,7 +399,7 @@
 | **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED | Task 1 + 6 |
 | **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED | Task 4/5/6/8 |
 | **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik `>= 0.65` untuk `BAAI/bge-m3`; di bawah ambang → `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED | Task 6 + 9a |
-| **Dedup + LIMIT Vector** | `DISTINCT ON (p.publication_id)` + `LIMIT 8` = 8 publikasi unik | `02`, `03`, `04`, `05` | ALIGNED | Task 6 |
+| **Dedup + LIMIT Vector** | Jendela ANN ber-*overfetch* → `DISTINCT ON (ac.publication_id)` di luar jendela → `LIMIT 8` = 8 publikasi unik | `02`, `03`, `04`, `05` | ALIGNED | Task 6 |
 | **LIMIT SQL / Graph** | SQL non-aggregate `LIMIT 50`; Graph `LIMIT 50` (`docs/02 FR7`), T1 contoh `LIMIT 20` (`docs/05 §5.3` — ikuti per-templat) | `02`, `03`, `05` | ALIGNED dengan catatan | Task 5 / 8-retriever Known Gaps |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Title, Year, DOI]` jika ada DOI, dan `[Title, Year, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED | Task 9a/9-full |
 | **Graph Engine Strategy** | MVP parameterized PostgreSQL Recursive CTE (T1–T4, `max_hops=3`); pasca-MVP Apache AGE Phase 9 | `03`, `04`, `09`, `11` | ALIGNED | Task 8 |
@@ -403,6 +422,7 @@
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/10 Implementation Plan.md` v3.8.0 | Tambah §1.1 Fase 8 Rencana Eksekusi (workstream A–G + 4 keputusan owner R1/R2a/R2b/D1 + Known Gaps); Task 11 dari `[PLANNED]` ke `[IN PROGRESS]` (implementasi ada di working tree, belum audit `AC-UI-1..7`); Task 12 dari `[PLANNED]` ke `[IN PROGRESS]` denganplanatory bahwa benchmark 12 kueri sendiri sudah `[DONE — VERIFIED]` 14/14 dan yang tersisa adalah formalisasi; baris matriks UI Next.js disinkronkan; tracker_progress menambah baris IN PROGRESS; Catatan Fase 8 ditegaskan bahwa `[IMPLEMENTED — VERIFICATION PENDING]` bukan kontradiksi tetapi status akurat sampai workstream B selesai | Gate Fase 7 dibuka dengan 2 risiko diterima (`reports/fase7_closeout.md`); dokumen ini sebelumnya menyatuakan Task 11 sebagai NEXT sekaligus PLANNED dan Task 12 sebagai PLANNED padahal benchmark-nya sudah hijau. Rencana rinci `reports/fase8_execution_plan.md` |
 | `docs/10 Implementation Plan.md` v3.7.1 | Close-out Fase 7: sintesis LLM opt-in B1 (`llm_synthesis` + `synthesis_backend` + fallback), 4 tests gaps MEDIUM baru (`test_fase7_gaps.py`: 503 endpoint, tren-tanpa-sources, prioritas multi-intent, fallback Hybrid), 13 tests LLM (`test_llm_synthesizer.py`); angka tests diganti hasil ukur (333 terkumpul: 319 unit+integration hijau, 14/14 live E2E) | Eksekusi review Fase 7 2026-10-03; laporan `reports/fase7_closeout.md` |
 | `docs/10 Implementation Plan.md` v3.7.0 | Sinkronisasi Fase 7: Task 8.5 (Gold Analytics: topics, topic_evolution, researcher_expertise), Task 9-full (Unified AnswerSynthesizer & CitationVerifier), Task 10-full (full wiring 4-route di POST /api/v1/ask), dan Task 12 (E2E 12-query benchmark) berstatus `[DONE — VERIFIED]`; 324 passed tests di repo | Implementasi penuh Fase 7 per 2026-10-03: materialisasi 3 tabel Gold, HybridRetriever, EvidenceUnifier.from_hybrid, HybridAnswerSynthesizer, AnswerSynthesizer, wiring HybridRoute, dan verifikasi benchmark 12 kueri |
 | `docs/10 Implementation Plan.md` v3.6.4 | Sinkronisasi Fase 6: `GraphRoute` dari stub ke wired (`Task 10-parsial` mencakup `SQLRoute`/`VectorRoute`/`GraphRoute`); `Task 8-retriever` T2/T3/T4 spesifikasi di `docs/05 §5.3`; `from_graph` fail-closed; `CitationVerifier` Jaccard ≥0.8 + DOI-year strict (gap lama `cite_year` dihapus); T4 ego-BFS berbatas direncanakan pairwise path Fase 9 | Review Phase 6 2026-10-02: kode + 261 tests + 2 E2E mock baru membuktikan graph route penuh |

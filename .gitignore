@@ -51,3 +51,8 @@ frontend/tsconfig.tsbuildinfo
 DESIGN.md
 PRODUCT.md
 plans/
+
+# Local test/tool artifacts (pytest & vitest caches, generated AI tool output)
+.coverage
+frontend/coverage/
+graphify-out/

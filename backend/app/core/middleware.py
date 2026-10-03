@@ -123,10 +123,27 @@ class RateLimitingMiddleware(BaseHTTPMiddleware):
         return True
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Exclude internal health/docs checks from rate limiting
-        if request.url.path in ("/api/v1/health", "/health", "/docs", "/redoc", "/openapi.json", "/"):
+        # Exclude internal health/docs/metrics checks from rate limiting — a
+        # scraper polling /metrics must never be able to lock itself out.
+        if request.url.path in (
+            "/api/v1/health",
+            "/health",
+            "/metrics",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+            "/",
+        ):
             return await call_next(request)
 
+        # Keyed on the resolved peer address. Behind a reverse proxy this is only
+        # correct because uvicorn runs with --proxy-headers, which overwrites
+        # scope["client"] from X-Forwarded-For / X-Real-Ip for trusted proxies
+        # (see TRUSTED_PROXY_IPS in docker-compose.yml). Without that flag every
+        # request shares the proxy's IP and the entire site collapses into one
+        # bucket — a site-wide 429. Do not read X-Forwarded-For directly here:
+        # that would trust a client-supplied header and let anyone bypass the
+        # limiter by inventing a fresh IP per request.
         client_ip = request.client.host if request.client else "127.0.0.1"
         now = time.time()
         self._sweep(now)

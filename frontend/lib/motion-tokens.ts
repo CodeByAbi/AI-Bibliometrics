@@ -12,6 +12,8 @@
 export const motionTokens = {
   duration: {
     instant: 0.08,
+    // Mirrors --dur-exit in globals.css; exits stay quieter than entrances.
+    exit: 0.15,
     fast: 0.18,
     med: 0.22,
     slow: 0.32,

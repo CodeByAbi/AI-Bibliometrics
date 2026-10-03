@@ -1,10 +1,9 @@
 # Roadmap Teknis — Prototipe Scopus menuju Riset Intelijen
 
-**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — B1 LLM opt-in, resolusi kontrak, evidence live)  
+**Versi Dokumen:** 3.8.0 (Fase 8 IN PROGRESS — rencana eksekusi gerbang sign-off MVP + Task 11)  
 **Tanggal Status:** 2026-10-03  
-**Menggantikan:** `11 Roadmap.md` v3.7.0 (2026-10-03)
+**Menggantikan:** `11 Roadmap.md` v3.7.2 (2026-10-03)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
-
 ---
 
 ## 1. Ringkasan Eksekutif & Penilaian Status Proyek
@@ -21,14 +20,16 @@ Inspeksi repositori per **2026-09-29** menetapkan status tersinkronisasi berikut
 - **IMPLEMENTED — VERIFICATION PENDING — Fase 5:** Evidence Layer generik (`EvidenceUnifier` + `EvidenceRanker` + `EvidenceSet` + `EvidenceItem`) — unit 21 + integration 9 + E2E mock 12 query hijau; live E2E (Task 12) pending; `from_graph sources` resolved di Fase 6.
 - **DONE — VERIFIED — Fase 6:** Mesin Retrieval Graf (`GraphRetriever` T1–T4 + `GraphAnswerSynthesizer` + `CitationVerifier` + wiring `GraphRoute` di `POST /api/v1/ask`) — terverifikasi.
 - **DONE — VERIFIED — Fase 7:** Retrieval Hybrid Multi-Rute & Sintesis Jawaban Ter-grounding (`HybridRetriever` + Gold Analytics `topics`, `topic_evolution`, `researcher_expertise` + `EvidenceUnifier.from_hybrid` + `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` + sintesis LLM opt-in Qwen2.5-Coder via Ollama dengan fallback deterministik + full wiring 4-route di `POST /api/v1/ask`) — terverifikasi: 333 tests terkumpul (319 unit+integration hijau, 12 E2E mock hijau + 2 live-only) + 14/14 live E2E queries passed (laporan: `reports/fase7_closeout.md`).
-- **NEXT — Fase 8 / Fase 11:** UI Next.js Chat 2-panel dense (Task 11) dan pengerasan baseline latensi formal.
+- **IN PROGRESS — Fase 8:** Gerbang Sign-Off MVP. Task 12 (benchmark 12 kueri) sudah 14/14 live, sehingga Fase 8 adalah formalisasi: coverage gate, baseline latensi, audit UI Task 11, dan pengecekan 24 item checklist AC yang masih `[ ]`. Rencana eksekusi 7 workstream (A-G) di `reports/fase8_execution_plan.md`; normative di §Fase 8 dokumen ini.
+- **NEXT — Task 11:** UI Next.js Chat 2-panel dense — implementasi sudah ada di working tree (`frontend/components/Workspace/`, 22 file untracked) tetapi belum diaudit terhadap `AC-UI-1..7`, belum diverifikasi `npm run verify`, dan belum di-commit.
 
 ### 1.1b Pelacak Progres (Sinkronisasi 2026-10-03)
 
 | Status | Item |
 |---|---|
 | DONE — VERIFIED | Database PostgreSQL · Dataset prototipe (9 tabel kanonikal) · Pembersihan data (cleaning) · Export data bersih (`data/*_cleaned.csv`) · Task 0 (Audit Skema) · Task 1 (Batch Embedding & Indeks HNSW) · Task 8-edge (Materialisasi Edge Graf) · Task 2 (FastAPI Framework & DB Pool) · Task 3 (Ollama Setup & Health) · Task 4 (QueryRouter & EntityResolutionGate) · Task 5 (SqlRetriever & AST Validator) · Task 6 (VectorRetriever + Online Embedding) · Task 7 (Evidence Layer generik: EvidenceUnifier + EvidenceRanker + EvidenceSet + EvidenceItem) · Task 8-retriever (GraphRetriever T1–T4 + GraphAnswerSynthesizer) · Task 8.5 (Gold Analytics Materialization: topics, topic_evolution, researcher_expertise) · Task 9-full (Unified AnswerSynthesizer & CitationVerifier across 4 routes) · Task 10-full (API POST /api/v1/ask full wiring across SQL, Vector, Graph, Hybrid) · Task 12 (E2E 12-query benchmark 14/14 passed) |
-| NEXT | Task 11 (Frontend Next.js UI Chat 2-panel) |
+| IN PROGRESS | Fase 8 (Gerbang Sign-Off MVP: coverage gate, baseline latensi, R2a gate `<200ms` nol-bukti, audit `AC-UI-1..7`, pencentangan 24 AC, rekonsiliasi `docs/01`+`docs/02`) |
+| NEXT | Task 11 (Frontend Next.js UI Chat 2-panel — audit `AC-UI-1..7` + `npm run verify` + commit) |
 | PLANNED / POST-MVP | Fase 9 (Apache AGE & Algoritma Graf Kompleks) · Fase 10 (Streaming & Async Workers) |
 ### 1.2 Apa yang Harus Dibangun Terlebih Dahulu?
 Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasyarat absolut adalah:
@@ -44,7 +45,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 - **QueryRouter Multi-Rute** yang memprioritaskan aturan pola deterministik dan ekstraksi entitas (fallback router LLM).
 - **Empat Retriever Inti**:
   - `SqlRetriever` (tervalidasi AST pada 9 tabel kanonikal, peran read-only, pemeriksaan agregasi eksak, `LIMIT 50`).
-  - `VectorRetriever` (`bge-m3` 1024d, similaritas kosinus HNSW pgvector, `DISTINCT ON (p.publication_id)`, ambang $\ge 0.65$).
+  - `VectorRetriever` (`bge-m3` 1024d, similaritas kosinus HNSW pgvector, jendela ANN ber-*overfetch* lalu `DISTINCT ON` di luar jendela, ambang $\ge 0.65$).
   - `GraphRetriever` (derived edge tables `institution_collaboration` dan `author_collaboration`; traversal terbatas maks 3 hop; pelacakan provenance).
   - `HybridRetriever` (Lapisan Gold `topics`, `topic_evolution`, `researcher_expertise` + Silver & `chunks`).
 - **Lapisan Bukti (Evidence Layer)**: skema `Evidence`, `EvidenceSet`, dan `EvidenceUnifier` yang memastikan tidak ada baris/chunk mentah yang melewati normalisasi.
@@ -263,13 +264,13 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
   - Implementasikan klien embedding online memakai `BAAI/bge-m3` (sentence-transformers lokal atau endpoint embedding Ollama).
   - Implementasikan `VectorRetriever`:
     - Embed pertanyaan pengguna menjadi vector float 1024-dimensi.
-    - Eksekusi kueri jarak kosinus (`<=>`) terhadap `chunks`.
-    - Tegakkan deduplikasi: `DISTINCT ON (p.publication_id)` sebelum menerapkan `LIMIT 8`.
+    - Eksekusi kueri jarak kosinus (`<=>`) terhadap `chunks` dalam **jendela ANN** yang diurutkan murni oleh operator jarak (satu-satunya urutan yang dapat dilayani indeks HNSW), dengan *overfetch* 25× limit.
+    - Tegakkan deduplikasi **setelah** jendela ANN: `DISTINCT ON (ac.publication_id)` pada hasil ANN, baru `LIMIT 8`. Deduplikasi tidak boleh berada di dalam jendela ANN — `ORDER BY publication_id` di depan operator jarak membuat plansyenya memindai penuh dan indeks HNSW tidak terpakai.
     - Gabung (join) dengan tabel `publications` untuk mengambil metadata kanonikal (`title`, `year`, `doi`, `eid`).
   - Implementasikan gerbang ambang skor similaritas: saring chunk di bawah ambang dasar similaritas ($\ge 0.65$).
   - Tangani skenario nol-kecocokan: kembalikan daftar kosong segera jika tidak ada chunk lolos ambang.
-- **Output:** `VectorRetriever` teruji yang mengembalikan chunk publikasi topikal terdedup menurut naskah (paper). Implementasi: `backend/app/services/embedding.py` (dual-path lokal + fallback Ollama, dim-check 1024, guard non-finite) + `backend/app/services/retrievers/vector_retriever.py` (`DISTINCT ON`, `LIMIT 8`, gate `>= 0.65`, `filters_ignored`, redaksi debug `[vector_1024d]`) + `VectorAnswerSynthesizer`/`CitationVerifier` (Task 9a, Vector-scoped) + wiring `POST /api/v1/ask` (`VectorRoute`).
-- **Catatan verifikasi:** vektor precomputed divalidasi dimensi + finite sebelum build literal SQL; literal vektor diinterpolasi dari float tervalidasi (`f"{v:.8f}"`, aman de facto) sedangkan threshold/filter/ID/limit tetap `$N` parameterized; operator memakai kualifikasi `extensions.<=>` (asumsi ekstensi `vector` di skema `extensions`, layout Supabase).
+- **Output:** `VectorRetriever` teruji yang mengembalikan chunk publikasi topikal terdedup menurut naskah (paper). Implementasi: `backend/app/services/embedding.py` (dual-path lokal + fallback Ollama, dim-check 1024, guard non-finite) + `backend/app/services/retrievers/vector_retriever.py` (`build_query` dua tahap ANN→dedup, `LIMIT 8`, gate `>= 0.65`, `filters_ignored`, vektor ter-*bind* sebagai `$1`) + `VectorAnswerSynthesizer`/`CitationVerifier` (Task 9a, Vector-scoped) + wiring `POST /api/v1/ask` (`VectorRoute`).
+- **Catatan verifikasi:** vektor precomputed divalidasi dimensi + finite sebelum di-*bind*; literal vektor dikirim sebagai parameter `$1` (bukan diinterpolasi) melalui codec `vector` di `pool._init_connection`, sedangkan threshold/filter/ID/limit juga `$N` parameterized; operator memakai kualifikasi `extensions.<=>` (asumsi ekstensi `vector` di skema `extensions`, layout Supabase). `hnsw.ef_search` dinaikkan ke `100` per koneksi karena deduksi ditumpuk di atas hasil ANN. Bentuk kueri diverifikasi terhadap **pernyataan produksi itu sendiri** melalui `VectorRetriever.build_query` pada `tests/integration/test_vector_live_hnsw.py`, bukan terhadap paraphrase tangan.
 - **Memblokir:** Fase 5 (Lapisan Bukti generik), Fase 7 (Retrieval Hybrid).
 - **Kriteria Penerimaan:**
   - Pertanyaan "papers about oxidative stress in Wharton's jelly" mengembalikan 8 publikasi topikal teratas dengan DOI dan abstrak valid.
@@ -351,26 +352,30 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 ---
 
 ### Fase 8 — Verifikasi MVP End-to-End, Suite Uji & Baseline Latensi
-**Status:** `[PLANNED]` (Gerbang Penyelesaian MVP)  
+**Status:** `[IN PROGRESS]` (Gerbang Penyelesaian MVP)  
 **Tujuan:** Eksekusi verifikasi formal di seluruh sistem pada dataset prototipe, validasi seluruh kebutuhan fungsional dan keamanan, dan tetapkan baseline latensi empiris.
 
-- **Prasyarat:** Penyelesaian Fase 7.
-- **Cakupan & Deliverable:**
-  - Implementasikan suite uji komprehensif di `tests/`:
-    - Uji unit router (kueri terstruktur, semantik, graf, hybrid, ambigu).
-    - Uji keamanan SQL (penolakan DROP, DELETE, tabel non-whitelist, agregat malformed).
-    - Uji vector (ambang kosinus, deduplikasi).
-    - Uji graf (penegakan batas hop, penanganan relasi sirkular).
-    - Uji unifier bukti (akurasi normalisasi dan deduplikasi).
-    - Uji sintesiser (verifier sitasi, resistensi injeksi prompt, penanganan nol-bukti).
-    - Uji integrasi API (`200 OK`, `422 Unprocessable Entity`, `503 Service Unavailable`).
-  - Eksekusi daftar periksa verifikasi end-to-end 12-kueri (Task 12).
-  - Pengukuran Latensi empiris pada environment CPU target.
-- **Output:** Laporan suite uji, fungsionalitas E2E terverifikasi pada dataset prototipe, audit baseline latensi empiris.
+- **Prasyarat:** Fase 7 — **terpenuhi**.
+- **Rencana Eksekusi 7 Workstream (normatif; rinci di `reports/fase8_execution_plan.md`):**
+  - **A — Baseline tooling (blocking):** pasang `pytest-cov` (ditunda eksplisit ke Fase 8 di `requirements.txt:53`), konfigurasi coverage gate ≥80% pada `router`/`retrievers`/`sql_security`/`synthesizer`, dan `.gitignore` untuk artefak `frontend/coverage/` serta `.coverage`.
+  - **B — Verification run:** jalankan ulang `pytest tests/unit tests/integration`, `E2E_LIVE=1 pytest tests/e2e`, dan `pytest --cov=backend/app --cov-report=term-missing`; tutup gap dengan unit test terarah; tutup sisa `docs/09` TBD-5 (parity check distribusi embedding fallback vs gate 0.65).
+  - **C — R2a: kejar `<200ms` nol-bukti:** cold path `VectorRoute` 246ms dengan 193ms `model.encode` bge-m3 CPU. Eksekusi **R2a.1** (tuning encoder: `torch.inference_mode()` + `set_num_threads`, dikunci parity test cosine ≈1.0). Bila masih gagal → **checkpoint owner** sebelum R2a.2 (re-scope `AC-RAG-4` per-route). **R2a.3** (pre-probe leksikal sebelum embedding) **ditolak di Fase 8** karena korpus prototipe hanya 40 chunk sehingga gate leksikal tidak dapat divalidasi; item FTS Hybrid di §5 tetap Fase 9.
+  - **D — Baseline latensi formal:** catat spek environment, breakdown per-route dari `debug` (`validation_ms`…`total_ms`, warm dan cold), tulis `reports/fase8_latency_baseline.md` versus NFR1 (`<15 detik`).
+  - **E — Task 11 Frontend:** audit `frontend/components/Workspace/` terhadap `AC-UI-1..7` (`docs/07` §4–§6), tutup gap, `npm run verify` + `npm run build`, smoke live 7 status, lalu commit bercabang.
+  - **F — Checklist AC:** `AC-DB-1..9` (`docs/04:471`), `AC-RAG-1..5` (`docs/05:312`), `AC-API-1..4` (`docs/06:280`), `AC-PIPE-1..6` (`docs/12:240`), `AC-UI-1..7` (`docs/07:144`). **Aturan:** dicentang hanya dengan pointer bukti konkret; AC gagal dicentang dengan catatan deviasi tertulis, bukan senyap.
+  - **G — Rekonsiliasi dokumen + sign-off:** tutup kontradiksi internal `docs/10` §0 dan status stale Fase 4/5/6 di `docs/11`; **sync `docs/01` + `docs/02` masuk scope Fase 8**; tulis `reports/fase8_signoff.md`; bump versi dokumen.
+- **Keputusan owner yang dipatok (2026-10-03):**
+  - **R1** — migrasi `.env DB_URL` dari role `postgres` ke `app_readonly` **tidak dieksekusi agent**; hanya prosedur + verification step di laporan sign-off sebagai tindakan pemilik. Guard primer tetap AST whitelist + templat terparameterisasi.
+  - **R2a** — target `<200ms` nol-bukti **dikejar**, bukan lagi deviasi diterima (lihat workstream C).
+  - **R2b** — sintesis LLM ±14,7 detik CPU vs NFR 5–10 detik tetap **deviasi diterima** (memerlukan GPU → Fase 10), dicatat di baseline, bukan gate.
+- **Output:** laporan suite uji + coverage, `reports/fase8_latency_baseline.md`, `reports/fase8_signoff.md`, dan 24 item checklist AC terverifikasi dengan pointer bukti.
 - **Memblokir:** Fase 9 (Kualitas & Skala Pasca-MVP).
 - **Kriteria Penerimaan:**
   - 100% uji guardrail keamanan lolos.
+  - `coverage ≥80%` pada router, retriever, dan security gate.
   - Nol sitasi terhalusinasi mencapai respons API final di seluruh pertanyaan benchmark.
+  - `not_found` nol-bukti mengukur `<200ms` (R2a) atau menyertakan catatan deviasi tertulis yang disetujui owner.
+  - `AC-UI-1..7` terverifikasi terhadap implementasi on-disk.
   - **Persetujuan (Sign-Off) Gerbang MVP Tercapai.**
 
 ---
@@ -449,6 +454,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/11 Roadmap.md` v3.8.0 | Fase 8 dari `[PLANNED]` ke `[IN PROGRESS]`: cakupan 7 workstream A–G (coverage gate, verification run, R2a gate `<200ms` nol-bukti, baseline latensi, audit Task 11 `AC-UI-1..7`, pencentangan 24 AC, rekonsiliasi dokumen); tetapkan 3 keputusan owner (R1 didokumentasikan saja, R2a dikejar, sync `docs/01`+`docs/02` masuk scope); perbaiki label keliru "Fase 8 / Fase 11" menjadi Task 11 | Gate Fase 7 dibuka (`READY WITH CONDITIONS`, `reports/fase7_closeout.md`); Task 12 sudah 14/14 sehingga Fase 8 berisi formalisasi, bukan fitur baru. Rencana rinci di `reports/fase8_execution_plan.md`. Catatan: baris riwayat v3.7.x belum pernah ditulis di dokumen ini |
 | `docs/11 Roadmap.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Vertical Slice`, `Source-of-Truth Invariant`, `Evidence Normalization Invariant`, `Zero-Hallucination Invariant`, `Vector Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/11 Roadmap.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/11 Roadmap.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; menambah Progress Tracker DONE/NEXT/PENDING; menandai vector storage sebagai PENDING eksplisit; memberi status-tag pada blueprint offline pipeline | Sinkronisasi progress aktual 2026-09-27 |

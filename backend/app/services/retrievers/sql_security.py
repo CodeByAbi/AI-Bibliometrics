@@ -5,10 +5,9 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.1, docs/08 Security.md §2.
 
 from __future__ import annotations
 
-import re
-from typing import Dict, Set
 import sqlglot
 from sqlglot import exp
+
 from backend.app.core.errors import ASTValidationError
 
 
@@ -23,7 +22,7 @@ class SqlSecurityError(ASTValidationError):
 
 
 # Canonical table whitelist: 9 Silver + 2 Derived Edge + 3 Gold Analytics
-ALLOWED_TABLES: Set[str] = {
+ALLOWED_TABLES: set[str] = {
     # 9 Silver canonical tables
     "publications",
     "authors",
@@ -44,7 +43,7 @@ ALLOWED_TABLES: Set[str] = {
 }
 
 # Junction tables where non-distinct count of publications causes double-counting
-JUNCTION_TABLES: Set[str] = {
+JUNCTION_TABLES: set[str] = {
     "pub_author",
     "pub_institution",
     "keywords",
@@ -55,7 +54,7 @@ JUNCTION_TABLES: Set[str] = {
 # Canonical column whitelist. Silver + edge columns verified against the live
 # database via information_schema (2026-09-29); Gold columns follow docs/04
 # DDL (tables PLANNED, enforced identically once materialized).
-ALLOWED_COLUMNS: Dict[str, Set[str]] = {
+ALLOWED_COLUMNS: dict[str, set[str]] = {
     "publications": {
         "publication_id", "eid", "doi", "title", "year", "source_title",
         "volume", "issue", "art_no", "page_start", "page_end",
@@ -107,9 +106,17 @@ ALLOWED_COLUMNS: Dict[str, Set[str]] = {
     },
 }
 
+# Canonical LIKE-pattern escaper. Every ILIKE predicate built from user input
+# must pass its value through this helper AND carry an ``ESCAPE '\'`` clause
+# so ``%``/``_``/``\`` in names match literally (docs/08 §2.1).
+def escape_like_pattern(raw: str) -> str:
+    """Wrap *raw* as a ``%...%`` ILIKE pattern with wildcards escaped."""
+    escaped = raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 # Dangerous PostgreSQL functions and system procedures
-PROHIBITED_FUNCTIONS: Set[str] = {
-    "pg_sleep",
+PROHIBITED_FUNCTIONS: set[str] = {    "pg_sleep",
     "pg_read_file",
     "pg_read_binary_file",
     "pg_write_file",
@@ -129,6 +136,19 @@ PROHIBITED_FUNCTIONS: Set[str] = {
     "pg_reload_conf",
     "pg_rotate_logfile",
 }
+
+# Function-name PREFIXES that are rejected outright, not just the exact names
+# above. A `pg_*` name could be blocked by prefix alone, but these three
+# families are not `pg_`-prefixed and are therefore missed by the exact-name
+# list while still reaching outside the database:
+#   lo_*     — reads/writes server-side files and large objects through the
+#              SQL interface (lo_import/lo_export are file I/O).
+#   dblink_* — opens outbound connections to OTHER PostgreSQL instances. The
+#              app_readonly role grants nothing useful here, but the exfiltration
+#              path is the network call itself, not the privileges, so the
+#              read-only role does not contain this.
+#   dblink   — the bare connection-name form of the same capability.
+PROHIBITED_FUNCTION_PREFIXES: tuple[str, ...] = ("pg_", "lo_", "dblink")
 
 
 def _is_single_row_aggregate(select: exp.Select) -> bool:
@@ -169,9 +189,9 @@ def _enforce_limit(node: exp.Expression, is_aggregate: bool) -> None:
         node.set("limit", exp.Limit(expression=exp.Literal.number(50)))
 
 
-def _alias_table_map(parsed: exp.Expression) -> Dict[str, str]:
+def _alias_table_map(parsed: exp.Expression) -> dict[str, str]:
     """Map every table alias (and bare name) to its real table across the statement."""
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     for tbl in parsed.find_all(exp.Table):
         name = tbl.name.lower()
         mapping.setdefault(name, name)
@@ -202,12 +222,24 @@ def _validate_columns(parsed: exp.Expression) -> None:
     # in every query our templates and prompt produce).
     alias_map = _alias_table_map(parsed)
 
+    # Tables that actually declare each column name. Used to decide whether an
+    # unqualified reference can be validated against a single table: checking an
+    # unqualified name against the union of all tables proves nothing, because
+    # the union accepts a column that exists only on some *other* table than the
+    # one the name resolves to. When exactly one table declares the name,
+    # PostgreSQL's own resolution is unambiguous and the per-table check still
+    # applies -- so the strict case is genuine ambiguity, not absence of a
+    # qualifier. Statement-wide rather than per query block, which is
+    # deliberately conservative: it can only reject more, never less.
+    tables_declaring: dict[str, set[str]] = {}
+    for real, cols in ALLOWED_COLUMNS.items():
+        for c in cols:
+            tables_declaring.setdefault(c, set()).add(real)
+
     select_aliases = {
         str(a.alias).lower() for a in parsed.find_all(exp.Alias) if a.alias
     }
-    union_columns: Set[str] = set()
-    for cols in ALLOWED_COLUMNS.values():
-        union_columns |= cols
+    statement_tables = set(alias_map.values())
 
     for col in parsed.find_all(exp.Column):
         col_name = col.name.lower()
@@ -223,10 +255,21 @@ def _validate_columns(parsed: exp.Expression) -> None:
                 raise SqlSecurityError(
                     f"Column '{qualifier}.{col.name}' is not allowlisted for table '{real}'"
                 )
-        elif col_name not in union_columns and col_name not in select_aliases:
-            raise SqlSecurityError(
-                f"Column '{col.name}' is not in the canonical schema whitelist"
-            )
+        elif col_name in select_aliases:
+            continue  # reference to a projected output alias
+        else:
+            declaring = tables_declaring.get(col_name, set())
+            candidates = declaring & statement_tables
+            if not candidates:
+                raise SqlSecurityError(
+                    f"Column '{col.name}' is not in the canonical schema whitelist"
+                )
+            if len(candidates) > 1:
+                raise SqlSecurityError(
+                    f"Column '{col.name}' is ambiguous: it is declared by "
+                    f"{', '.join(sorted(candidates))}, all present in this query. "
+                    "Qualify it with a table alias so it can be validated"
+                )
 
 
 def validate_and_sanitize_sql(raw_sql: str, aggregate_intent: bool = False) -> str:
@@ -239,13 +282,15 @@ def validate_and_sanitize_sql(raw_sql: str, aggregate_intent: bool = False) -> s
     4. All projected/filtered columns must belong to ALLOWED_COLUMNS;
        SELECT * and tbl.* are rejected as retryable failures.
     5. Prohibits system catalog tables and dynamic schema traversal.
-    5. Prohibits dangerous or internal pg_* functions.
-    6. Double-count prevention: Enforces COUNT(DISTINCT ...) when junction tables are joined.
-    7. LIMIT enforcement: Injects or clamps LIMIT to at most 50 rows on the
+    6. Prohibits dangerous or internal functions by exact name AND by prefix
+       (``pg_*``, ``lo_*``, ``dblink*``).
+    7. Prohibits row-locking clauses (FOR UPDATE / FOR SHARE).
+    8. Double-count prevention: Enforces COUNT(DISTINCT ...) when junction tables are joined.
+    9. LIMIT enforcement: Injects or clamps LIMIT to at most 50 rows on the
        outer statement and every UNION branch; single-row aggregates are
        exempt from injection (FR3.4).
-    8. Aggregate-shape gate (FR3.5): with aggregate_intent=True the query
-       must contain an aggregate function or GROUP BY.
+    10. Aggregate-shape gate (FR3.5): with aggregate_intent=True the query
+        must contain an aggregate function or GROUP BY.
     """
     if not raw_sql or not raw_sql.strip():
         raise SqlSecurityError("SQL query string is empty")
@@ -256,7 +301,7 @@ def validate_and_sanitize_sql(raw_sql: str, aggregate_intent: bool = False) -> s
     try:
         statements = sqlglot.parse(cleaned_sql, read="postgres")
     except Exception as exc:
-        raise SqlSecurityError(f"SQL parsing failed: {str(exc)}") from exc
+        raise SqlSecurityError(f"SQL parsing failed: {exc!s}") from exc
 
     if len(statements) != 1 or statements[0] is None:
         raise SqlSecurityError("Multiple statements or empty query detected in SQL payload")
@@ -291,10 +336,20 @@ def validate_and_sanitize_sql(raw_sql: str, aggregate_intent: bool = False) -> s
     # Invariant 3: Prohibited functions check
     for func in parsed.find_all(exp.Anonymous, exp.Func):
         func_name = func.name.lower()
-        if func_name in PROHIBITED_FUNCTIONS or (
-            func_name.startswith("pg_") and func_name not in {"pg_catalog"}
+        if func_name in PROHIBITED_FUNCTIONS or func_name.startswith(
+            PROHIBITED_FUNCTION_PREFIXES
         ):
             raise SqlSecurityError(f"Execution of prohibited function '{func_name}' is forbidden")
+
+    # Row-level locks (FOR UPDATE / FOR SHARE / FOR NO KEY UPDATE). These are
+    # grammatically legal inside a SELECT, so the root-statement whitelist alone
+    # admits them, but they are not a read: they take row locks and would fail
+    # as a raw permission error against app_readonly instead of a clean,
+    # retryable SqlSecurityError.
+    for _lock in parsed.find_all(exp.Lock):
+        raise SqlSecurityError(
+            "Row locking clauses (FOR UPDATE / FOR SHARE) are forbidden in a read-only query"
+        )
 
     # Invariant 4: Double-Count Prevention on Junction Joins (FR3.6)
     # Every COUNT over a junction join is normalized to the publication

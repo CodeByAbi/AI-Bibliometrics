@@ -5,13 +5,13 @@ Docs Reference: docs/05 Retrieval Rag Design.md §5.1, docs/10 Implementation Pl
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 
 import asyncpg
+from pydantic import BaseModel, ConfigDict, Field
+
 from backend.app.core.config import get_settings
 from backend.app.core.errors import DBTimeoutError
 from backend.app.core.http import get_http_client
@@ -19,9 +19,9 @@ from backend.app.core.logging import logger
 from backend.app.models.ask import FilterParams
 from backend.app.services.retrievers.sql_security import (
     SqlSecurityError,
+    escape_like_pattern,
     validate_and_sanitize_sql,
 )
-
 
 SCHEMA_PROMPT = """
 You are an expert PostgreSQL Text-to-SQL assistant for a scientific bibliometrics database.
@@ -59,11 +59,11 @@ class SqlRetrievalResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     sql_executed: str
-    columns: List[str] = Field(default_factory=list)
-    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
     row_count: int = 0
     execution_time_ms: float = 0.0
-    filters_ignored: List[str] = Field(
+    filters_ignored: list[str] = Field(
         default_factory=list,
         description="Filter names set by the caller but unused by the executed template",
     )
@@ -119,10 +119,10 @@ class SqlRetriever:
     def generate_deterministic_sql(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
-    ) -> Tuple[Optional[str], List[Any]]:
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_institution_id: str | None = None,
+    ) -> tuple[str | None, list[Any]]:
         """Generate deterministic SQL with bound parameters for canonical questions.
 
         Returns (sql, params): every user-controlled value travels as a
@@ -132,7 +132,7 @@ class SqlRetriever:
         q = question.strip().lower()
 
         limit = cls.extract_limit(question)
-        params: List[Any] = []
+        params: list[Any] = []
 
         def _ph(value: Any) -> str:
             params.append(value)
@@ -140,7 +140,7 @@ class SqlRetriever:
 
         # Year scoping honors explicit filters first, free-text year second.
         # Operator enums (gt/between/...) are deferred to Fase 7 Hybrid.
-        year_clauses: List[str] = []
+        year_clauses: list[str] = []
         f_year = filters.year if filters else None
         f_from = filters.year_from if filters else None
         f_to = filters.year_to if filters else None
@@ -163,7 +163,7 @@ class SqlRetriever:
             where_clauses = []
             where_clauses.extend(year_clauses)
             if filters and filters.country:
-                where_clauses.append(f"i.country ILIKE '%' || {_ph(filters.country)} || '%'")
+                where_clauses.append(f"i.country ILIKE {_ph(escape_like_pattern(filters.country))} ESCAPE '\\'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -220,13 +220,13 @@ class SqlRetriever:
                 joins += " JOIN pub_author pa ON pa.publication_id = p.publication_id"
                 if not resolved_author_id and filters and filters.author_name:
                     joins += " JOIN authors a ON a.author_id = pa.author_id"
-                    where_clauses.append(f"a.author_name ILIKE '%' || {_ph(filters.author_name)} || '%'")
+                    where_clauses.append(f"a.author_name ILIKE {_ph(escape_like_pattern(filters.author_name))} ESCAPE '\\'")
 
             if resolved_institution_id or (filters and filters.institution_name):
                 joins += " JOIN pub_institution pi ON pi.publication_id = p.publication_id"
                 if not resolved_institution_id and filters and filters.institution_name:
                     joins += " JOIN institutions i ON i.institution_id = pi.institution_id"
-                    where_clauses.append(f"i.institution_name ILIKE '%' || {_ph(filters.institution_name)} || '%'")
+                    where_clauses.append(f"i.institution_name ILIKE {_ph(escape_like_pattern(filters.institution_name))} ESCAPE '\\'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
@@ -241,7 +241,7 @@ class SqlRetriever:
             where_clauses = []
             where_clauses.extend(year_clauses)
             if filters and filters.country:
-                where_clauses.append(f"i.country ILIKE '%' || {_ph(filters.country)} || '%'")
+                where_clauses.append(f"i.country ILIKE {_ph(escape_like_pattern(filters.country))} ESCAPE '\\'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
@@ -265,7 +265,7 @@ class SqlRetriever:
                 where_clauses.append(f"pa.author_id = {_ph(resolved_author_id)}")
             elif filters and filters.author_name:
                 joins += " JOIN pub_author pa ON pa.publication_id = p.publication_id JOIN authors a ON a.author_id = pa.author_id"
-                where_clauses.append(f"a.author_name ILIKE '%' || {_ph(filters.author_name)} || '%'")
+                where_clauses.append(f"a.author_name ILIKE {_ph(escape_like_pattern(filters.author_name))} ESCAPE '\\'")
 
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
@@ -283,8 +283,8 @@ class SqlRetriever:
     async def generate_llm_sql(
         cls,
         question: str,
-        filters: Optional[FilterParams] = None,
-        validation_error: Optional[str] = None,
+        filters: FilterParams | None = None,
+        validation_error: str | None = None,
     ) -> str:
         """Call Ollama LLM to generate Text-to-SQL for arbitrary relational questions.
 
@@ -320,13 +320,18 @@ class SqlRetriever:
             },
         }
 
-        try:
+        from backend.app.core.retry import with_retry
+
+        async def _post_text2sql():
             # P3 server-*: shared client (TCP keep-alive); timeout stays per-request.
-            resp = await get_http_client().post(
+            return await get_http_client().post(
                 f"{settings.ollama_host.rstrip('/')}/api/generate",
                 json=payload,
                 timeout=settings.ollama_timeout_s,
             )
+
+        try:
+            resp = await with_retry(_post_text2sql, max_attempts=2, operation="ollama-text2sql")
             if resp.status_code == 200:
                 raw_text = resp.json().get("response", "").strip()
                 # Strip any markdown code fence if returned
@@ -351,7 +356,7 @@ class SqlRetriever:
             ) from exc
 
     @classmethod
-    def _reject_bare_placeholders(cls, sql_query: str, params: List[Any]) -> None:
+    def _reject_bare_placeholders(cls, sql_query: str, params: list[Any]) -> None:
         """Reject LLM output with $n placeholders but no bound values (P1-1).
 
         Deterministic templates travel with bound params; the LLM path
@@ -371,9 +376,9 @@ class SqlRetriever:
         cls,
         conn: asyncpg.Connection,
         question: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_institution_id: str | None = None,
     ) -> SqlRetrievalResult:
         """Generate, validate, and execute SQL query against database."""
         # 1. Try deterministic template generator first (returns bound params)
@@ -406,16 +411,21 @@ class SqlRetriever:
 
         # 4. Execute query on PostgreSQL with bound parameters.
         # Statement timeouts surface as 503 db_timeout, never raw DB errors.
+        # Unexpected driver errors are logged with full context server-side
+        # and bubble to the generic handler (masked 500 to clients).
         start_t = time.perf_counter()
         try:
             raw_rows = await conn.fetch(sanitized_sql, *params)
-        except (asyncpg.QueryCanceledError, asyncio.TimeoutError) as exc:
+        except (TimeoutError, asyncpg.QueryCanceledError) as exc:
             raise DBTimeoutError() from exc
+        except Exception as exc:
+            logger.error("SQL execution failed: %s | sql=%.200s", exc, sanitized_sql, exc_info=True)
+            raise
         elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
 
         # 5. Extract column names and dict rows
-        columns: List[str] = []
-        rows: List[Dict[str, Any]] = []
+        columns: list[str] = []
+        rows: list[dict[str, Any]] = []
         if raw_rows:
             columns = list(raw_rows[0].keys())
             rows = [dict(r) for r in raw_rows]
@@ -433,15 +443,15 @@ class SqlRetriever:
     def unused_filters(
         cls,
         sql_query: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
-    ) -> List[str]:
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_institution_id: str | None = None,
+    ) -> list[str]:
         """List caller-set filters the executed template did not consume."""
         if not filters:
             return []
         lowered = sql_query.lower()
-        ignored: List[str] = []
+        ignored: list[str] = []
         # topic_name / document_type / keyword have no Phase 3 SQL template yet.
         # Surfaced honestly instead of silently dropped (FR0.2).
         if filters.topic_name:
