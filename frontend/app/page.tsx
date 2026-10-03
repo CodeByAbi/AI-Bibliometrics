@@ -1,5 +1,10 @@
-import Workspace from "../components/Workspace";
+import Workspace from "../components/Workspace/Workspace";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 
 export default function Page() {
-  return <Workspace />;
+  return (
+    <ErrorBoundary>
+      <Workspace />
+    </ErrorBoundary>
+  );
 }
