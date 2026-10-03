@@ -1,14 +1,14 @@
 # Desain API — Spesifikasi Teknis & Kontrak API (/api/v1)
 
-**Versi Dokumen:** 3.6.2 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `06 Api Design.md` Draft v2 s.d. v3.5.0  
-**Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
+**Versi Dokumen:** 3.7.1 (Fase 7 Close-out — kontrak llm_synthesis + synthesis_backend, sinkronisasi Gold)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `06 Api Design.md` v3.6.2 s.d. v3.7.0  
+**Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`
 
-> **Status Implementasi (Sinkronisasi Progress Phase 2):**  
-> 1. **Database PostgreSQL & pgvector — DONE:** Basis data PostgreSQL aktif memuat 9 tabel relasional kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` dengan indeks HNSW aktif, serta tabel edge `institution_collaboration` dan `author_collaboration`.  
-> 2. **Implementasi Gateway API (Fase 2 DONE):** Kerangka backend FastAPI (`backend/app/`), pool koneksi async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask` (skema Pydantic v2 `EvidenceObject` & `AskResponse`), middleware `X-Request-ID`, rate limiting, dan penanganan error terstandarisasi **sudah selesai dan terverifikasi**.  
-> 3. **NEXT (Fase 3):** Implementasi `QuestionRouter` dan `SqlRetriever` (Text-to-SQL + AST gate `sqlglot`).
+> **Status Implementasi (Sinkronisasi Progress Fase 7 Close-out):**  
+> 1. **Database PostgreSQL & pgvector — DONE (terverifikasi live 2026-10-03):** 9 tabel Silver kanonikal, 40 chunk ber-embedding vector(1024) `BAAI/bge-m3` (0 NULL) dengan indeks HNSW aktif, tabel edge `institution_collaboration` (254 baris) dan `author_collaboration` (484 baris), serta 3 tabel Gold (`topics`: 5, `topic_evolution`: 25, `researcher_expertise`: 140).  
+> 2. **Implementasi Gateway API (Fase 2–7 DONE):** Kerangka backend FastAPI (`backend/app/`), pool koneksi async `asyncpg`, endpoint `GET /api/v1/health`, kontrak `POST /api/v1/ask` 4-rute (skema Pydantic v2 `EvidenceObject` & `AskResponse`), middleware `X-Request-ID`, rate limiting, penanganan error terstandarisasi, dan sintesis LLM opt-in (`llm_synthesis`, Qwen2.5-Coder via Ollama dengan fallback deterministik) **sudah selesai dan terverifikasi** (laporan: `reports/fase7_closeout.md`).  
+> 3. **NEXT (Fase 8):** Verifikasi formal + baseline latensi + sign-off MVP.
 ---
 
 ## 1. Tujuan
@@ -95,11 +95,13 @@ class FilterParams(BaseModel):
     institution_name: Optional[str] = Field(None, max_length=255, description="Nama institusi")
     topic_name: Optional[str] = Field(None, max_length=255, description="Klaster topik riset")
     document_type: Optional[str] = Field(None, max_length=64, description="Tipe dokumen Scopus")
+    keyword: Optional[str] = Field(None, max_length=255, description="Kata kunci publikasi (lowercase; Fase 7)")
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=1000, description="Pertanyaan riset pengguna")
     filters: Optional[FilterParams] = Field(default_factory=FilterParams, description="Filter metadata terstruktur")
     developer_mode: Optional[bool] = Field(False, description="Flag untuk menyertakan metadata debug, SQL, dan latensi")
+    llm_synthesis: Optional[bool] = Field(False, description="Opt-in sintesis naratif LLM Qwen2.5-Coder via Ollama di atas EvidenceSet (Fase 7 B1); default deterministik dengan fallback otomatis bila LLM tak tersedia")
 ```
 
 ### 5.2 Kontrak Respons (Skema Pydantic v2 dengan Objek Bukti)
@@ -142,8 +144,10 @@ class CandidateItem(BaseModel):
 class DebugInfo(BaseModel):
     sql_executed: Optional[str]
     route_reasoning: Optional[str]  # Wajib ada di semua cabang saat developer_mode=true (dikunci via test parametrized 6 rute x fallback)
-    latency_breakdown_ms: Dict[str, float]  # Kunci kanonikal: routing_ms, entity_resolution_ms, sql_retrieval_ms | vector_retrieval_ms, evidence_unify_ms (Fase 5), synthesis_ms, total_ms
+    latency_breakdown_ms: Dict[str, float]  # Kunci kanonikal: routing_ms, entity_resolution_ms, sql_retrieval_ms | vector_retrieval_ms | graph_retrieval_ms | hybrid_retrieval_ms, evidence_unify_ms (Fase 5), synthesis_ms, llm_synthesis_ms (Fase 7 B1, hanya bila llm_synthesis=true), total_ms (+ embedding_ms bila VectorRoute)
     scored_chunks: Optional[List[Dict[str, Any]]]  # VectorRoute saja: publication_id, title, year, doi, chunk_id, similarity_score
+    embedding_backend: Optional[str]  # VectorRoute saja: "local" | "ollama" (Fase 4 audit D1)
+    synthesis_backend: Optional[str]  # "deterministic" | "llm" | "deterministic-fallback" (Fase 7 B1; selalu terisi di semua cabang ok saat developer_mode=true)
     evidence_set: Optional[Dict[str, Any]]  # Fase 5: {query, evidence_objects[], sources[], items_count, filters_ignored[], sql_executed, is_empty} — hanya saat developer_mode=true
 
 class AskResponse(BaseModel):
