@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { animate, motion, useReducedMotion, useMotionValue } from "motion/react";
 import { Bookmark, Compass, History, Plus, Settings, User, X } from "lucide-react";
 import { SEEDS } from "../lib/api";
@@ -27,10 +28,18 @@ const NAV: Array<{ view: WorkspaceView; icon: typeof Compass; label: string; id:
   { view: "author", icon: User, label: "Author Index", id: "nav-author" },
 ];
 
+const DISMISS_OFFSET_X = -100;
+const DISMISS_VELOCITY_X = -600;
+const DRAWER_HIDDEN_X = "-102%";
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input, textarea, select, [tabindex]:not([tabindex="-1"])';
+
 /**
- * Quiet sidebar translated from the HTML mockup: New Research anchor,
- * navigation, recent sessions (bound to real fixture-triggering questions),
- * and the corpus connection footer.
+ * Quiet sidebar: New Research anchor, navigation, recent sessions, and the
+ * corpus connection footer. On ≤899px it becomes a modal left sheet — it then
+ * takes dialog semantics, traps Tab, and returns focus to the hamburger that
+ * opened it. On desktop it is a plain complementary landmark.
  */
 export function Sidebar({
   activeView,
@@ -43,20 +52,16 @@ export function Sidebar({
   onDevToggle,
   onClose,
 }: SidebarProps) {
-  // Mobile drawer (≤899px) is a left sheet, 300px wide. Dismiss past ~1/3 of
-  // its width, or with a decisive leftward fling — both are checked (Rule 3):
-  // offset alone misfires on slow drifts, velocity alone on jitters.
-  const DISMISS_OFFSET_X = -100;
-  const DISMISS_VELOCITY_X = -600;
-  const DRAWER_HIDDEN_X = "-102%";
-
-  // Motion owns the drawer transform on mobile only. Desktop keeps the
-  // untouched static layout; SSR renders motion-free (CSS hides the drawer).
   const isMobile = useMediaQuery("(max-width: 899px)");
   const reduceMotion = useReducedMotion();
   const x = useMotionValue<number | string>(0);
   const motionOwned = isMobile;
+  const asideRef = useRef<HTMLElement | null>(null);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const restoreFocusRef = useRef(false);
 
+  // Motion owns the drawer transform on mobile only. Desktop keeps the
+  // untouched static layout; SSR renders motion-free (CSS hides the drawer).
   useEffect(() => {
     if (!motionOwned) return;
     if (reduceMotion) {
@@ -70,16 +75,51 @@ export function Sidebar({
     return () => controls.stop();
   }, [sideOpen, motionOwned, reduceMotion, x]);
 
-  // Esc dismisses the drawer — the TopBar hamburger hides underneath the open
-  // sheet on mobile, and swipe/scrim are undiscoverable to some users.
+  const asModal = motionOwned && sideOpen;
+
+  // Focus in on open; focus back to the hamburger on close. Esc dismisses
+  // because the toggle hides underneath the sheet and swipe/scrim are
+  // undiscoverable to some keyboard and screen-reader users.
   useEffect(() => {
-    if (!sideOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [sideOpen, onClose]);
+    if (!motionOwned) return;
+    if (sideOpen) {
+      restoreFocusRef.current = true;
+      closeRef.current?.focus();
+      return;
+    }
+    if (restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      document.querySelector<HTMLElement>("[data-menu-toggle]")?.focus();
+    }
+  }, [sideOpen, motionOwned]);
+
+  const onKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (!asModal) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const nodes = Array.from(asideRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).filter(
+        (n) => n.offsetParent !== null || n === document.activeElement,
+      );
+      if (!nodes.length) return;
+      const first = nodes[0]!;
+      const last = nodes[nodes.length - 1]!;
+      // Tab from the last control wraps to the first, and Shift+Tab from the
+      // first wraps back — focus never escapes the modal sheet.
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    },
+    [asModal, onClose],
+  );
 
   const sessions: Array<{ label: string; meta: string; warn?: boolean; run: () => void }> = [
     {
@@ -102,10 +142,15 @@ export function Sidebar({
 
   return (
     <motion.aside
+      ref={asideRef}
+      id="research-library"
       className="sidebar"
       data-open={sideOpen}
       data-motion={motionOwned || undefined}
       aria-label="Research library"
+      role={asModal ? "dialog" : undefined}
+      aria-modal={asModal ? true : undefined}
+      onKeyDown={onKeyDown}
       drag={motionOwned && sideOpen ? "x" : false}
       dragConstraints={{ right: 0 }}
       dragElastic={0.1}
@@ -117,11 +162,25 @@ export function Sidebar({
     >
       <div className="side-top">
         <span className="side-top-label">Library</span>
-        <button type="button" className="side-close" onClick={onClose} aria-label="Close research library">
+        <button
+          ref={closeRef}
+          type="button"
+          className="side-close"
+          onClick={onClose}
+          aria-label="Close research library"
+        >
           <X size={15} aria-hidden />
         </button>
       </div>
-      <button type="button" className="btn-new" onClick={() => { onNewResearch(); onClose(); }}>
+
+      <button
+        type="button"
+        className="btn-new"
+        onClick={() => {
+          onNewResearch();
+          onClose();
+        }}
+      >
         <Plus size={16} strokeWidth={2.4} aria-hidden /> New Research
         <kbd className="btn-new-kbd" aria-hidden>
           ⌘N
@@ -136,7 +195,10 @@ export function Sidebar({
             type="button"
             className="side-item"
             aria-current={activeView === n.view}
-            onClick={() => { onNavigate(n.view); onClose(); }}
+            onClick={() => {
+              onNavigate(n.view);
+              onClose();
+            }}
           >
             <n.icon size={15} aria-hidden className="icon-muted" />
             <span>{n.label}</span>
@@ -151,19 +213,29 @@ export function Sidebar({
         </button>
       </nav>
 
-      <p className="side-label">
+      <p className="side-label" id="side-sessions-label">
         Recent Sessions <span className="mono">3</span>
       </p>
-      <div className="side-list" role="list">
+      <ul className="side-list side-sessions" aria-labelledby="side-sessions-label">
         {sessions.map((s) => (
-          <button key={s.label} type="button" role="listitem" className="side-item side-session" onClick={() => { s.run(); onClose(); }} title={s.label}>
-            <span className="side-text">
-              <span className="truncate">{s.label}</span>
-              <small className={s.warn ? "side-warn" : "mono"}>{s.meta}</small>
-            </span>
-          </button>
+          <li key={s.label}>
+            <button
+              type="button"
+              className="side-item side-session"
+              onClick={() => {
+                s.run();
+                onClose();
+              }}
+              title={s.label}
+            >
+              <span className="side-text">
+                <span className="truncate">{s.label}</span>
+                <small className={s.warn ? "side-warn" : "mono"}>{s.meta}</small>
+              </span>
+            </button>
+          </li>
         ))}
-      </div>
+      </ul>
 
       <div className="side-foot">
         <span className="side-label side-foot-label">Corpus Connection</span>

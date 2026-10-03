@@ -1,9 +1,9 @@
 "use client";
 
-import type { Ref } from "react";
 import { Database, Layers, Network, Search, ShieldCheck, TriangleAlert } from "lucide-react";
 import type { AskResponse, RouteKind } from "../lib/api";
 import { matchCitationToSource, renderAnswerParts, shortId, splitLead, statusLabel } from "../lib/format";
+import type { TitleRef } from "./Workspace/types";
 
 const ROUTE_ICON: Record<RouteKind, typeof Database> = {
   SQLRoute: Database,
@@ -28,7 +28,7 @@ interface AnswerBriefProps {
   live: boolean;
   highlightId: string | null;
   onCite: (pubId: string) => void;
-  titleRef: Ref<HTMLHeadingElement>;
+  titleRef: TitleRef;
 }
 
 /**

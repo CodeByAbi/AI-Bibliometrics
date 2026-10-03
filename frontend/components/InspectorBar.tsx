@@ -32,7 +32,7 @@ export function InspectorBar({ open, onClose, response, live, activeQuestion }: 
   const grounding = confs.length ? Math.round((confs.reduce((a, c) => a + c, 0) / confs.length) * 1000) / 10 : null;
 
   return (
-    <div className="inspector-bar" role="status" aria-label="Provenance details">
+    <div className="inspector-bar" id="provenance-inspector" role="region" aria-label="Provenance details">
       <div className="inspector-inner">
         <div className="inspector-group">
           <span className="inspector-title">Provenance Node:</span>

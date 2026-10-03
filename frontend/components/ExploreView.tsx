@@ -1,16 +1,16 @@
 "use client";
 
 import { useMemo, useRef } from "react";
-import type { Ref } from "react";
 import { Download } from "lucide-react";
 import type { AskResponse } from "../lib/api";
 import { formatValue } from "../lib/format";
 import { typeDistribution, yearHistogram } from "../lib/views";
+import type { TitleRef } from "./Workspace/types";
 
 interface ExploreViewProps {
   response: AskResponse | null;
   onOpenPublication: (pubId: string) => void;
-  titleRef: Ref<HTMLHeadingElement>;
+  titleRef: TitleRef;
 }
 
 function points(values: number[], w: number, h: number, pad: number): string {
@@ -131,7 +131,7 @@ export function ExploreView({ response, onOpenPublication, titleRef }: ExploreVi
           </p>
         )}
         {dist.length > 0 && (
-          <div className="explore-dist" aria-label="Source-type distribution">
+          <div className="explore-dist" role="img" aria-label={`Source-type distribution: ${dist.map((d) => `${d.type} ${Math.round(d.share * 100)}%`).join(", ")}`}>
             <div className="explore-dist-bar">
               {dist.map((d) => (
                 <span key={d.type} className={`explore-dist-seg explore-dist-${d.type}`} style={{ width: `${d.share * 100}%` }} title={`${d.type}: ${d.count}`} />
@@ -158,7 +158,7 @@ export function ExploreView({ response, onOpenPublication, titleRef }: ExploreVi
               <span className="explore-cluster-tag mono">{ev.metric}</span>
               <span className="mono explore-cluster-conf">{Math.round(ev.confidence * 100)}% conf</span>
             </div>
-            <h4 className="explore-cluster-title">{ev.claim}</h4>
+            <h3 className="explore-cluster-title">{ev.claim}</h3>
             <p className="mono explore-cluster-meta">
               {formatValue(ev.value)} · {ev.period}
             </p>

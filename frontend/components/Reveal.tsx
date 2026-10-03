@@ -45,7 +45,7 @@ export function Reveal({ children, delay = 0, as = "div", ...rest }: RevealProps
     <MotionTag
       initial={safeMotion.initial}
       animate={safeMotion.animate}
-      exit={{ ...safeMotion.exit, transition: { duration: motionTokens.duration.fast } }}
+      exit={{ ...safeMotion.exit, transition: { duration: motionTokens.duration.exit } }}
       transition={
         reduce
           ? { duration: motionTokens.duration.instant }

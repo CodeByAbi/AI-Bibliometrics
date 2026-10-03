@@ -1,15 +1,15 @@
 "use client";
 
-import type { Ref } from "react";
 import { ArrowLeft } from "lucide-react";
 import { doiHref, formatValue } from "../lib/format";
 import type { EvidenceObject, SourceItem } from "../lib/api";
+import type { TitleRef } from "./Workspace/types";
 
 interface PublicationDetailViewProps {
   publication: SourceItem | null;
   evidence: EvidenceObject[];
   onBack: () => void;
-  titleRef: Ref<HTMLHeadingElement>;
+  titleRef: TitleRef;
 }
 
 /**
@@ -44,9 +44,9 @@ export function PublicationDetailView({ publication, evidence, onBack, titleRef 
           <span className="verified-pill">Corpus Verified Record</span>
           <span className="mono pub-year">{publication.year ?? "year unknown"}</span>
         </div>
-        <h1 id="pub-title" ref={titleRef} tabIndex={-1} className="pub-title">
+        <h2 id="pub-title" ref={titleRef} tabIndex={-1} className="pub-title">
           {publication.title}
-        </h1>
+        </h2>
         <p className="mono pub-idline">
           {publication.publication_id}
           {publication.provenance ? ` · ${publication.provenance}` : ""}

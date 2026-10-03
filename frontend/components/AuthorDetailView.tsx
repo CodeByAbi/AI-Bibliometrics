@@ -1,17 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import type { Ref } from "react";
 import { ArrowRight, Download } from "lucide-react";
 import { doiHref } from "../lib/format";
 import type { CandidateItem, SourceItem } from "../lib/api";
+import type { TitleRef } from "./Workspace/types";
 
 interface AuthorDetailViewProps {
   author: CandidateItem | null;
   publications: SourceItem[];
   onOpenPublication: (pubId: string) => void;
   onResolve: () => void;
-  titleRef: Ref<HTMLHeadingElement>;
+  titleRef: TitleRef;
 }
 
 /** First character of a word, keeping emoji surrogate pairs intact (🦊 Fox → "🦊", not "�"). ES5-safe: no string spread. */
