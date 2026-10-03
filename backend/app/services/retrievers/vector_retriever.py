@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, List, Optional
+from typing import Any
+
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,7 +21,6 @@ from backend.app.services.embedding import (
     validate_embedding_vector,
 )
 
-
 #: Canonical cosine similarity gate for BAAI/bge-m3 (docs/05 §5.2, FR4.5).
 #: Queries below this threshold short-circuit to ``status: not_found``.
 COSINE_SIMILARITY_THRESHOLD: float = 0.65
@@ -28,6 +28,22 @@ COSINE_SIMILARITY_THRESHOLD: float = 0.65
 #: Canonical result size: distinct publications returned per query (FR4.4 —
 #: deduplication by ``publication_id`` happens BEFORE this limit).
 VECTOR_TOP_K: int = 8
+
+#: ANN overfetch: how many nearest chunks the HNSW scan returns before
+#: per-publication dedup collapses them. ``DISTINCT ON (publication_id)`` throws
+#: away every duplicate of a publication, so a bare ``LIMIT 8`` over chunks
+#: would frequently dedup down to fewer than 8 publications. Overfetching and
+#: then reducing is the only shape that keeps the index-driven distance ordering
+#: AND returns a full set of distinct publications.
+ANN_OVERFETCH_MULTIPLIER: int = 25
+MIN_ANN_CANDIDATES: int = 100
+MAX_ANN_CANDIDATES: int = 2000
+
+#: ``hnsw.ef_search`` candidate-list size per probe. The pgvector default (40)
+#: is sized for a plain ``LIMIT k`` scan; once dedup runs on top of the ANN
+#: result the effective top-k shrinks, so the search list is widened well past
+#: the candidate count to hold recall.
+HNSW_EF_SEARCH: int = 100
 
 #: Hard bounds for the ``threshold``/``limit`` overrides on ``retrieve``.
 #: The canonical contract is 0.65/8; out-of-range overrides fail fast
@@ -56,10 +72,10 @@ class VectorMatchItem(BaseModel):
 
     publication_id: str
     title: str
-    year: Optional[int] = None
-    doi: Optional[str] = None
-    eid: Optional[str] = None
-    citation_count: Optional[int] = 0
+    year: int | None = None
+    doi: str | None = None
+    eid: str | None = None
+    citation_count: int | None = 0
     chunk_id: str
     chunk_text: str
     similarity_score: float
@@ -70,16 +86,16 @@ class VectorRetrievalResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    matches: List[VectorMatchItem] = Field(default_factory=list)
+    matches: list[VectorMatchItem] = Field(default_factory=list)
     threshold: float = COSINE_SIMILARITY_THRESHOLD
-    filters_ignored: List[str] = Field(default_factory=list)
+    filters_ignored: list[str] = Field(default_factory=list)
     sql_executed: str
     #: Wall-clock ms spent generating the query embedding (None when a
     #: precomputed ``query_vector`` was injected by the caller).
-    embedding_ms: Optional[float] = None
+    embedding_ms: float | None = None
     #: Which embedding backend served the query (``"local"`` | ``"ollama"``),
     #: None when a precomputed vector was injected (Phase 4 audit D1).
-    embedding_backend: Optional[str] = None
+    embedding_backend: str | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -99,16 +115,168 @@ class VectorRetriever:
     DEFAULT_LIMIT: int = VECTOR_TOP_K
 
     @classmethod
+    def build_query(
+        cls,
+        *,
+        query_vector: list[float],
+        threshold: float,
+        limit: int,
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_institution_id: str | None = None,
+    ) -> tuple[str, list[Any], list[str]]:
+        """Build the ANN retrieval SQL and its bound parameters.
+
+        Returns ``(sql, params, filters_ignored)``. Exposed separately from
+        :meth:`retrieve` so plan-verification tooling (and the live EXPLAIN
+        test) can inspect the exact statement the request path executes instead
+        of a hand-copied paraphrase that can drift from it.
+
+        Shape: an index-driven ANN window (``ann_candidates``) ordered by the
+        cosine operator, then per-publication dedup and the cosine gate
+        (``scored_chunks``), then the final top-N. The two stages must stay
+        separate — folding dedup into the ANN scan puts a ``publication_id``
+        sort in front of the operator, which the HNSW index cannot serve.
+
+        Placeholder order: ``$1`` query vector, ``$2`` ANN overfetch,
+        ``$3`` cosine threshold, ``$4`` result limit, ``$5..`` filters.
+        """
+        # Render the pgvector literal for transport. It is BOUND as $1, never
+        # interpolated into the SQL text: asyncpg receives a `vector` codec from
+        # `pool._init_connection`, and binding matters because the operator
+        # appears in both the projection and the ORDER BY of the ANN scan —
+        # inlining a 1024-d literal twice would add ~22KB of query text to every
+        # parse/plan round trip. Callers must still pass a validated finite-float
+        # sequence (see `validate_embedding_vector`); the codec is a transport
+        # detail, not a validation boundary.
+        vec_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
+        vec_schema = get_settings().vector_schema
+        dist_op = f"(c.embedding OPERATOR({vec_schema}.<=>) $1::{vec_schema}.vector)"
+
+        filter_clauses: list[str] = []
+        filter_params: list[Any] = []
+        filters_ignored: list[str] = []
+
+        if filters:
+            if filters.year is not None:
+                filter_clauses.append("p.year = ${n}")
+                filter_params.append(filters.year)
+            if filters.year_from is not None:
+                filter_clauses.append("p.year >= ${n}")
+                filter_params.append(filters.year_from)
+            if filters.year_to is not None:
+                filter_clauses.append("p.year <= ${n}")
+                filter_params.append(filters.year_to)
+            if filters.document_type:
+                filter_clauses.append("p.document_type ILIKE ${n} ESCAPE '\\'")
+                filter_params.append(
+                    f"%{_escape_like_literal(filters.document_type.strip())}%"
+                )
+            if filters.country:
+                filter_clauses.append(
+                    "p.publication_id IN ("
+                    "SELECT pi.publication_id FROM pub_institution pi "
+                    "JOIN institutions i ON i.institution_id = pi.institution_id "
+                    "WHERE i.country ILIKE ${n} ESCAPE '\\')"
+                )
+                filter_params.append(
+                    f"%{_escape_like_literal(filters.country.strip())}%"
+                )
+
+            # Track ignored filters
+            if filters.topic_name:
+                filters_ignored.append("topic_name")
+            if filters.keyword:
+                filters_ignored.append("keyword")
+            if filters.author_name and not resolved_author_id:
+                filters_ignored.append("author_name")
+            if filters.institution_name and not resolved_institution_id:
+                filters_ignored.append("institution_name")
+
+        if resolved_author_id:
+            filter_clauses.append(
+                "p.publication_id IN (SELECT publication_id FROM pub_author "
+                "WHERE author_id = ${n})"
+            )
+            filter_params.append(resolved_author_id)
+
+        if resolved_institution_id:
+            filter_clauses.append(
+                "p.publication_id IN (SELECT publication_id FROM pub_institution "
+                "WHERE institution_id = ${n})"
+            )
+            filter_params.append(resolved_institution_id)
+
+        ann_candidates = min(
+            max(int(limit) * ANN_OVERFETCH_MULTIPLIER, MIN_ANN_CANDIDATES),
+            MAX_ANN_CANDIDATES,
+        )
+
+        numbered_filters: list[str] = [
+            clause.format(n=5 + offset) for offset, clause in enumerate(filter_clauses)
+        ]
+        ann_where = "\n              AND ".join(
+            ["c.embedding IS NOT NULL", *numbered_filters]
+        )
+
+        sql = f"""
+        WITH ann_candidates AS (
+            SELECT p.publication_id,
+                   p.eid,
+                   p.doi,
+                   p.title,
+                   p.year,
+                   p.citation_count,
+                   c.chunk_id,
+                   c.chunk_text,
+                   {dist_op} AS distance
+            FROM chunks c
+            JOIN publications p ON p.publication_id = c.publication_id
+            WHERE {ann_where}
+            ORDER BY {dist_op} ASC
+            LIMIT $2
+        ),
+        scored_chunks AS (
+            SELECT DISTINCT ON (ac.publication_id)
+                ac.publication_id,
+                ac.eid,
+                ac.doi,
+                ac.title,
+                ac.year,
+                ac.citation_count,
+                ac.chunk_id,
+                ac.chunk_text,
+                1 - ac.distance AS similarity_score
+            FROM ann_candidates ac
+            WHERE (1 - ac.distance) >= $3
+            ORDER BY ac.publication_id, ac.distance ASC
+        )
+        SELECT *
+        FROM scored_chunks
+        ORDER BY similarity_score DESC
+        LIMIT $4;
+        """.strip()
+
+        params: list[Any] = [
+            vec_literal,
+            ann_candidates,
+            float(threshold),
+            int(limit),
+            *filter_params,
+        ]
+        return sql, params, filters_ignored
+
+    @classmethod
     async def retrieve(
         cls,
         conn: asyncpg.Connection,
         question: str,
-        filters: Optional[FilterParams] = None,
-        resolved_author_id: Optional[str] = None,
-        resolved_institution_id: Optional[str] = None,
+        filters: FilterParams | None = None,
+        resolved_author_id: str | None = None,
+        resolved_institution_id: str | None = None,
         threshold: float = DEFAULT_THRESHOLD,
         limit: int = DEFAULT_LIMIT,
-        query_vector: Optional[List[float]] = None,
+        query_vector: list[float] | None = None,
     ) -> VectorRetrievalResult:
         """Execute semantic search over chunks joined to publications with deduplication.
 
@@ -146,8 +314,8 @@ class VectorRetriever:
 
         # 1. Generate query embedding if not provided (timed + attributed
         # for NFR4 observability: embedding cost vs PG cost stay separable).
-        embedding_ms: Optional[float] = None
-        embedding_backend: Optional[str] = None
+        embedding_ms: float | None = None
+        embedding_backend: str | None = None
         if query_vector is None:
             t_emb = time.perf_counter()
             query_vector, embedding_backend = await generate_query_embedding_with_backend(question)
@@ -160,111 +328,32 @@ class VectorRetriever:
         assert query_vector is not None  # generation above either returns or raises
         validate_embedding_vector(query_vector, expected_dim)
 
-        # Format pgvector string safely (finite floats only, no user text).
-        # NOTE: the vector is interpolated rather than bound as $N because
-        # asyncpg has no native pgvector codec here; interpolation is safe
-        # de facto since every element is a validated finite float rendered
-        # with a fixed numeric format. Threshold/filters/IDs/limit stay
-        # parameterized ($N). The schema qualifier comes from the validated
-        # ``VECTOR_SCHEMA`` setting (default ``extensions`` = Supabase layout;
-        # vanilla local installs use ``public``) — ``Settings`` rejects
-        # anything that is not a plain SQL identifier, so no user text can
-        # reach this literal through the qualifier either.
-        vec_literal = "[" + ",".join(f"{v:.8f}" for v in query_vector) + "]"
-        vec_schema = get_settings().vector_schema
-        dist_op = f"(c.embedding OPERATOR({vec_schema}.<=>) '{vec_literal}'::{vec_schema}.vector)"
-
-        # 2. Build parameterized filter conditions
-        where_clauses: List[str] = [
-            "c.embedding IS NOT NULL",
-            f"(1 - {dist_op}) >= $1",
-        ]
-        params: List[Any] = [threshold]
-        param_idx = 2
-        filters_ignored: List[str] = []
-
-        if filters:
-            if filters.year is not None:
-                where_clauses.append(f"p.year = ${param_idx}")
-                params.append(filters.year)
-                param_idx += 1
-            if filters.year_from is not None:
-                where_clauses.append(f"p.year >= ${param_idx}")
-                params.append(filters.year_from)
-                param_idx += 1
-            if filters.year_to is not None:
-                where_clauses.append(f"p.year <= ${param_idx}")
-                params.append(filters.year_to)
-                param_idx += 1
-            if filters.document_type:
-                where_clauses.append(f"p.document_type ILIKE ${param_idx} ESCAPE '\\'")
-                params.append(f"%{_escape_like_literal(filters.document_type.strip())}%")
-                param_idx += 1
-            if filters.country:
-                where_clauses.append(
-                    f"p.publication_id IN ("
-                    f"SELECT pi.publication_id FROM pub_institution pi "
-                    f"JOIN institutions i ON i.institution_id = pi.institution_id "
-                    f"WHERE i.country ILIKE ${param_idx} ESCAPE '\\')"
-                )
-                params.append(f"%{_escape_like_literal(filters.country.strip())}%")
-                param_idx += 1
-
-            # Track ignored filters
-            if filters.topic_name:
-                filters_ignored.append("topic_name")
-            if filters.keyword:
-                filters_ignored.append("keyword")
-            if filters.author_name and not resolved_author_id:
-                filters_ignored.append("author_name")
-            if filters.institution_name and not resolved_institution_id:
-                filters_ignored.append("institution_name")
-
-        if resolved_author_id:
-            where_clauses.append(
-                f"p.publication_id IN (SELECT publication_id FROM pub_author WHERE author_id = ${param_idx})"
-            )
-            params.append(resolved_author_id)
-            param_idx += 1
-
-        if resolved_institution_id:
-            where_clauses.append(
-                f"p.publication_id IN (SELECT publication_id FROM pub_institution WHERE institution_id = ${param_idx})"
-            )
-            params.append(resolved_institution_id)
-            param_idx += 1
-
-        where_sql = "\n              AND ".join(where_clauses)
-        params.append(limit)
-        limit_param_idx = param_idx
-
-        # 3. Construct deterministic Deduplicated CTE SQL
-        sql = f"""
-        WITH scored_chunks AS (
-            SELECT DISTINCT ON (p.publication_id)
-                p.publication_id,
-                p.eid,
-                p.doi,
-                p.title,
-                p.year,
-                p.citation_count,
-                c.chunk_id,
-                c.chunk_text,
-                1 - {dist_op} AS similarity_score
-            FROM chunks c
-            JOIN publications p ON p.publication_id = c.publication_id
-            WHERE {where_sql}
-            ORDER BY p.publication_id, {dist_op} ASC
+        sql, params, filters_ignored = cls.build_query(
+            query_vector=query_vector,
+            threshold=float(threshold),
+            limit=int(limit),
+            filters=filters,
+            resolved_author_id=resolved_author_id,
+            resolved_institution_id=resolved_institution_id,
         )
-        SELECT *
-        FROM scored_chunks
-        ORDER BY similarity_score DESC
-        LIMIT ${limit_param_idx};
-        """.strip()
 
-        # 4. Execute query with statement timeout protection
+        # 3. Execute query with statement timeout protection
         settings = get_settings()
         timeout_s = settings.db_statement_timeout_ms / 1000.0
+
+        # Widen the HNSW candidate list for this connection. Session-level (not
+        # SET LOCAL) because the pool runs in autocommit, where SET LOCAL is a
+        # no-op; the value is a workload constant, so persisting it on the
+        # pooled connection is harmless and saves a round trip per query.
+        # Tolerated as best-effort: a server without pgvector has no such GUC
+        # and must fail later on the vector column itself, not here.
+        try:
+            await conn.execute(
+                "SELECT set_config('hnsw.ef_search', $1, false)",
+                str(HNSW_EF_SEARCH),
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort tuning only
+            logger.debug("Could not set hnsw.ef_search: %s", exc)
 
         t0 = time.perf_counter()
         try:
@@ -272,7 +361,7 @@ class VectorRetriever:
                 conn.fetch(sql, *params),
                 timeout=timeout_s,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             logger.error(
                 "Vector retrieval query timed out after %.2fs",
                 timeout_s,
@@ -301,7 +390,8 @@ class VectorRetriever:
 
         # NFR4 observability: threshold gate outcome + score range per query.
         # Scores stay server-side (only aggregates logged); the raw 1024-d
-        # vector is never logged (see [vector_1024d] redaction below).
+        # vector is never logged — it is a bound parameter, so it cannot reach
+        # the SQL text that feeds debug reporting in the first place.
         if matches:
             scores = [m.similarity_score for m in matches]
             logger.info(
@@ -323,14 +413,11 @@ class VectorRetriever:
                 extra={"endpoint": "/api/v1/ask", "route": "VectorRoute"},
             )
 
-        # For debug reporting, replace vector literal with a concise token
-        debug_sql = sql.replace(vec_literal, "[vector_1024d]")
-
         return VectorRetrievalResult(
             matches=matches,
             threshold=threshold,
             filters_ignored=filters_ignored,
-            sql_executed=debug_sql,
+            sql_executed=sql,
             embedding_ms=embedding_ms,
             embedding_backend=embedding_backend,
         )
