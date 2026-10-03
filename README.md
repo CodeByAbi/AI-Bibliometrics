@@ -1,356 +1,520 @@
-# Scopus Research Intelligence & STI Policy Intelligence Platform
+# Scopus → Research Intelligence Prototype
 
-> **AI-Bibliometrics — evidence-grounded Research Intelligence assistant over Scopus publications**
->
-> Ask in natural language (ID/EN) — get factual, statistical, semantic, network, and policy answers grounded in real database records with verified `[Title, Year, DOI]` citations. Hallucination-free by design.
->
-> | Meta | Value |
-> |---|---|
-> | **Architecture** | Hybrid Master: Bronze → Silver (9 canonical tables) → Gold (pgvector + 2 edge tables + 3 analytics tables) → 4-Route FastAPI RAG |
-> | **API Contract** | `POST /api/v1/ask` + `GET /api/v1/health` (see `docs/06 Api Design.md`). Legacy `POST /api/query` is **SUPERSEDED** and must not be implemented. |
-> | **Doc Status** | Consolidated Hybrid Master Blueprint · Synced: **2026-09-27** (`docs/01`–`docs/12` v3.6.0) |
-> | **Implementation Status** | **Phase 0, Phase 1 & Phase 2 DONE.** PostgreSQL holds 9 canonical relational tables, 40 embedded chunks vector(1024) `BAAI/bge-m3` with active HNSW index, materialized collaboration edge tables, and a verified FastAPI gateway skeleton (`POST /api/v1/ask` & `GET /api/v1/health`) with async DB pool, tracing middleware, rate limiting, and structured logging (23 tests pass). **IN PROGRESS: Phase 3 (QueryRouter & Text-to-SQL Vertical Slice — green slice on `develop`).** |
+> **Evidence-grounded research intelligence over Scopus publications.** Ask in natural language (ID/EN) — get factual, semantic, network, and policy answers grounded in real database records with verified `[Title, Year, DOI]` citations. Hallucination-free by design.
 
-**Table of Contents:** [1. Executive Summary](#1-executive-summary) · [2. Key Capabilities](#2-key-capabilities--features) · [3. Architecture](#3-end-to-end-system-architecture) · [4. Tech Stack](#4-tech-stack) · [5. Database & Pipeline](#5-database--data-pipeline-summary) · [6. Repo Structure & Doc Index](#6-repository-structure--documentation-index) · [7. Getting Started](#7-getting-started--setup) · [8. Roadmap & Status](#8-roadmap--implementation-status) · [9. Consistency Matrix](#9-cross-document-decision-consistency-matrix) · [10. Canonical Decisions](#10-canonical-architecture-decisions) · [11. Changelog](#11-changelog)
+| Meta | Value |
+|---|---|
+| **Architecture** | Bronze → Silver (9 canonical tables) → Gold (pgvector + 2 edge tables + 3 analytics tables) → 4-route FastAPI RAG |
+| **API Contract** | `POST /api/v1/ask` + `GET /api/v1/health` (see `docs/06 Api Design.md`). Legacy `POST /api/query` is **SUPERSEDED** and must not be implemented |
+| **Doc Status** | `docs/03`, `docs/05`, `docs/06`, `docs/10`, `docs/11`, `docs/12` synced to **v3.7.1** (Fase 7 close-out, 2026-10-03) |
+| **Implementation Status** | **Phase 0–7 DONE — VERIFIED.** 4-route retrieval + evidence layer + deterministic synthesis (+ opt-in LLM) live on `POST /api/v1/ask`; 14/14 live E2E queries pass. **Frontend IMPLEMENTED** (Next.js 14 workspace UI wired to the live API contract; formal UI sign-off pending Fase 8) |
+
+**Contents:** [Overview](#overview) · [Problem](#problem) · [Solution](#solution) · [Key Capabilities](#key-capabilities) · [Architecture](#architecture) · [End-to-End Data Flow](#end-to-end-data-flow) · [Tech Stack](#tech-stack) · [Project Structure](#project-structure) · [Implementation Progress](#implementation-progress) · [Frontend](#frontend) · [Backend API](#backend-api) · [Data and Database](#data-and-database) · [RAG Architecture](#rag-architecture) · [Security and Grounding](#security-and-grounding) · [Quick Start](#quick-start) · [Testing](#testing) · [Prototype Dataset](#prototype-dataset) · [Current Limitations](#current-limitations) · [Roadmap](#roadmap) · [Documentation](#documentation) · [Development Notes](#development-notes) · [License](#license)
 
 ---
 
-## 1. Executive Summary
+## Overview
 
-### Vision
+This repository is a **technical prototype** that turns raw Scopus bibliometric exports into a research-intelligence system built on:
 
-Build a **Scopus Research Intelligence & STI (Science, Technology & Innovation) Policy Intelligence Platform** enabling non-technical users — researchers, analysts, and research directors / policymakers — to explore the Scopus publication corpus through a single chat surface, and receive answers that are:
+- **PostgreSQL + pgvector** as the single source of truth (Silver) with derived vector, graph, and analytics structures (Gold)
+- **FastAPI** gateway with deterministic multi-route retrieval (SQL, Vector, Graph, Hybrid)
+- **Evidence layer** that normalizes every retrieval result into structured, ranked evidence before any language generation
+- **Local LLM** (`Qwen2.5-Coder-7B-Instruct` via Ollama) as an **opt-in** synthesis refinement with deterministic fallback
+- **Next.js frontend** that renders grounded answers, evidence, sources, and retrieval status
 
-1. **Factually accurate** (counts, rankings, distributions verified against SQL over canonical Silver tables),
-2. **Semantically deep** (conceptual discovery via multilingual vector search over `chunks.embedding`),
-3. **Relation-aware** (collaboration networks via graph traversal over derived edge tables), and
-4. **Policy-ready** (emerging-topic detection, expertise ranking, trend synthesis via Gold analytics).
+No raw database row, vector chunk, or graph edge ever reaches the LLM. Everything passes through `EvidenceUnifier` → `EvidenceSet` → deterministic `EvidenceRanker` → synthesis → post-hoc `CitationVerifier`. Zero evidence short-circuits to `status: not_found` with no LLM call.
 
-### Dual-Track + Evidence Architecture
+---
 
-The system combines three complementary intelligence tracks behind one deterministic serving track:
+## Problem
+
+- Scopus data arrives as **raw tabular exports** — hard to query in natural language.
+- Keyword search **misses semantic similarity** (e.g. concept-level discovery across ID/EN abstracts).
+- Author/institution relationships need **graph traversal**, not flat filtering.
+- Trends and expertise need an **analytical layer** (topic evolution, researcher scoring), not just retrieval.
+- An LLM without grounding **invents numbers and citations** that never came from the database.
+
+## Solution
 
 ```text
-Structured Data (PostgreSQL Silver)  +  Semantic AI (pgvector bge-m3 HNSW)  +  Network/Policy Analytics (Gold)
-                                          ──────────────────────────────────────────────────────────────────────────
-                                                                                       │
-                                                                           Evidence Objects (canonical grounding)
-                                                                                       │
-                                                                          Evidence-grounded LLM (Qwen2.5-Coder-7B, CPU)
+Scopus Data
+    ↓
+Cleaning / Normalization
+    ↓
+PostgreSQL Silver Layer (9 canonical tables)
+    ↓
+Vector (pgvector HNSW) + Graph (edge tables) + Analytics (Gold tables)
+    ↓
+FastAPI Gateway
+    ↓
+QuestionRouter + EntityResolutionGate
+    ↓
+Retrieval (SQLRoute / VectorRoute / GraphRoute / HybridRoute)
+    ↓
+Evidence Layer (EvidenceUnifier + EvidenceRanker)
+    ↓
+LLM Synthesis (opt-in, Qwen2.5-Coder, fallback deterministic)
+    ↓
+Citation Verification (post-hoc pruning)
+    ↓
+Next.js Frontend
 ```
 
-| Track | Question type | Engine |
-|---|---|---|
-| **Structured / Factual** | *"Top 5 most productive authors in 2023?"*, *"Total citations for institution X?"* | `SQLRoute` → `SqlRetriever` (Text-to-SQL + `sqlglot` AST validation) over 9 Silver tables |
-| **Semantic / Discovery** | *"Papers on oxidative stress in Wharton's jelly?"* | `VectorRoute` → `VectorRetriever` (`bge-m3` 1024-d + pgvector `<=>` HNSW on `chunks`, `DISTINCT ON (p.publication_id) LIMIT 8`, threshold gate $\ge 0.65$) |
-| **Network / Relational** | *"Which institutions collaborate with AI researchers?"*, *"Co-authors of Author X?"* | `GraphRoute` → `GraphRetriever` (parameterized SQL templates T1–T4, `max_hops=3`) |
-| **Policy / Trend Synthesis** | *"Stem-cell papers from Indonesian institutions after 2020 — what is emerging, who are the experts?"* | `HybridRoute` → `HybridRetriever` (vector + structured filters in one query) + Gold analytics (`topics`, `topic_evolution`, `researcher_expertise`) |
+---
 
-**Non-negotiable invariant:** no raw row / chunk / edge ever reaches the LLM. Everything is normalized into strict **Evidence Objects** (`Evidence` / `EvidenceSet`), deterministically ranked, framed as `UNTRUSTED DATA`, synthesized, then **post-hoc citation-verified**. Empty evidence short-circuits to `status: not_found` in <200 ms with **zero LLM calls** (`docs/03 §0.3`, `docs/05 §9–§12`).
+## Key Capabilities
+
+- **Bibliometric Q&A (SQLRoute):** top-N rankings, aggregations, and time filters over 9 Silver tables, guarded by a `sqlglot` AST validator (SELECT-only, table whitelist, aggregate-shape check, `COUNT(DISTINCT publication_id)` on junction joins, `LIMIT 50`).
+- **Semantic discovery (VectorRoute):** multilingual ID/EN search over `chunks.embedding vector(1024)` (`BAAI/bge-m3`, HNSW `m=16, ef_construction=64`), `DISTINCT ON (publication_id) LIMIT 8`, cosine gate `>= 0.65`.
+- **Collaboration networks (GraphRoute):** parameterized templates T1–T4 over `institution_collaboration` / `author_collaboration` edge tables, `max_hops = 3`, every edge carrying `via_publication_ids` provenance. No LLM-generated graph SQL.
+- **Topic & expertise analytics (HybridRoute):** Gold tables `topics`, `topic_evolution`, `researcher_expertise` (weighted `ExpertiseScore = 0.30·Relevance + 0.25·Productivity + 0.25·Impact + 0.20·Recency`, range 0–100).
+- **Grounded synthesis:** deterministic renderer by default; `llm_synthesis: true` opts into Qwen refinement with automatic fallback (`synthesis_backend: deterministic-fallback`) — a request never fails because of synthesis.
+- **Citation integrity:** canonical `[Title, Year, DOI]` / `[Title, Year, no-doi]` tags; `CitationVerifier` strips anything not matched in the `EvidenceSet` into `unverified_citations`. Benchmark: 0 unverified citations reach the final response.
 
 ---
 
-## 2. Key Capabilities & Features
+## Architecture
 
-### 2.1 Bibliometric Intelligence (Factual / Statistical) — `SQLRoute`
+Consistent with `docs/03 System Architecture.md`. Status of each component reflects the implementation audit (all DONE — VERIFIED unless noted).
 
-- Top-N ranking, aggregation, distribution, and time filtering over the Silver layer (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`).
-- Guardrails: `sqlglot` AST parse → mandatory `SELECT` root → table/column whitelist (`docs/04`) → destructive-keyword blacklist → **Aggregate-Shape Check** (aggregate intent must contain `COUNT/SUM/AVG/GROUP BY`) → **Double-Count Check** (`COUNT(DISTINCT publication_id)` on junction joins) → `LIMIT 50` for non-aggregates (`docs/05 §5.1`, `docs/02 FR3`).
-- 1x retry with AST error context; persistent failure → `HTTP 422 { error_type: sql_generation_failed }`, never leaking raw DB errors.
+```text
+Next.js Frontend
+        ↓
+FastAPI Gateway (request_id, rate limit 20/min/IP, Pydantic validation)
+        ↓
+QuestionRouter + EntityResolutionGate
+        ↓
+┌──────────────┬──────────────┬──────────────┬──────────────┐
+│ SQLRoute     │ VectorRoute  │ GraphRoute   │ HybridRoute  │
+│ SqlRetriever │ VectorRetr.  │ GraphRetr.   │ HybridRetr.  │
+│ sqlglot AST  │ bge-m3+HNSW  │ Templ. T1–T4 │ Gold+Silver  │
+└──────────────┴──────────────┴──────────────┴──────────────┘
+        ↓
+EvidenceUnifier → EvidenceSet (dedup on publication_id)
+        ↓
+EvidenceRanker (deterministic)
+        ↓
+Context Construction (=== BEGIN/END RETRIEVED EVIDENCE, UNTRUSTED DATA ===)
+        ↓
+AnswerSynthesizer (deterministic default, LLM opt-in)
+        ↓
+CitationVerifier (post-hoc prune → unverified_citations)
+        ↓
+Grounded Response (status: ok | not_found | needs_clarification | error)
+```
 
-### 2.2 Semantic Discovery & AI (Vector Search & RAG) — `VectorRoute`
-
-- Multilingual conceptual search (ID/EN) over `chunks.embedding vector(1024)` (`BAAI/bge-m3`), HNSW `vector_cosine_ops` (`m=16, ef_construction=64`).
-- Dedup guarantee: `DISTINCT ON (p.publication_id)` so `LIMIT 8` = **8 unique publications**, not overlapping chunks. Similarity threshold gate ($\ge 0.65$); below threshold → `status: not_found` (`docs/05 §5.2`, `docs/02 FR4`).
-
-### 2.3 Collaboration Network Analysis (SQL-based Edge Tables) — `GraphRoute`
-
-- Minimum-surface Knowledge Graph as derived PostgreSQL **edge tables** (no standalone graph DB in MVP):
-  - `institution_collaboration(institution_a, institution_b, weight, via_publication_ids)` with `CHECK (institution_a < institution_b)`
-  - `author_collaboration(author_a, author_b, weight, via_publication_ids)` with `CHECK (author_a < author_b)`
-- Zero LLM-generated graph SQL. Only four parameterized templates: **T1** institution collaborators, **T2** co-authors, **T3** topic→institution composition, **T4** bounded recursive-CTE path search (`max_hops=3`, `LIMIT 50`). Every edge carries `via_publication_ids` provenance (`docs/04 §6`, `docs/05 §5.3`).
-
-### 2.4 Emerging Topic & Expertise Engine (Director Analytics) — Gold Layer + `HybridRoute`
-
-- **`topics`**: BERTopic / co-word clusters — `topic_name`, `cluster_keywords[10]`, `representation_vector vector(1024)` (HNSW), `total_publications`, `total_citations` (`docs/04 §7.1`).
-- **`topic_evolution`**: yearly time-series per topic — `publication_count`, `citation_count`, `growth_score` (YoY), `citation_acceleration` (d²C/dt²), `recency_weight`, `is_emerging` flag (`docs/04 §7.2`).
-- **`researcher_expertise`**: multi-dimensional weighted expertise per (author, topic) — `ExpertiseScore` with `relevance`, `productivity`, `impact`, `recency` components + `h_index_topic`, `publication_count_topic`, `citation_count_topic`, `coauthor_network_size` (`docs/04 §7.3`):
-
-  $$\text{ExpertiseScore} = w_1\cdot\text{Relevance} + w_2\cdot\text{Productivity} + w_3\cdot\text{Impact} + w_4\cdot\text{Recency}$$
-
-  Defaults: `w1=0.30`, `w2=0.25`, `w3=0.25`, `w4=0.20`. Score range `[0–100]`.
-
-### 2.5 Evidence-Grounded AI Copilot (Hallucination-Free) — All Routes
-
-- **Typed Question Router**: deterministic regex/keyword rules first (<50 ms); lightweight schema-constrained LLM fallback only when uncertain (~1.5s). Emits validated Pydantic `RouterOutput(route, reasoning, entities)` with `YearFilter(op ∈ {eq,gt,gte,lt,lte,between})`. **Entity Resolution Gate**: `lower+trim → exact → ILIKE`; 0 hits → `not_found`, >1 → `needs_clarification` + candidates, 1 → bind to canonical ID.
-- **Evidence normalization** (`EvidenceUnifier`): SQL rows + vector chunks + graph edges → canonical `EvidenceSet`; dedup on `publication_id`; deterministic `EvidenceRanker`.
-- **Grounded synthesis** (Qwen2.5-Coder-7B-Instruct via Ollama, CPU): context isolated from prompt (`=== BEGIN/END RETRIEVED EVIDENCE ===`), mandatory citations `[Title, Year, DOI]` / `[Title, Year, no-doi]`, contradictions surfaced.
-- **Post-hoc `CitationVerifier`**: regex-extract citations, match against `EvidenceSet` (DOI + normalized title/year); hallucinations pruned to `unverified_citations` (`docs/05 §7`).
-
----
-
-## 3. End-to-End System Architecture
-
-### 3.1 Data Flow: Bronze → Silver → Gold (Offline) + Serving (Online)
+### End-to-End Data Flow
 
 ```mermaid
 flowchart TD
-    subgraph Bronze[BRONZE - Raw Landing - Future Ingestion]
-        Scopus[Scopus Export<br/>CSV / JSON / BibTeX] --> Archive[(Raw Archive<br/>payload + sha256 + batch_id)]
-    end
-    Archive --> Parser[Bibliometric Parser<br/>split ; authors/affils/keywords]
-    Parser --> QGate{Quality Gate<br/>DOI/EID/Title+Year<br/>Title len>=5, 1900<=year<=2026}
-    QGate -->|reject| Quarantine[(Quarantine JSONL)]
-    QGate -->|valid| Normalizer[Normalizer<br/>title Titlecase, narrative lowercase<br/>*_normalized lower+trim+strip-punct]
-    Normalizer --> Dedup[Deduplicator<br/>DOI - EID - Title+Year]
-    Dedup --> Loader[Atomic Loader<br/>BEGIN..COMMIT, ON CONFLICT upsert]
-
-    subgraph Silver[SILVER - 9 Canonical Tables - source of truth]
-        Loader --> PG[(PostgreSQL 15+<br/>publications, authors, institutions<br/>keywords, funding, publication_references<br/>pub_author, pub_institution, chunks)]
-    end
-
-    PG --> Embed[Batch Embedder Task 1<br/>BAAI/bge-m3 1024-d, batch 32-64<br/>WHERE embedding IS NULL]
-    Embed --> VecCol[chunks.embedding vector-1024<br/>+ metadata model/version/dim]
-    VecCol --> HNSW[HNSW Index<br/>vector_cosine_ops m=16 ef=64]
-    PG --> EdgeMat[Edge Materialization Task 8<br/>self-join a&lt;b, COUNT + ARRAY_AGG]
-
-    subgraph Gold[GOLD - Derived Indexes - read-only]
-        EdgeMat --> Edges[(institution_collaboration<br/>author_collaboration)]
-        PG --> TopicMod[BERTopic / Co-word Task 8.5]
-        TopicMod --> Topics[(topics)]
-        Topics --> Evol[(topic_evolution<br/>growth + acceleration)]
-        Topics --> Exp[(researcher_expertise<br/>ExpertiseScore)]
-    end
-
-    subgraph Serving[ONLINE SERVING - FastAPI /api/v1/ask]
-        Q[User Question] --> GW[Gateway<br/>Pydantic validation + request_id UUIDv4<br/>rate-limit 20/min/IP]
-        GW --> Router[Question Router<br/>SQLRoute - VectorRoute - GraphRoute - HybridRoute<br/>+ Entity Resolution Gate]
-        Router --> SQLR[SqlRetriever<br/>Text-to-SQL + sqlglot AST]
-        Router --> VecR[VectorRetriever<br/>bge-m3 + pgvector HNSW]
-        Router --> GrR[GraphRetriever<br/>Templates T1-T4, hops<=3]
-        Router --> HyR[HybridRetriever<br/>vector + parameterized filter]
-        SQLR & VecR & GrR & HyR --> EU[EvidenceUnifier<br/>Evidence / EvidenceSet + dedup]
-        EU --> RK[EvidenceRanker<br/>deterministic]
-        EU -.->|count==0| SC[Short-circuit<br/>200 not_found, 0 LLM calls, <200ms]
-        RK --> Synth[AnswerSynthesizer<br/>Qwen2.5-Coder-7B via Ollama]
-        Synth --> CV[CitationVerifier<br/>prune fake citations to unverified_citations]
-        CV --> Resp[Grounded Answer 200 OK<br/>answer + sources + request_id]
-    end
-
+    Scopus[Scopus Export CSV] --> Clean[Cleaning / Normalization]
+    Clean --> Silver[(Silver - 9 canonical tables)]
+    Silver --> Embed[Batch embedding BAAI/bge-m3 1024-d]
+    Embed --> HNSW[chunks.embedding + HNSW index]
+    Silver --> Edges[Edge materialization]
+    Edges --> EdgeT[(institution_collaboration - author_collaboration)]
+    Silver --> GoldM[Topic modeling + expertise scoring]
+    GoldM --> GoldT[(topics - topic_evolution - researcher_expertise)]
+    Q[User question] --> GW[FastAPI Gateway POST /api/v1/ask]
+    GW --> Router[QuestionRouter 4-route + EntityResolutionGate]
+    Router --> SQLR[SqlRetriever]
+    Router --> VecR[VectorRetriever]
+    Router --> GrR[GraphRetriever]
+    Router --> HyR[HybridRetriever]
+    Silver --> SQLR
     HNSW --> VecR
-    Edges --> GrR
-    Topics & Evol & Exp --> HyR
-    PG --> SQLR
+    EdgeT --> GrR
+    GoldT --> HyR
+    SQLR & VecR & GrR & HyR --> EU[EvidenceUnifier + EvidenceRanker]
+    EU -->|count == 0| SC[not_found - no LLM call]
+    EU --> Synth[AnswerSynthesizer]
+    Synth --> CV[CitationVerifier]
+    CV --> Resp[Grounded answer + sources + request_id]
 ```
 
-### 3.2 Architecture Invariants (Must Not Be Violated)
+---
 
-| # | Invariant | Source |
+## Tech Stack
+
+| Layer | Choice (locked) | Notes |
 |---|---|---|
-| 1 | **Source-of-Truth**: Silver PostgreSQL is canonical. pgvector + edge tables + Gold analytics are derived read-only structures. | `docs/03 §0.3`, `docs/04 §1` |
-| 2 | **Evidence Normalization**: no raw row/chunk/edge ever reaches the LLM; everything passes through `EvidenceUnifier` → `EvidenceSet`. | `docs/03 §0.3`, `docs/05 §4` |
-| 3 | **Security**: `app_readonly` (SELECT-only) + `SET search_path=public` + `statement_timeout='10s'` per pool connection; retrieval text = `UNTRUSTED DATA`. | `docs/08 §1–§2` |
-| 4 | **Zero-Hallucination**: 0 evidence → deterministic `not_found`/`insufficient_evidence`, no synthesis call. | `docs/03 §0.3`, `docs/05 §1` |
+| **Language / Framework** | Python 3.11+, FastAPI 0.141.1, Pydantic v2, `asyncpg` 0.31.0 | Async gateway; frozen Pydantic schemas for request/response/evidence |
+| **LLM (self-hosted, CPU)** | `Qwen2.5-Coder-7B-Instruct` via Ollama | Opt-in synthesis refinement, 8s timeout, deterministic fallback |
+| **Embedding** | `BAAI/bge-m3`, 1024-dim (`sentence-transformers` 6.1.0) | Multilingual ID/EN; local-first with Ollama embedding fallback |
+| **Database & Search** | PostgreSQL 15+ + `pgvector` 0.8.2, HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) | 9 Silver tables; HNSW on `chunks.embedding` |
+| **SQL Guard** | `sqlglot` 30.20.0 AST validator | SELECT root, whitelist, blacklist, aggregate-shape, double-count, `LIMIT 50` |
+| **Analytics (offline)** | `build_topics.py` / `score_expertise.py` | Topic clustering, YoY growth/acceleration, weighted expertise scoring |
+| **Graph exploration** | `networkx` + `matplotlib` (`scripts/visualize_graph.py`) | Offline visualization only; serving path is parameterized SQL T1–T4 |
+| **Frontend** | Next.js 14.2.18, React 18, TypeScript 5, `lucide-react`, `motion` | Workspace UI wired to `POST /api/v1/ask` |
+| **Deployment** | Docker Compose (`backend` + `ollama`) | No Postgres service — prototype DB is external (see `DB_URL`) |
+
+Heavy frameworks (LangChain, LlamaIndex) are intentionally excluded to keep latency deterministic and AST control explicit. `celery`/`redis`, Apache AGE, and `supabase-py` are explicitly deferred or rejected per `docs/09`.
 
 ---
 
-## 4. Tech Stack
+## Project Structure
 
-| Layer | Choice (locked) | Rationale / Trade-off |
-|---|---|---|
-| **Language / Framework** | Python 3.11+, FastAPI (async), Pydantic v2, `asyncpg`/`psycopg3` | Mature RAG/SQL-AST/embedding ecosystem; async I/O for Ollama + PG; strict schema boundaries. |
-| **LLM (self-hosted, CPU)** | `Qwen2.5-Coder-7B-Instruct` (GGUF Q4_K_M) via Ollama | Best-in-class 7B for Text-to-SQL + structured JSON on CPU (~25–35 tok/s, 5–10s synthesis). |
-| **Embedding** | `BAAI/bge-m3`, 1024-dim float32 (locked version/commit + batch size 32–64) | Multilingual ID/EN; feasible batch-offline + single-query-online on CPU. |
-| **Database & Search** | PostgreSQL 15+ + `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) | 9 pre-existing canonical tables; HNSW index on `chunks.embedding`. |
-| **SQL Guard** | `sqlglot` AST validator | Parse → SELECT root → table/column whitelist → destructive blacklist → aggregate-shape check → double-count check → LIMIT 50. |
-| **Analytics & NLP** | BERTopic / TF-IDF + scikit-learn, Pandas, NetworkX (offline) | Topic clustering, YoY growth/acceleration, weighted expertise scoring. |
-| **Frontend** | Next.js (React) on Vercel — Clean White, Dense, Notion/Linear style | Monospace tabular data, collapsible sources, honest status, Dev-Mode SQL viewer. |
-| **Deployment** | Docker Compose (`backend` + `ollama`) on 1 VPS | Simple, robust, self-hosted deployment. |
-
----
-
-## 5. Database & Data Pipeline Summary
-
-Full DDL, cleaning rules, and acceptance checklist: `docs/04` (+ pipeline narrative `docs/12`).
-
-### 5.1 Silver Layer — 9 Canonical Relational Tables
-
-| Table | Role | Key columns / Rules |
-|---|---|---|
-| `publications` | Core entity (22 columns) | `publication_id PK`, `title` (Titlecase), `abstract` (lowercase), `doi` (indexed, `10.xxxx/...`), `eid` (unique), `year SMALLINT NOT NULL indexed`, `citation_count INT DEFAULT 0`, `document_type/stage/open_access/language/publisher/source` (lowercase), `volume/issue/art_no/page_*` (raw) |
-| `authors` | Author entity | `author_id PK`, `author_name` (display casing), `author_name_normalized` (`lower+strip-punct+trim`, indexed — **required for GROUP BY**) |
-| `institutions` | Affiliation entity | `institution_id PK`, `institution_name` (display), `institution_name_normalized` (indexed), `city` + `country` (lowercase, `country` indexed) |
-| `keywords` | 1:N keywords | `keyword_id BIGSERIAL PK`, `publication_id FK`, `keyword` (pure lowercase), `keyword_type` (`author keyword` / `index keyword`) |
-| `funding` | 1:N funding | `funding_id BIGSERIAL PK`, `funding_agency` (display), `funding_agency_normalized` (indexed), `grant_number`, `funding_text` (lowercase) |
-| `pub_author` | Junction | `PK(publication_id, author_id)`, `author_order SMALLINT` |
-| `pub_institution` | Junction | `PK(publication_id, institution_id)` |
-| `publication_references` | Raw 1:N citations | `reference_id BIGSERIAL PK`, `reference_order INT`, `reference_text TEXT` — **unlinked strings in MVP** |
-| `chunks` | 1:N semantic units | `chunk_id BIGSERIAL PK`, `publication_id FK CASCADE`, `chunk_text TEXT`, `section DEFAULT 'title_abstract'` + vector columns below |
-
-**Vector columns on `chunks`** (DONE, Task 1): `embedding vector(1024)`, `embedding_model DEFAULT 'BAAI/bge-m3'`, `embedding_version DEFAULT 'v1.0'`, `embedding_dimension DEFAULT 1024` + `idx_chunks_embedding_hnsw USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64)` + `idx_chunks_pub_id`.
-
----
-
-## 6. Repository Structure & Documentation Index
-
-### 6.1 File Tree (actual)
+Actual tree (audited):
 
 ```text
-AI-Bibliometrics/
-├── README.md                    ← this file (Hybrid Master landing page)
-├── docs/                        ← normative specs (docs/01–docs/12 v3.6.0)
-│   ├── 01 PRD.md
-│   ├── 02 SRD.md
-│   ├── 03 System Architecture.md
-│   ├── 04 Database Schema.md
-│   ├── 05 Retrieval Rag Design.md
-│   ├── 06 Api Design.md
-│   ├── 07 UI Spec.md
-│   ├── 08 Security.md
-│   ├── 09 Tech Stack.md
-│   ├── 10 Implementation Plan.md
-│   ├── 11 Roadmap.md
-│   └── 12 Data Pipeline.md
-├── backend/app/                 ← DONE Phase 2: routers/, services/, models/, db/, core/
-├── database/migrations/         ← DONE: Silver DDL, vector column, HNSW, edge tables, Gold
-├── scripts/                     ← DONE: verify_schema.py (T0), embed_chunks.py (T1), build_edges.py (T8)
-├── frontend/                    ← PLANNED (Task 11): Next.js chat UI per docs/07
-├── docker/ + docker-compose.yml ← DONE: backend + ollama services
-├── tests/                       ← DONE: router/SQL/vector/graph/evidence/answer/API suites
-├── data/*_cleaned.csv           ← DONE: 9 cleaned prototype datasets
-└── .env.example                 ← PLANNED template: DB URL, Ollama host, model IDs, timeouts (never commit .env)
+.
+├── backend/app/              # FastAPI gateway
+│   ├── main.py               # App factory, CORS, rate-limit + tracing middleware
+│   ├── core/                 # Settings, logging, middleware, error handlers, http client
+│   ├── db/                   # asyncpg pool (app_readonly, search_path=public, 10s timeout)
+│   ├── models/ask.py         # AskRequest / AskResponse / EvidenceObject / DebugInfo
+│   ├── routers/              # ask.py (4-route wiring), health.py
+│   └── services/
+│       ├── router.py         # QuestionRouter + EntityResolutionGate
+│       ├── embedding.py      # Online bge-m3 query embedding (local + Ollama fallback)
+│       ├── ollama.py         # Ollama client + health
+│       ├── retrievers/       # sql_retriever, sql_security, vector_retriever,
+│       │                     # graph_retriever (T1–T4), hybrid_retriever
+│       ├── evidence/         # unifier, ranker, models, formatting
+│       └── synthesizer/      # answer.py, citation.py, llm.py (opt-in Qwen)
+├── frontend/                 # Next.js 14 workspace UI (app/, components/, lib/, hooks/)
+├── database/migrations/      # 001 vector+chunks, 002 collaboration edges, 003 gold analytics
+├── scripts/                  # verify_schema.py, embed_chunks.py, build_edges.py,
+│                             # build_topics.py, score_expertise.py, visualize_graph.py,
+│                             # grant_readonly.py, backfill_r1_r2.py, db.py
+├── tests/                    # unit/ (12 files), integration/ (9 files),
+│                             # e2e/test_e2e_12_queries.py, test_phase1_validation.py
+├── data/*_cleaned.csv        # 9 cleaned prototype datasets
+├── docs/01–12                # Normative specs (03/05/06/10/11/12 at v3.7.1)
+├── reports/fase7_closeout.md # Fase 7 verification evidence (2026-10-03)
+├── docker-compose.yml        # backend + ollama services
+└── .env.example              # Placeholder-only env contract (never commit .env)
 ```
-
-### 6.2 Documentation Index (`docs/01`–`docs/12`)
-
-| Doc | Title | Normatively defines |
-|---|---|---|
-| `01 PRD.md` | Product Requirements | Background, end-to-end MVP goals, internal-only scope, success metrics, risk table |
-| `02 SRD.md` | System Requirements | FR0–FR7 (validation, routing, SQL/vector/synthesis/UI/relational) + NFR1–NFR6 (latency, grounding, security) |
-| `03 System Architecture.md` | End-to-End Architecture v3.6.0 | Component topology, 4 data flows, invariants, Medallion staging, latency budget |
-| `04 Database Schema.md` | Hybrid Master Blueprint v3.6.0 | 9-table Silver DDL, `chunks.embedding` + HNSW, 2 edge DDLs, 3 Gold DDLs, ERD |
-| `05 Retrieval Rag Design.md` | RAG Design v3.6.0 | 4-route retrieval (SQL, Vector, Graph, Hybrid), `EvidenceObject`, prompt framing, CitationVerifier |
-| `06 Api Design.md` | API Contract v3.6.0 (`/api/v1`) | `POST /api/v1/ask` + `GET /api/v1/health`, Pydantic schemas, `AskResponse` envelope |
-| `07 UI Spec.md` | UI Spec v3.6.0 | Dense Notion/Linear-style 2-panel layout, tokens, route badges, collapsible sources, Dev-Mode |
-| `08 Security.md` | Internal MVP Security | `app_readonly` role, SQL AST validation, parameterization, untrusted-data framing |
-| `09 Tech Stack.md` | Tech Stack Rationale | PG + pgvector, FastAPI, Qwen2.5-Coder-7B, bge-m3, sqlglot, Next.js, Docker Compose |
-| `10 Implementation Plan.md` | Build Order (Task 0–12) | Linear build tasks (T0 schema check through T12 E2E verification) |
-| `11 Roadmap.md` | Phased Roadmap v3.6.0 | Phase 0–8 MVP deliverables, Phase 9–11 post-MVP/future roadmap, risk register |
-| `12 Data Pipeline.md` | Pipeline Design v3.6.0 | Ingestion architecture, cleaning/casing matrix, deduplication, batch embedding, edge materialization |
 
 ---
 
-## 7. Getting Started & Setup
+## Implementation Progress
 
-Follow `docs/10` linearly for Tasks 0–3; do not skip ahead. Phase 0–2 code is already committed and verified.
+| Phase | Focus | Status |
+|---|---|---|
+| Phase 0 | Repository & Infrastructure | **DONE — VERIFIED** |
+| Phase 1 | Data & Vector Indexing | **DONE — VERIFIED** |
+| Phase 2 | API Gateway | **DONE — VERIFIED** |
+| Phase 3 | SQL Vertical Slice | **DONE — VERIFIED** |
+| Phase 4 | Semantic Retrieval | **DONE — VERIFIED** |
+| Phase 5 | Evidence Layer | **DONE — VERIFIED** |
+| Phase 6 | Graph & Analytics | **DONE — VERIFIED** |
+| Phase 7 | Answer Synthesis & E2E | **DONE — VERIFIED** |
+| Frontend | Next.js UI | **IMPLEMENTED** (formal UI sign-off pending Fase 8) |
 
-### 7.1 Prerequisites & Environment Setup
+Evidence: `reports/fase7_closeout.md` — 333 tests collected (319 unit+integration pass, incl. 13 `test_llm_synthesizer.py` + 4 `test_fase7_gaps.py`), 12 mock E2E pass (+2 live-only skipped), **14/14 live E2E pass** (DB + Ollama).
 
-- **Infra**: PostgreSQL 15+ provisioned (loaded with 9 canonical tables), 1 dev VM / Docker host (recommended 8 vCPU / 16 GB), Node 18+, Vercel account.
-- **Tools**: Python 3.11+, Docker + Compose, Ollama binary, `psql`, Git.
-- **Models (locked at setup)**: `qwen2.5-coder:7b-instruct` (Ollama), `BAAI/bge-m3`.
+### Phase 0 — Repository, Environment & Infrastructure — DONE
+
+Delivered and verified: directory layout (`backend/app`, `database/`, `scripts/`, `tests/`, `docker/`), `.env.example` placeholder contract, Docker Compose (`backend` + `ollama`), `scripts/verify_schema.py` against the 9 canonical tables, pinned `requirements.txt`.
+
+### Phase 1 — Data Preparation, Vector Indexing & Graph Preparation — DONE
+
+Delivered and verified live (2026-10-03): 9 Silver tables loaded, `chunks.embedding vector(1024)` 100% filled (40/40, 0 NULL) via `BAAI/bge-m3`, HNSW index (`idx_chunks_embedding_hnsw`, `m=16, ef_construction=64`) plus `idx_chunks_pub_id` active, edge tables materialized idempotently (`institution_collaboration`: 254, `author_collaboration`: 484, `CHECK (a < b)`, non-empty `via_publication_ids`).
+
+### Phase 2 — FastAPI Gateway & API Foundation — DONE
+
+Delivered and verified: FastAPI + Pydantic v2, `asyncpg` pool, UUIDv4 `X-Request-ID` tracing, 20 req/min/IP rate limiting, structured JSON logging, standardized errors, `GET /api/v1/health` (DB/pgvector/Ollama checks) and `POST /api/v1/ask`. `/api/query` remains superseded.
+
+### Phase 3 — Structured Query Vertical Slice — DONE
+
+Delivered and verified: `QuestionRouter` (deterministic regex/keyword rules first, Graph > Hybrid > SQL > Vector priority, route fallback — not an LLM classifier fallback) → `EntityResolutionGate` (exact → ILIKE; 0 hits → `not_found`, >1 → `needs_clarification`) → `SqlRetriever` (schema-grounded generation + `sqlglot` AST gate + 1 retry with AST error context; persistent failure → HTTP 422 `sql_generation_failed`) → deterministic synthesis.
+
+### Phase 4 — Semantic Retrieval — DONE
+
+Delivered and verified: `VectorRetriever` (online bge-m3 query embedding with dim/finite guards, pgvector `<=>` search, `DISTINCT ON (publication_id) LIMIT 8`, cosine gate `>= 0.65`, `filters_ignored` reporting) + `VectorAnswerSynthesizer` + vector-scoped `CitationVerifier`, wired as `VectorRoute` in `POST /api/v1/ask`. Known behavior: embedding cold-start (~14s model load) is a one-time cost; warm queries pass the ≤1.5s NFR.
+
+### Phase 5 — Evidence Layer — DONE
+
+Delivered and verified: canonical `EvidenceObject` / `EvidenceSourceRef` / `EvidenceSet` schemas, `EvidenceUnifier.from_sql / from_vector / from_graph / from_hybrid / from_analytics` + multi-source `unify()` (dedup on `publication_id`, provenance merge), deterministic `EvidenceRanker`, serializers including the `=== BEGIN/END RETRIEVED EVIDENCE (UNTRUSTED DATA) ===` block. No raw-row-to-LLM path remains in production code. Covered by 21 unit + 9 integration + 12 mock E2E tests.
+
+### Phase 6 — Graph Retrieval & Analytics — DONE
+
+Delivered and verified, split as audited:
+
+- **Graph Retrieval — DONE:** `GraphRetriever` templates T1 (institution collaborators), T2 (co-authors), T3 (topic→institution composition), T4 (bounded recursive-CTE path search), hard-clamped `max_hops = 3` / `LIMIT 50`, `via_publication_ids` provenance, `GraphAnswerSynthesizer` + verifier, full `GraphRoute` wiring.
+- **Gold Analytics — DONE:** `topics` (5), `topic_evolution` (25), `researcher_expertise` (140) materialized via `build_topics.py` + `score_expertise.py` (migration `003`), consumed by `HybridRetriever`.
+
+### Phase 7 — Answer Synthesis, Citation Verification & E2E — DONE
+
+Delivered and verified: unified `AnswerSynthesizer` (deterministic default), opt-in Qwen synthesis (`llm_synthesis: true`, `OLLAMA_TIMEOUT_S=8s`, every failure → `deterministic-fallback` flag, request never fails on synthesis), `CitationVerifier` post-hoc pruning, deterministic `not_found` short-circuit on empty evidence, full 4-route wiring in `POST /api/v1/ask`, adversarial live probe (injected instructions and fictitious citations ignored, `unverified=[]`), and the 14/14 live E2E benchmark.
+
+---
+
+## Frontend
+
+**Status: IMPLEMENTED** — functional workspace UI wired to the live API contract. Formal UI/E2E sign-off is NEXT (Fase 8).
+
+- **Stack (verified in `frontend/package.json`):** Next.js 14.2.18, React 18.3.1, TypeScript 5.6.3, `lucide-react`, `motion`. No Tailwind — styling is `app/globals.css` + motion tokens (`lib/motion-tokens.ts`, `lib/motion-config.ts`).
+- **Entry:** `app/page.tsx` → `components/Workspace.tsx` (2-panel dense layout: `Sidebar`, `TopBar`, `AnswerBrief`, `ExploreView`, `InspectorBar`).
+- **API integration (`lib/api.ts`):** typed `AskResponse` client posting to `${NEXT_PUBLIC_API_BASE}/api/v1/ask` with `{ question, filters, developer_mode }`, typed routes/statuses/sources/candidates, `unverified_citations` + `debug` (SQL, route reasoning, latency breakdown) surfaced in the Dev-Mode inspector.
+- **Views:** `PublicationDetailView`, `AuthorDetailView`, `ResearchHero`, loading (`LoadingCard`), animated counters (`CountUp`), reveal transitions (`Reveal`), `use-media-query` / `use-reduced-motion` hooks, plus `app/prototypes/` design variants.
+- **Concept:** clean, minimal, dense-but-readable research workspace (Notion/Linear-inspired) for submitting a research question and inspecting the grounded answer, evidence, sources, citations, and retrieval status.
+- **Config:** `frontend/.env.example` contains only `NEXT_PUBLIC_API_BASE=http://localhost:8000`.
+
+---
+
+## Backend API
+
+Contract: `docs/06 Api Design.md` v3.7.1. Two endpoints: `GET /api/v1/health`, `POST /api/v1/ask`.
+
+```http
+POST /api/v1/ask
+Content-Type: application/json
+```
+
+```json
+{
+  "question": "Top 5 most productive authors after 2020?",
+  "filters": { "year_from": 2020 },
+  "developer_mode": true,
+  "llm_synthesis": false
+}
+```
+
+- `question`: 3–1000 chars (trimmed; shorter → HTTP 422).
+- `filters`: `year`, `year_from`/`year_to`, `country`, `author_name`, `institution_name`, `topic_name`, `document_type`, `keyword`.
+- `developer_mode`: includes `debug` (`sql_executed`, `route_reasoning`, `latency_breakdown_ms`, `embedding_backend`, `synthesis_backend`, `evidence_set`).
+- `llm_synthesis`: opt-in Qwen narrative refinement (default `false` = deterministic).
+
+Response envelope (`AskResponse`):
+
+```json
+{
+  "request_id": "uuid-v4",
+  "status": "ok",
+  "route": "SQLRoute",
+  "answer": "grounded narrative with [Title, Year, DOI] citations...",
+  "evidence_objects": [],
+  "sources": [],
+  "candidates": null,
+  "filters_ignored": [],
+  "answered_via_fallback": false,
+  "unverified_citations": [],
+  "debug": null
+}
+```
+
+`status` is one of `ok | not_found | needs_clarification | error` — there is no fifth status (`insufficient_evidence` maps to `not_found`). Ambiguous entities return `needs_clarification` with `candidates`. Health: `GET /api/v1/health` reports DB/pgvector/Ollama component status including the DB role.
+
+---
+
+## Data and Database
+
+Medallion layout: **Bronze** (raw Scopus landing) → **Silver** (9 canonical tables, source of truth) → **Gold** (derived read-only: pgvector + 2 edge tables + 3 analytics tables).
+
+Silver (all DONE, live-verified 2026-10-03):
+
+| Table | Rows (live) | Role |
+|---|---|---|
+| `publications` | 20 | Core entity (title, abstract, doi, eid, year, citation_count, …) |
+| `authors` | 138 | Author entity + `author_name_normalized` for GROUP BY |
+| `institutions` | 107 | Affiliation entity + normalized column, `country` indexed |
+| `keywords` | 344 | 1:N keywords (`author keyword` / `index keyword`) |
+| `funding` | 33 | 1:N funding + normalized agency |
+| `pub_author` | 138 | Junction + `author_order` |
+| `pub_institution` | 108 | Junction |
+| `publication_references` | 4120 | Raw 1:N citation strings (unlinked in MVP) |
+| `chunks` | 40 | Semantic units (`title_abstract`) + `embedding vector(1024)` |
+
+Derived (all DONE): `institution_collaboration` (254), `author_collaboration` (484); Gold `topics` (5), `topic_evolution` (25), `researcher_expertise` (140). Migrations: `database/migrations/001–003`. Cleaning pipeline and exports: `data/*_cleaned.csv` (9 files).
+
+---
+
+## RAG Architecture
+
+| Route | Engine | Gate |
+|---|---|---|
+| `SQLRoute` | `SqlRetriever` + `sqlglot` AST over 9 Silver tables | SELECT-only, whitelist, aggregate-shape, double-count check, `LIMIT 50` |
+| `VectorRoute` | `VectorRetriever`, bge-m3 1024-d + HNSW `<=>` | `DISTINCT ON (publication_id) LIMIT 8`, cosine `>= 0.65` |
+| `GraphRoute` | `GraphRetriever` templates T1–T4 | `max_hops = 3`, `LIMIT 50`, `via_publication_ids` provenance |
+| `HybridRoute` | `HybridRetriever`: 4 sequential parameterized templates (Gold trends, expertise, ILIKE topic resolution + centroid-vector fallback gate `>= 0.50`, supporting publications) | Pydantic operator whitelist (`YearOp` literal) — operator strings never reach SQL |
+
+Router priority is deterministic: Graph > Hybrid > SQL > Vector fallback (locked by test). `HybridRoute` with an unknown `topic_name` falls back to the nearest topic centroid and labels the answer as related topics — so it practically never returns `not_found` on topic filters (documented in `docs/05 §5.4`, locked by test).
+
+---
+
+## Security and Grounding
+
+Architectural invariants (`docs/03 §0.3`, `docs/05`, `docs/08`):
+
+- **Source of truth:** Silver PostgreSQL is canonical; pgvector, edge tables, and Gold analytics are derived read-only structures.
+- **Runtime role:** pool connects with `SET search_path = public` + `statement_timeout = '10s'`; design target is the `app_readonly` role (known gap R1 below).
+- **Untrusted data:** retrieved publication text is framed as `UNTRUSTED DATA` and cannot override system instructions (verified by live adversarial probe).
+- **LLM is a synthesis engine, not a database:** it narrates exclusively from the provided `EvidenceSet`.
+- **Zero-hallucination:** 0 evidence → deterministic `not_found`, zero LLM calls. Vector-route zero-evidence measured at ~274ms (embedding-bound; the <200ms target is a recorded Fase 8 baseline item, not a gate).
+- **Citation integrity:** regex `CitationVerifier` (`[Title, Year, DOI]` / `[Title, Year, no-doi]`) prunes hallucinations into `unverified_citations`; benchmark result 0 unverified citations in final responses.
+
+---
+
+## Quick Start
+
+Prerequisites: Python 3.11+, Node 18+, Docker + Compose, Ollama, `psql`, access to the prototype PostgreSQL.
 
 ```bash
-# Backend setup
+git clone https://github.com/CodeByAbi/AI-Bibliometrics.git
+cd AI-Bibliometrics
+
+# Environment (placeholders only — never commit real secrets)
+copy .env.example .env        # Windows
+# cp .env.example .env        # Linux/macOS
+
+# Backend
 python -m venv .venv
 .venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
-
-# Run FastAPI dev server
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 7.2 Database Verification & Schema Init (Task 0)
-
 ```bash
-python scripts/verify_schema.py  # SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema='public'
+# Frontend (http://localhost:3000)
+cd frontend
+npm install
+npm run dev                     # npm run build / npm run lint for prod/lint
 ```
 
-### 7.3 Ingestion Pipeline Execution (Task 1 + 8 + 8.5)
+```bash
+# Docker (backend + Ollama; DB is external via DB_URL)
+docker compose up -d --build
+```
 
 ```bash
-# 1. Chunk embedding generation (Task 1) — chunks.embedding vector(1024)
+# Database verification + offline pipeline (Tasks 0/1/8/8.5)
+python scripts/verify_schema.py
 python scripts/embed_chunks.py --model BAAI/bge-m3 --batch-size 32 --resume
-
-# 2. HNSW index on chunks
-psql "$DB_URL" -c "CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw ON chunks USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=64); ANALYZE chunks;"
-
-# 3. Graph materialization (Task 8) — 2 edge tables, then re-grant
 python scripts/build_edges.py
-psql "$DB_URL" -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;"
-
-# 4. Gold analytics (Task 8.5) — topics, topic_evolution, researcher_expertise
 python scripts/build_topics.py && python scripts/score_expertise.py
 ```
 
----
+Try the API:
 
-## 8. Roadmap & Implementation Status
+```bash
+curl -X POST http://localhost:8000/api/v1/ask -H "Content-Type: application/json" -d "{\"question\": \"Top 5 most productive authors after 2020?\", \"filters\": {\"year_from\": 2020}, \"developer_mode\": true}"
+curl http://localhost:8000/api/v1/health
+```
 
-### 8.1 Build Tasks 0–12 (`docs/10`)
+### Environment Configuration
 
-Pre-task **DONE** (outside Task 0–12 numbering, synced 2026-09-27): Database setup · Prototype database/data load · Data cleaning · Clean export (`data/*_cleaned.csv`, 9 files). Explicit NEXT: prepare embedding input → generate → store to pgvector → validate → similarity retrieval → RAG → E2E.
+Variable names only (see `.env.example` / `frontend/.env.example`):
 
-| Task | Scope | Status | Blocks |
-|---|---|---|---|
-| **Task 0 — Schema Check** | `verify_schema.py` vs 9 canonical tables | ✅ DONE | - |
-| **Task 1 — Embedding Pipeline** | `ALTER chunks ADD embedding vector(1024)` + bge-m3 batch + HNSW | ✅ DONE | - |
-| **Task 2 — Backend Skeleton + DB Layer** | FastAPI layout, `app_readonly` pool + timeouts, `GET /api/v1/health` | ✅ DONE | - |
-| **Task 3 — Ollama Setup** | pull `qwen2.5-coder:7b-instruct`, isolated LLM client, health check | ✅ DONE | - |
-| **Task 4 — Router + Entity Gate** | 4-class routing, Pydantic entity contracts, `needs_clarification` | ✅ IMPLEMENTED (Phase 3, green slice) | Task 6, 7, 8 |
-| **Task 5 — SQL Generator + Validator** | Text-to-SQL over 9 tables, `sqlglot` checks, 1x retry | ✅ IMPLEMENTED (Phase 3, green slice) | Structured slice |
-| **Task 6 — Vector Retriever** | Query embed + `<=>` over `chunks` + `DISTINCT ON` + threshold $\ge 0.65$ | ✅ IMPLEMENTED (Phase 4, green slice) | Semantic slice |
-| **Task 7 — Evidence Layer Unifier** | `EvidenceUnifier` + `EvidenceRanker` + `EvidenceSet` + `EvidenceItem`, deterministic ranking, no raw-row-to-LLM | ✅ IMPLEMENTED (Phase 5, unit 21 + integration 9 + E2E mock 12) | Synthesis engine |
-| **Task 8 — Graph Edge Tables** | Build 2 edge tables + T1–T4 templates + hop/limit clamps | ✅ DONE (Edge Tables) / PLANNED (T1–T4 Templates) | Network queries |
-| **Task 8.5 — Gold Analytics** | `topics` + `topic_evolution` + `researcher_expertise` | ⬜ PLANNED (Phase 6) | Policy/expert synthesis |
-| **Task 9 — Answer Synthesis** | Grounding prompt + `CitationVerifier` + deterministic short-circuit | ⬜ PLANNED | Grounded answers |
-| **Task 10 — Full API** | wire `POST /api/v1/ask`, `AskResponse` with `evidence_objects` | ⬜ PLANNED | Frontend + E2E |
-| **Task 11 — Frontend** | Next.js 2-panel UI, badges, all 6 states, Dev-Mode inspector | ⬜ PLANNED | Demo |
-| **Task 12 — E2E Verification** | 12-query gate over prototype dataset + latency baseline | ⬜ PLANNED | **MVP sign-off** |
-
----
-
-## 9. Cross-Document Decision Consistency Matrix
-
-| Decision Area | Canonical Decision | Related Docs | Status |
-|---|---|---|---|
-| **Database** | PostgreSQL 15+ (provisioned & ready, internal credentials secured) | `01`, `02`, `03`, `04`, `08`, `09`, `10`, `11` | ALIGNED |
-| **Vector storage** | `pgvector` HNSW (`m=16, ef_construction=64`, `vector_cosine_ops`) on `chunks.embedding vector(1024)` (DONE, Task 1) | `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Naming convention** | 9 standard canonical relational tables: `publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks` | `01`, `02`, `03`, `04`, `05`, `06`, `10`, `11`, `12` | ALIGNED |
-| **Data cleaning** | Bronze → Silver via Python scripts — **DONE** (cleaned output exported to `data/*_cleaned.csv`, 9 files; loaded into 9 Silver tables) | `01`, `04`, `10`, `12` | ALIGNED |
-| **Lowercase normalization** | Narrative & categorical fields (`abstract`, `keyword`, `country`, etc.) stored full lowercase; display & original IDs preserved; `*_normalized` columns (`author_name_normalized`, `institution_name_normalized`, `funding_agency_normalized`) stored lowercase+trim+strip-punct for aggregation/search | `01`, `02`, `04`, `05`, `12` | ALIGNED |
-| **Chunking** | Per-publication abstract granularity in `chunks`, `chunk_text` field, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
-| **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
-| **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Vector similarity gate** | Deterministic cosine-similarity threshold locked at $\ge 0.65$ for `BAAI/bge-m3`; below-threshold queries short-circuit to `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
-| **Citation format** | Deterministic 3-element standard: `[Title, Year, DOI]` when DOI exists, and `[Title, Year, no-doi]` when the paper has no DOI | `01`, `05`, `06`, `07` | ALIGNED |
-| **Graph engine strategy** | MVP locked to parameterized PostgreSQL Recursive CTEs (T1–T4); post-MVP evaluation target is Apache AGE in Phase 9 | `03`, `04`, `09`, `11` | ALIGNED |
-| **RAG context** | `UNTRUSTED DATA` framing, LLM purely synthesizes narrative & validates `EvidenceObject`, deterministic short-circuit on 0 evidence, post-hoc `CitationVerifier` | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
-| **API contract** | `POST /api/v1/ask` (`AskRequest` & `AskResponse` with `evidence_objects`) + `GET /api/v1/health`. `/api/query` endpoint officially SUPERSEDED | `02`, `03`, `05`, `06`, `07`, `10`, `11` | ALIGNED |
-| **Prototype dataset** | Small prototype dataset (~20 publications, 40 chunks, 138 authors, 107 institutions, 22 manuscript columns) for full end-to-end validation | `01`, `02`, `03`, `04`, `10`, `11`, `12` | ALIGNED |
-| **Production-scale dataset** | Future target for large-scale Scopus ingestion (>100K publications) with automated batch pipeline, multi-tier deduplication, and async workers | `01`, `02`, `03`, `04`, `11`, `12` | ALIGNED |
+```text
+DB_URL                      # live PostgreSQL (runtime role per docs/08)
+DB_URL_OWNER                # owner role for DDL/migrations only
+OLLAMA_HOST                 # default http://ollama:11434 under Compose
+LLM_MODEL                   # qwen2.5-coder:7b-instruct
+EMBEDDING_MODEL             # BAAI/bge-m3
+EMBEDDING_DIMENSION         # 1024
+VECTOR_SCHEMA               # extensions (Supabase) or public (vanilla)
+DB_STATEMENT_TIMEOUT_MS     # 10000
+OLLAMA_TIMEOUT_S            # 8
+OLLAMA_PORT                 # host port mapping (default 11435)
+NEXT_PUBLIC_API_BASE        # frontend → backend base URL
+```
 
 ---
 
-## 10. Canonical Architecture Decisions
+## Testing
 
-1. **No-DOI Citation Decision:**
-   - *Decision:* Inline citation format uses the standard pattern `[Title, Year, DOI]` when a DOI is available, and `[Title, Year, no-doi]` when the publication has no DOI. This guarantees deterministic behavior for the `CitationVerifier` regex parser and the frontend parser without comma mis-parsing.
-2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
-   - *Decision:* Cosine similarity threshold locked at $\ge 0.65$ for `BAAI/bge-m3`. Queries scoring $< 0.65$ route directly to `status: not_found`.
-3. **Post-MVP Graph Engine Decision:**
-   - *Decision:* MVP uses parameterized PostgreSQL Recursive CTEs (Templates T1–T4) over `institution_collaboration` and `author_collaboration` edge tables. For post-MVP (Phase 9), the system sets **Apache AGE** as the primary evaluation target because it integrates directly as a PostgreSQL extension without requiring separate graph-DB infrastructure.
+```bash
+pytest                                   # full suite (testpaths = tests)
+pytest -v --cov=backend/app tests/       # with coverage (gate formalized in Fase 8)
+pytest tests/unit/test_sql_security.py   # AST validator + injection attempts
+pytest tests/unit/test_router.py         # 4-route classification + entity gate
+pytest tests/e2e/test_e2e_12_queries.py  # 12-query benchmark (mock; E2E_LIVE=1 for live)
+```
+
+Verified results (`reports/fase7_closeout.md`, 2026-10-03):
+
+| Suite | Result |
+|---|---|
+| `tests/unit` + `tests/integration` | **319 passed** (incl. 13 `test_llm_synthesizer.py` + 4 `test_fase7_gaps.py`) |
+| `tests/e2e` (mock) | 12 passed + 2 live-only skipped |
+| `tests/e2e` live (`E2E_LIVE=1`, DB + Ollama) | **14/14 passed** |
+| Guardrails | 100% SQL AST checks pass; 0 unverified citations in final E2E responses |
+
+Live NFR baseline (CPU): SQL aggregate 414ms (≤500ms PASS) · Vector warm 274ms (≤1.5s PASS) · Hybrid trends 119ms / experts 254ms (≤1.0s PASS) · graph-clarification 122ms (PASS) · vector cold-start 22.1s (one-time model load, KNOWN) · LLM synthesis needs GPU (raw 64-token CPU generation ~14.7s vs 5–10s target).
 
 ---
 
-## 11. Changelog
+## Prototype Dataset
 
-| Document | Changes | Rationale |
-|---|---|---|
-| `README.md` v3.6.2 | Sync `docs/01`–`docs/12` v3.6.2 language rule (narasi Indonesia, teknis Inggris, tanpa duplikasi bilingual) | Tetapkan aturan bahasa di semua docs; README tetap English canonical |
-| `README.md` v3.6.1 | Restore canonical English technical terms (Tech Stack, Entity Resolution Gate, Aggregate-Shape Check, Double-Count Check, Source-of-Truth, Evidence Normalization, Zero-Hallucination, Edge Tables, Vertical Slice, etc.); update File Tree + Getting Started to Phase 0–2 DONE reality; sync Phase 3 IN PROGRESS | Fix awkward ID translations of EN canonical terms; align README with actual repo state 2026-09-29 |
-| `README.md` v3.6.0 | Full Bahasa Indonesia sync; no technical decision changes | Language alignment 2026-09-27 |
-| `README.md` v3.5.0 | Progress sync: cleaning + cleaned export DONE, vector storage PENDING explicit; bump `docs/01`–`docs/12` to v3.5.0 | Actual progress sync 2026-09-27 |
-| `README.md` v3.4.0 | Restore all 9 Silver table names to standard names without `_cleaned` suffix | Naming alignment per project instruction |
-| `README.md` v3.4.0 | Lock citation format (`no-doi`), cosine threshold $\ge 0.65$, and Apache AGE graph strategy | Close open decisions into canonical decisions |
-| `README.md` v3.4.0 | Update Decision Consistency Matrix and Changelog | Guarantee cross-document consistency |
+Small, intentional, E2E-validation-sized — not production scale:
+
+```text
+~20 publications · 40 chunks · 138 authors · 107 institutions
+344 keywords · 33 funding rows · 4120 raw references
+5 topics · 25 topic_evolution rows · 140 researcher_expertise rows
+254 institution edges · 484 author edges
+```
+
+Source: `data/*_cleaned.csv` (9 files) loaded into the 9 Silver tables. Production-scale Scopus ingestion (>100K publications, automated batch pipeline, async workers) is explicitly a post-MVP target (Fase 10–11).
+
+---
+
+## Current Limitations
+
+- **Prototype dataset is intentionally small** — validates the E2E pipeline, not scale.
+- **DB role gap (R1, accepted risk):** live `.env` uses the `postgres` owner role, not `app_readonly` — write-rejection is not enforced at role level. Primary guards are the AST whitelist + parameterized templates. Owner action: switch `.env` to the `app_readonly` URL and re-verify `/health.role`.
+- **CPU latency baselines (R2, accepted):** zero-evidence vector path (~274ms) misses the <200ms target (embedding-bound); local Qwen synthesis (~14.7s/64 tokens) misses the 5–10s NFR — LLM synthesis needs GPU. Both are Fase 8 baseline items, not gates.
+- **Vector cold-start:** first query after deploy pays ~14s local model load (one-time).
+- **LLM runs locally** (`llm_synthesis` defaults OFF); deterministic synthesis is the default path.
+- **Frontend:** implemented and wired, but formal UI/E2E sign-off is pending Fase 8.
+- **Doc hygiene:** `docs/03/05/06/10/11/12` are synced to v3.7.1; older status labels linger in `docs/01/02/04/07/08/09` (recorded as out of Fase 7 close-out scope).
+- No streaming endpoint yet (`POST /api/v1/ask/stream` is Fase 10); single-tenant, no auth (internal prototype).
+
+---
+
+## Roadmap
+
+```text
+Phase 0 ──> Phase 1 ──> Phase 2 ──> Phase 3 ──> Phase 4
+                                                  │
+Phase 5 ──> Phase 6 ──> Phase 7 ──> Fase 8 (MVP gate, NEXT)
+                                          │
+Fase 9 (AGE eval, retrieval quality) ──> Fase 10 (streaming, GPU, async) ──> Fase 11 (production)
+```
+
+- **Fase 8 — NEXT:** formal verification + latency baselines + frontend sign-off + MVP gate.
+- **Fase 9 — POST-MVP:** retrieval quality tuning, semantic entity resolution, Apache AGE evaluation, automated eval harness.
+- **Fase 10 — POST-MVP/FUTURE:** async workers, query caching, `/api/v1/ask/stream` (SSE), GPU inference.
+- **Fase 11 — FUTURE:** multi-tenant production hardening, continuous Scopus ingestion (>100K).
+
+Full detail: `docs/11 Roadmap.md`.
+
+---
+
+## Documentation
+
+| Doc | Defines |
+|---|---|
+| `docs/01 PRD.md` | Product requirements, MVP goals, success metrics |
+| `docs/02 SRD.md` | FR0–FR7 + NFR1–NFR6 (validation, routing, retrieval, synthesis, UI) |
+| `docs/03 System Architecture.md` | Component topology, data flows, invariants |
+| `docs/04 Database Schema.md` | Silver/edge/Gold DDL, HNSW, ERD |
+| `docs/05 Retrieval Rag Design.md` | 4-route retrieval, EvidenceObject, prompts, CitationVerifier |
+| `docs/06 Api Design.md` | `POST /api/v1/ask` + `GET /api/v1/health` contracts |
+| `docs/07 Ui Spec.md` | Dense 2-panel layout, tokens, route badges, Dev-Mode |
+| `docs/08 Security.md` | `app_readonly`, AST validation, untrusted-data framing |
+| `docs/09 Tech Stack.md` | Locked choices + explicit rejections |
+| `docs/10 Implementation Plan.md` | Build order Task 0–12 |
+| `docs/11 Roadmap.md` | Phase 0–11 status, MVP boundary, risks |
+| `docs/12 Data Pipeline.md` | Ingestion, cleaning/casing matrix, embedding, edge materialization |
+| `reports/fase7_closeout.md` | Fase 7 verification evidence (tests, benchmarks, contract resolutions F-1–F-9) |
+
+---
+
+## Development Notes
+
+- Follow `docs/10` build order; do not skip ahead of the current phase gate.
+- Conventional Commits: `<type>(<scope>): <subject>` — imperative, lowercase, no trailing period (scopes: `backend`, `frontend`, `retriever`, `router`, `synthesizer`, `database`, `scripts`, `tests`, `docs`, `api`, `docker`, …).
+- `main` stays deployable; feature branches merge via PR, never force-push shared history.
+- `.env` is never committed (see `.gitignore`); only `.env.example` / `frontend/.env.example` are tracked.
+- Lint/format: `ruff check` + `ruff format backend/ scripts/ tests/`; types: `mypy backend/ scripts/`; frontend: `npm run lint`.
+
+---
+
+## License
+
+No license file is specified yet — this is an internal research prototype. Add a `LICENSE` before any public distribution.
