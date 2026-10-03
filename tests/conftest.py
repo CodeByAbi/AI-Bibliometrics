@@ -20,6 +20,21 @@ def reset_rate_limiters():
 
 
 @pytest.fixture(autouse=True)
+def reset_synthesis_stats():
+    """Zero the process-wide synthesis counters around every test.
+
+    ``get_synthesis_stats()`` returns a module-level singleton, so without this
+    a test that records a fallback would leak its counts into the next test's
+    ``fallback_rate`` / ``fallback_by_reason`` assertions.
+    """
+    from backend.app.services.synthesizer.stats import get_synthesis_stats
+
+    get_synthesis_stats().reset()
+    yield
+    get_synthesis_stats().reset()
+
+
+@pytest.fixture(autouse=True)
 def isolate_embedding_model_cache():
     """Save/restore the global SentenceTransformer cache around each test.
 
