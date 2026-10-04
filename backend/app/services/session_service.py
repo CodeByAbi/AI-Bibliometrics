@@ -181,6 +181,26 @@ class SessionService:
         async with self._pool.acquire() as conn:
             return await self._repo(conn).delete_session(session_id)
 
+    async def rename_session(
+        self, session_id: uuid.UUID, title: str
+    ) -> dict[str, Any]:
+        """Rename a session.
+
+        Unlike the other write paths here, a storage failure PROPAGATES rather than
+        being swallowed. Every other method in this class returns None or False on
+        error because it runs inside ``/api/v1/ask``, where losing bookkeeping must
+        never turn a produced answer into a 500. A rename is different: the caller's
+        entire request IS the bookkeeping, so a silent failure would return 200 with
+        the old title still in place and the user would reasonably believe it saved.
+
+        The repository raises :class:`SessionNotFoundError` for an unknown session,
+        which the API layer maps to 404. Title validation is not repeated here — it
+        belongs to ``SessionUpdateRequest``, and doing it in two places would give
+        two answers to "what is a valid title".
+        """
+        async with self._pool.acquire() as conn:
+            return await self._repo(conn).set_title(session_id, title)
+
     # ------------------------------------------------------------------
     # Context assembly
     # ------------------------------------------------------------------

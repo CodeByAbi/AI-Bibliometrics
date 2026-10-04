@@ -859,6 +859,7 @@ async def ask_question(
     # ---- Session post-flight -------------------------------------------
     if session_service is not None and payload.session_id is not None:
         t_assistant = time.perf_counter()
+        evidence_payload, sources_payload = _provenance_payload(response)
         await session_service.record_assistant_message(
             session_id=payload.session_id,
             content=response.answer,
@@ -866,6 +867,8 @@ async def ask_question(
             request_id=req_id,
             applied_filters=effective_filters_obj.model_dump(exclude_none=True),
             status="complete",
+            evidence_objects=evidence_payload,
+            sources=sources_payload,
         )
         latencies["session_persist_assistant_ms"] = round(
             (time.perf_counter() - t_assistant) * 1000, 2
@@ -892,6 +895,41 @@ async def ask_question(
         response = response.model_copy(update=updates)
 
     return response
+
+
+def _provenance_payload(
+    response: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Serialise a response's evidence and sources for per-turn storage.
+
+    ``mode="json"`` rather than python-mode ``model_dump``: the repository binds
+    these as ``::jsonb`` and hands them to ``json.dumps``, so any non-JSON type
+    that survived python-mode (a Decimal, a UUID) would raise inside the INSERT.
+    That raise is swallowed by ``_persist_turn``, which would drop the assistant
+    turn entirely — losing the answer, not just its provenance. JSON mode makes
+    that impossible by construction.
+
+    Returns empty lists for a response with no evidence, which is the correct
+    value for a ``not_found`` turn: it genuinely cited nothing, and inventing an
+    empty-but-present evidence set would misrepresent that as a finding.
+
+    Deliberately NOT gated on ``developer_mode``. These are the same
+    ``EvidenceObject`` / ``SourceItem`` values the caller already receives in the
+    normal response body — not debug metadata — and withholding them for
+    non-developer callers would make the workspace unrestorable for exactly the
+    users who use it.
+    """
+    evidence = [
+        item.model_dump(mode="json")
+        for item in (response.evidence_objects or [])
+        if hasattr(item, "model_dump")
+    ]
+    sources = [
+        item.model_dump(mode="json")
+        for item in (response.sources or [])
+        if hasattr(item, "model_dump")
+    ]
+    return evidence, sources
 
 
 def _with_session_latencies(

@@ -95,6 +95,18 @@ class TestResponseModels:
 
         A `publication_count` or `citation_count` here would be a stale copy of
         `public` with no way for a reader to know it is the stale one.
+
+        Migration 006 permits a per-turn provenance snapshot, which does contain
+        metric values, so this list deliberately EXCLUDES `evidence_objects` —
+        that exception is fenced separately and narrowly by
+        ``test_provenance_snapshot_is_confined_to_the_message_dto`` below, which
+        fails if the field ever appears anywhere but on the per-turn DTO.
+
+        The aggregate names below remain banned everywhere, including on
+        ``SessionMessageResponse``. An evidence snapshot is a receipt for one
+        answered turn; a `publication_count` column would be a session-level
+        rollup, which is exactly what the invariant forbids and exactly what
+        migration 006 refuses to create.
         """
         banned = {
             "publication_count",
@@ -108,7 +120,6 @@ class TestResponseModels:
             "growth_score",
             "citation_acceleration",
             "evidence",
-            "evidence_objects",
         }
         for model in (
             SessionCreateRequest,
@@ -119,6 +130,44 @@ class TestResponseModels:
         ):
             leaked = banned & set(model.model_fields)
             assert not leaked, f"{model.__name__} exposes metric field(s): {leaked}"
+
+    def test_provenance_snapshot_is_confined_to_the_message_dto(self) -> None:
+        """The migration 006 exception is per-turn and must stay that way.
+
+        ``evidence_objects`` / ``sources`` are the only session fields permitted to
+        carry bibliometric values, and only as an immutable snapshot of ONE already
+        verified response. This test pins that scope so the exception cannot widen
+        by accident:
+
+        * permitted on ``SessionMessageResponse`` — the per-turn DTO;
+        * forbidden on ``SessionListItem`` — which would make it a session-level
+          aggregate, the thing migration 005 refused and 006 explicitly declines;
+        * forbidden on ``SessionDetailResponse`` — the session envelope, so a
+          client cannot read a provenance snapshot as "the session's evidence";
+        * forbidden on the create/created DTOs, where there is no turn to describe.
+        """
+        allowed = {"SessionMessageResponse"}
+        snapshot_fields = {"evidence_objects", "sources"}
+
+        for model in (
+            SessionCreateRequest,
+            SessionCreatedResponse,
+            SessionListItem,
+            SessionDetailResponse,
+            SessionMessageResponse,
+        ):
+            leaked = snapshot_fields & set(model.model_fields)
+            if model.__name__ in allowed:
+                assert leaked == snapshot_fields, (
+                    f"{model.__name__} must expose {sorted(snapshot_fields)} to "
+                    f"restore a past turn's evidence rail; got {sorted(leaked)}"
+                )
+            else:
+                assert not leaked, (
+                    f"{model.__name__} exposes per-turn provenance field(s) "
+                    f"{sorted(leaked)}; a snapshot is per-turn and must never "
+                    f"become a session-level aggregate"
+                )
 
 
 class TestConversationScope:
