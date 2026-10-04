@@ -72,12 +72,53 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
     )
 
 
+async def _reset_connection(conn: asyncpg.Connection) -> None:
+    """Restore a released connection to its initial state.
+
+    asyncpg's ``create_pool`` takes ``reset`` as a CALLABLE (unlike
+    ``asyncpg.connect``, which takes the string ``"light"``/``"full"``). Passing
+    the string raises ``TypeError: 'str' object is not callable`` from
+    ``Pool.release``, which surfaced as every integration test losing its
+    database.
+
+    ``Connection.reset()`` issues ``RESET ALL; CLOSE ALL; UNLISTEN *`` — the
+    "full" semantics. The pool runs in autocommit, so this is the boundary that
+    guarantees no session state (advisory locks, temp tables, session GUCs set
+    outside a transaction) survives from one request to the next.
+    """
+    await conn.reset()
+
+
 async def create_pool(
     *,
     min_size: int = 1,
     max_size: int = 10,
 ) -> asyncpg.Pool:
-    """Create a new asyncpg connection pool with strict security parameters."""
+    """Create a new asyncpg connection pool with strict security parameters.
+
+    ``reset`` is a callable here, not the ``"light"``/``"full"`` string that
+    ``asyncpg.connect`` accepts — see :func:`_reset_connection`. It runs
+    ``RESET ALL; CLOSE ALL; UNLISTEN *`` on release, so no session state a query
+    leaves behind can survive onto the next request that borrows the connection.
+
+    ``hnsw.ef_search`` is set once per connection instead of per query.
+    VectorRetriever used to issue ``set_config('hnsw.ef_search', ...)` before
+    every ANN search: 29-54 ms of measured round trips, with no effect on the
+    observed plans, because at the prototype corpus size (40 chunks) the planner
+    chooses ``Seq Scan + Sort`` and never touches the HNSW index. It also leaked,
+    because the pool released with ``reset="light"`` which does not clear session
+    state.
+
+    Honest caveat on the knob: ``RESET ALL`` reverts ``hnsw.ef_search`` to the
+    server default (40) on every release, so this ``server_settings`` entry only
+    holds for a connection's first checkout. It is kept because it is correct on
+    connect and costs nothing, but it is NOT a maintained per-request override.
+    The per-request ``SET`` was deliberately not reinstated to chase it: at this
+    corpus size the index is never consulted, and paying a round trip per request
+    for an unused setting is the exact regression being removed. Raise it at the
+    database level (``ALTER DATABASE ... SET hnsw.ef_search``) when the corpus
+    grows past the planner's crossover into Index Scan.
+    """
     settings = get_settings()
     if not settings.db_url:
         raise ValueError("DB_URL is not set (checked process env + project .env).")
@@ -90,10 +131,14 @@ async def create_pool(
         ssl="require",
         command_timeout=timeout_s,
         init=_init_connection,
+        reset=_reset_connection,
         server_settings={
             "statement_timeout": f"{settings.db_statement_timeout_ms}ms",
             "idle_in_transaction_session_timeout": "30s",
             "search_path": "public",
+            # Query-time GUC for the pgvector ANN index. Set per connection so
+            # it survives the request lifecycle; see the docstring.
+            "hnsw.ef_search": str(settings.hnsw_ef_search),
         },
     )
 

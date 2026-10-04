@@ -154,6 +154,19 @@ class Settings(BaseModel):
         description="PostgreSQL schema holding the pgvector extension "
         "(Supabase layout: 'extensions'; vanilla local installs: 'public').",
     )
+    hnsw_ef_search: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="pgvector HNSW search breadth, applied once per pooled "
+        "connection via server_settings. It was previously issued as a "
+        "per-request set_config() before every ANN query, costing 29-54 ms of "
+        "measured round trips with no effect on the observed plans: at the "
+        "prototype corpus size (40 chunks) the planner chooses Seq Scan + Sort "
+        "and never touches the HNSW index. Kept so recall is correct once the "
+        "corpus passes the planner's crossover point. Lower = faster/narrower, "
+        "higher = more accurate/slower.",
+    )
     cors_origins: list[str] = Field(
         default_factory=lambda: list(DEFAULT_CORS_ORIGINS),
         description="Browser origins allowed by CORSMiddleware. Comma-separated "

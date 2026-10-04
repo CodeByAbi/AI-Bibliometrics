@@ -418,19 +418,20 @@ class VectorRetriever:
         settings = get_settings()
         timeout_s = settings.db_statement_timeout_ms / 1000.0
 
-        # Widen the HNSW candidate list for this connection. Session-level (not
-        # SET LOCAL) because the pool runs in autocommit, where SET LOCAL is a
-        # no-op; the value is a workload constant, so persisting it on the
-        # pooled connection is harmless and saves a round trip per query.
-        # Tolerated as best-effort: a server without pgvector has no such GUC
-        # and must fail later on the vector column itself, not here.
-        try:
-            await conn.execute(
-                "SELECT set_config('hnsw.ef_search', $1, false)",
-                str(HNSW_EF_SEARCH),
-            )
-        except Exception as exc:  # noqa: BLE001 - best-effort tuning only
-            logger.debug("Could not set hnsw.ef_search: %s", exc)
+        # REMOVED: the per-request `set_config('hnsw.ef_search', ...)` that used
+        # to run here.
+        #
+        # It cost 29-54 ms of measured round trips on every VectorRoute query
+        # and had no effect on any observed plan, because at the prototype
+        # corpus size (40 chunks) the planner chooses `Seq Scan + Sort` and never
+        # touches the HNSW index. It also leaked: the pool releases connections
+        # with `reset="light"`, which does not clear session state, so the GUC
+        # survived across requests on the same connection.
+        #
+        # It is now set once per connection in `db.pool.create_pool`
+        # (`server_settings["hnsw.ef_search"]`), so it costs one round trip per
+        # connection lifetime instead of one per request, and the pool's
+        # `reset="full"` guarantees it cannot accumulate session state.
 
         t0 = time.perf_counter()
         try:

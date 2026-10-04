@@ -326,12 +326,22 @@ async def test_vector_retriever_overfetch_is_clamped():
 
 
 @pytest.mark.asyncio
-async def test_vector_retriever_sets_hnsw_ef_search_before_querying():
-    """ef_search is widened for the dedup-on-top-of-ANN workload; a server
-    without pgvector must degrade to the vector-column error, not fail here."""
+async def test_vector_retriever_does_not_set_hnsw_ef_search_per_request():
+    """No per-request ``set_config`` round trip (W5).
+
+    The retriever used to issue ``SELECT set_config('hnsw.ef_search', ...)``
+    before every ANN query: 29-54 ms of measured round trips per VectorRoute
+    request, with no effect on any observed plan (at 40 chunks the planner picks
+    ``Seq Scan + Sort``). It also leaked across requests, because the pool
+    released connections with ``reset="light"`` which does not clear session
+    state.
+
+    ``hnsw.ef_search`` is now set once per connection in
+    ``db.pool.create_pool`` via ``server_settings``, so the retriever must issue
+    exactly one statement — the ANN fetch itself.
+    """
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = []
-    mock_conn.execute.side_effect = Exception("unrecognized configuration parameter")
 
     result = await VectorRetriever.retrieve(
         conn=mock_conn,
@@ -339,10 +349,31 @@ async def test_vector_retriever_sets_hnsw_ef_search_before_querying():
         query_vector=[0.01] * 1024,
     )
 
-    # Tuning failure is swallowed; the ANN query still runs.
-    assert mock_conn.execute.await_count == 1
+    assert mock_conn.execute.await_count == 0, (
+        "retriever must not issue per-request set_config; it is a per-connection "
+        "server_setting now"
+    )
     assert mock_conn.fetch.await_count == 1
     assert result.is_empty is True
+
+
+def test_pool_sets_hnsw_ef_search_as_a_connection_setting():
+    """The GUC must be applied per connection, not per query."""
+    import inspect
+
+    from backend.app.db import pool as pool_mod
+
+    src = inspect.getsource(pool_mod.create_pool)
+    assert '"hnsw.ef_search"' in src
+    assert "settings.hnsw_ef_search" in src
+
+    # The release path must clear session state. asyncpg's create_pool takes
+    # `reset` as a CALLABLE (unlike connect(), which takes "light"/"full"), and
+    # passing the string raises TypeError from Pool.release -- which presents as
+    # every integration test silently losing its database.
+    assert "reset=_reset_connection" in src
+    reset_src = inspect.getsource(pool_mod._reset_connection)
+    assert "conn.reset()" in reset_src
 
 
 def test_vector_answer_synthesizer_zero_match_under_200ms():
