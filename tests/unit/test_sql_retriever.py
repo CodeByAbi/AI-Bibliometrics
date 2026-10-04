@@ -174,6 +174,158 @@ class TestYearRangeAndGrouping:
         assert result.filters_ignored == []
 
 
+class TestBoundedLlmFallback:
+    """P0-B: an unsupported SQL question must not enter a retry/backoff stall.
+
+    Before this, ``with_retry(..., max_attempts=2)`` retried on
+    ``httpx.TimeoutException``, so a stalled generation cost
+    ``timeout + backoff + timeout`` (~17 s at 8 s/2 attempts) and the retry
+    could not possibly help.
+    """
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises_llm_timeout_not_422(self, monkeypatch):
+        """A slow generator is 504 llm_timeout, NOT 422 sql_generation_failed.
+
+        The two mean opposite things: 422 says "reword your question", a
+        timeout says "the model was too slow". Collapsing them sends an
+        operator chasing prompts when the model is the problem.
+        """
+        import httpx
+
+        from backend.app.core.errors import LLMTimeoutError
+        from backend.app.core.http import get_http_client
+
+        class _TimeoutClient:
+            calls = 0
+
+            async def post(self, *args, **kwargs):
+                type(self).calls += 1
+                raise httpx.ReadTimeout("generation stalled")
+
+        monkeypatch.setattr(
+            "backend.app.services.retrievers.sql_retriever.get_http_client",
+            lambda: _TimeoutClient(),
+        )
+        with pytest.raises(LLMTimeoutError) as exc_info:
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+
+        assert exc_info.value.error_type == "llm_timeout"
+        assert exc_info.value.status_code == 504
+        # Exactly ONE outbound attempt, not two.
+        assert _TimeoutClient.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_does_not_trigger_ast_repair_round_trip(self, monkeypatch):
+        """A generation that produced nothing has nothing to repair.
+
+        The FR3.3 repair pass carries the sqlglot error back to the model once.
+        It is only meaningful when the first call actually RETURNED SQL for
+        the validator to reject. Entering it after a timeout would pay the
+        whole generation budget a second time and still have nothing to fix.
+        """
+        import httpx
+
+        from backend.app.core.errors import LLMTimeoutError
+        from backend.app.core.http import get_http_client
+
+        calls = {"n": 0}
+
+        class _TimeoutClient:
+            async def post(self, *args, **kwargs):
+                calls["n"] += 1
+                raise httpx.ReadTimeout("generation stalled")
+
+        monkeypatch.setattr(
+            "backend.app.services.retrievers.sql_retriever.get_http_client",
+            lambda: _TimeoutClient(),
+        )
+        with pytest.raises(LLMTimeoutError):
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+        assert calls["n"] == 1, "timeout must not be followed by a repair retry"
+
+    @pytest.mark.asyncio
+    async def test_unreachable_ollama_still_maps_to_422(self, monkeypatch):
+        """Connect failure keeps the pre-existing 422 semantic.
+
+        The transport said "I cannot reach the model", not "the model was too
+        slow" — the caller is told the question is unanswerable, not slow.
+        """
+        import httpx
+
+        from backend.app.core.errors import LLMTimeoutError
+        from backend.app.core.http import get_http_client
+
+        class _RefusedClient:
+            async def post(self, *args, **kwargs):
+                raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(
+            "backend.app.services.retrievers.sql_retriever.get_http_client",
+            lambda: _RefusedClient(),
+        )
+        with pytest.raises(SqlSecurityError) as exc_info:
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+        assert not isinstance(exc_info.value, LLMTimeoutError)
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.error_type == "sql_generation_failed"
+
+    @pytest.mark.asyncio
+    async def test_timeout_budget_is_configured_and_bounded(self):
+        """The per-attempt budget is the dedicated TEXT2SQL_TIMEOUT_S knob."""
+        from backend.app.core.config import get_settings
+
+        settings = get_settings()
+        assert settings.text2sql_timeout_s >= 1
+        # A single bounded attempt must fit inside the documented request SLA.
+        assert settings.text2sql_timeout_s <= 30
+        assert settings.ollama_max_retries <= 3
+
+    @pytest.mark.asyncio
+    async def test_generated_sql_still_passes_ast_gate_after_the_fix(self, monkeypatch):
+        """P0-B must not weaken the security gate on the success path."""
+        calls = {"n": 0}
+
+        async def fake_llm(cls, question, filters=None, validation_error=None, **kw):
+            calls["n"] += 1
+            return "SELECT publication_id, title FROM publications LIMIT 5;"
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(fake_llm))
+        conn = _FakeConn()
+        result = await SqlRetriever.retrieve(conn, "xyzzy unrelated query")
+        assert result.sql_source == "llm"
+        assert result.llm_calls == 1
+        assert "DROP" not in result.sql_executed
+        assert len(conn.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_sql_injection_still_rejected(self, monkeypatch):
+        """A hostile generator must not get past the AST gate."""
+
+        async def hostile_llm(cls, question, filters=None, validation_error=None, **kw):
+            return "SELECT publication_id FROM publications; DROP TABLE publications;"
+
+        monkeypatch.setattr(
+            SqlRetriever, "generate_llm_sql", classmethod(hostile_llm)
+        )
+        with pytest.raises(SqlSecurityError):
+            await SqlRetriever.retrieve(_FakeConn(), "xyzzy unrelated query")
+
+    @pytest.mark.asyncio
+    async def test_deterministic_template_never_calls_the_llm(self, monkeypatch):
+        """A matched template must stay on the zero-LLM path."""
+
+        async def boom(cls, *args, **kwargs):
+            raise AssertionError("deterministic template must not call the LLM")
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(boom))
+        result = await SqlRetriever.retrieve(
+            _FakeConn(), "Berapa total publikasi pada tahun 2025?"
+        )
+        assert result.sql_source == "deterministic"
+        assert result.llm_calls == 0
+
+
 class TestSingleRetry:
     """One regeneration carrying AST error context before structured failure (FR3.3)."""
 
