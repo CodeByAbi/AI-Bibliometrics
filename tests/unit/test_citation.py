@@ -142,8 +142,18 @@ def test_citation_verifier_year_mismatch_no_doi_stripped():
     assert len(res.unverified_citations) == 1
 
 
-def test_citation_verifier_nd_year_defers_to_title():
-    """n.d. cite year passes when the title matches and evidence year is known."""
+def test_citation_verifier_nd_year_is_stripped_when_evidence_has_a_year():
+    """n.d. must NOT bypass the year check (W7).
+
+    This inverts the previous contract. `_years_match` used to return True when
+    EITHER side was None, which made "n.d." a universal escape hatch: a generator
+    could emit `[Title, n.d., DOI]` for every citation in an answer and no year
+    would ever be verified.
+
+    Here the evidence record's year is 2024, so "n.d." asserts "no date" about a
+    dated publication. That is an inaccurate citation and is stripped under the
+    zero-hallucination invariant.
+    """
     sources = [
         SourceItem(
             publication_id="PUB002",
@@ -155,6 +165,124 @@ def test_citation_verifier_nd_year_defers_to_title():
         )
     ]
     text = "Studi ini memakai [Indonesian Benchmark Dataset, n.d., no-doi]."
+    res = CitationVerifier.verify(text, sources)
+
+    assert len(res.verified_citations) == 0
+    assert len(res.unverified_citations) == 1
+
+
+def test_citation_verifier_nd_year_verifies_when_evidence_also_lacks_a_year():
+    """n.d. against a record with no year is honest, so it must still verify."""
+    sources = [
+        SourceItem(
+            publication_id="PUB003",
+            title="Indonesian Benchmark Dataset",
+            year=None,
+            doi=None,
+            source_type="vector",
+            relevance_score=0.75,
+        )
+    ]
+    text = "Studi ini memakai [Indonesian Benchmark Dataset, n.d., no-doi]."
+    res = CitationVerifier.verify(text, sources)
+
+    assert len(res.verified_citations) == 1
+    assert len(res.unverified_citations) == 0
+
+
+def test_citation_verifier_rejects_fabricated_doi_on_a_real_title():
+    """A DOI absent from the database must not survive on a real title (W7).
+
+    The old rule 1 only checked the DOI, then rule 2 checked only the title, so
+    the fabricated DOI simply fell through to the title check and verified.
+    """
+    sources = [
+        SourceItem(
+            publication_id="PUB004",
+            title="Mesenchymal Stem Cells And Inflammation In Vivo",
+            year=2025,
+            doi="10.1016/real.2025.001",
+            source_type="sql",
+            relevance_score=0.9,
+        )
+    ]
+    text = "Lihat [Mesenchymal Stem Cells And Inflammation In Vivo, 2025, 10.9999/fabricated.doi]."
+    res = CitationVerifier.verify(text, sources)
+
+    assert len(res.verified_citations) == 0, "fabricated DOI must not verify"
+    assert len(res.unverified_citations) == 1
+
+
+def test_citation_verifier_rejects_fabricated_title_on_a_real_doi():
+    """A title absent from evidence must not survive on a real DOI (W7).
+
+    The mirror image: the old rule 1 verified on the real DOI plus year and never
+    inspected the title, so a title that appears in no evidence object passed.
+    """
+    sources = [
+        SourceItem(
+            publication_id="PUB005",
+            title="Mesenchymal Stem Cells And Inflammation In Vivo",
+            year=2025,
+            doi="10.1016/real.2025.001",
+            source_type="sql",
+            relevance_score=0.9,
+        )
+    ]
+    text = "Lihat [Totally Fabricated Study Title About Quantum Biology, 2025, 10.1016/real.2025.001]."
+    res = CitationVerifier.verify(text, sources)
+
+    assert len(res.verified_citations) == 0, "fabricated title must not verify"
+    assert len(res.unverified_citations) == 1
+
+
+def test_citation_verifier_requires_fields_to_agree_with_the_same_record():
+    """Fields must agree with ONE record, not with different records each.
+
+    Two records: A has the cited DOI with a different title; B has the cited
+    title with a different year. Matching DOI against A and title against B is
+    not verification, and per-record matching rejects it.
+    """
+    sources = [
+        SourceItem(
+            publication_id="PUB006",
+            title="Completely Different Paper About Nothing Alike",
+            year=2025,
+            doi="10.1016/mismatch.2025.777",
+            source_type="sql",
+            relevance_score=0.9,
+        ),
+        SourceItem(
+            publication_id="PUB007",
+            title="Mesenchymal Stem Cells And Inflammation In Vivo",
+            year=1999,
+            doi="10.1016/other.1999.888",
+            source_type="sql",
+            relevance_score=0.9,
+        ),
+    ]
+    # DOI belongs to PUB006 (whose title differs); title belongs to PUB007
+    # (whose year is 1999). Neither record satisfies both.
+    text = "Lihat [Mesenchymal Stem Cells And Inflammation In Vivo, 2025, 10.1016/mismatch.2025.777]."
+    res = CitationVerifier.verify(text, sources)
+
+    assert len(res.verified_citations) == 0
+    assert len(res.unverified_citations) == 1
+
+
+def test_citation_verifier_accepts_fully_consistent_citation():
+    """The positive case must still pass: title, year and DOI all agree."""
+    sources = [
+        SourceItem(
+            publication_id="PUB008",
+            title="Mesenchymal Stem Cells And Inflammation In Vivo",
+            year=2025,
+            doi="10.1016/real.2025.001",
+            source_type="sql",
+            relevance_score=0.9,
+        )
+    ]
+    text = "Lihat [Mesenchymal Stem Cells And Inflammation In Vivo, 2025, 10.1016/real.2025.001]."
     res = CitationVerifier.verify(text, sources)
 
     assert len(res.verified_citations) == 1
