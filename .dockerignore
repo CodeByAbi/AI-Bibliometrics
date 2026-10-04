@@ -1,33 +1,41 @@
-# AI-Bibliometrics — Docker build context filter.
+# Fail-closed build context for docker/backend.Dockerfile.
 #
-# Docs Reference: docs/08 Security.md §1 (secret handling).
+# Deny everything, then re-admit only what the image build actually reads.
+# Rationale: this repo's build context used to be ~358 MB (venv, node_modules,
+# model weights, graphify-out). An allowlist means a newly added secret — .env,
+# a stray *.pem, an export dump — cannot leak into the image just because
+# someone forgot to extend an exclusion list. New file? Add it here on purpose.
 #
-# WHY AN ALLOWLIST: the build context is the repo root (`context: .` in
-# docker-compose.yml), and Docker ships EVERY file in it to the daemon —
-# including gitignored ones. `.gitignore` has no effect on this. An allowlist
-# fails closed, so a newly added secret file is excluded by default instead of
-# leaking because someone forgot to update a denylist.
+# Measured effect: 357.8 MB -> 374.8 kB.
 #
-# PATTERN NOTE: use `**`, never a bare `*`. Docker matches .dockerignore
-# patterns against the full path and `*` does NOT cross a `/` separator, so a
-# bare `*` would only filter root-level entries and `backend/**` would still
-# ship in full.
-#
-# WHEN YOU ADD A PATH THE IMAGE NEEDS, add an explicit `!` re-allow below.
-# A forgotten re-allow fails the build loudly, which is the intended behaviour.
+# !! FORMAT GOTCHA — READ BEFORE EDITING !!
+# .dockerignore has NO inline comments. A pattern line may not carry a trailing
+# `# ...`, and it does not use the Dockerfile's line-continuation backslash.
+# Writing:
+#     !pyproject.toml    # tool config
+# makes the ENTIRE line one literal pattern ("!pyproject.toml    # tool config"),
+# which matches nothing — so the file is silently excluded and the build fails
+# later with a confusing "not found" on the COPY, not here. Put every comment on
+# its own line above the pattern. This actually bit this repo once already.
 
-# Deny everything, at any depth.
 **
 
-# Re-allow exactly what docker/backend.Dockerfile consumes:
-#   - requirements.txt  (pip install -r)
-#   - backend/          (COPY backend/ ./backend/)
+# --- admitted: build inputs -------------------------------------------------
 !requirements.txt
+# Tool config, copied into the image for parity with local runs.
+!pyproject.toml
 !backend/**
 
-# ...then drop build noise from inside those re-allowed trees.
+# --- excluded even inside admitted dirs ------------------------------------
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
+**/*.egg-info
+**/.coverage
+**/.coverage.*
+
+# NOTE: requirements-dev.txt is deliberately NOT admitted. It is dev-only
+# tooling (pytest/ruff/mypy); admitting it would put the test runner in the
+# production image. Local + CI install it directly, outside the image build.
