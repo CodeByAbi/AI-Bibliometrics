@@ -45,13 +45,24 @@ The distinction matters, so it is stated plainly.
 | `scripts/migrate.py status` | `applied: 5 pending: 1 drifted: 0` — 005 detected, no drift |
 | `scripts/migrate.py up --dry-run` | Plans to apply 005 only |
 | `scripts/grant_session_role.py --check-only` | Reports schema absent; exits 0 |
-| Full pytest suite | **567 passed, 41 skipped, 0 failed** |
-| New session unit tests | **98 passed** (80 + 18 transaction regression) |
+| Full pytest suite | **618 passed, 41 skipped, 0 failed** |
+| New session unit tests | **129 passed** (80 + 18 transaction + 31 review findings) |
 | Session integration tests | **39 skipped** (see §3) |
 | ruff, session files | **All checks passed** |
-| ruff, repo total | 1240 → 1249 (+9, all `Optional[...]`/`Dict` style in `models/ask.py`; 4 pre-existing findings fixed along the way) |
-| mypy, session modules | **0 errors** |
+| ruff, `routers/ask.py` | 21 findings at HEAD → **18 now** (0 introduced) |
+| mypy, session modules + `routers/ask.py` | **0 errors** |
 | mypy, `verify_schema.py` | 11 at HEAD → **11 now** (0 introduced) |
+
+One test is deselected above and is **not** session-related:
+`test_ask_endpoint.py::test_ask_endpoint_non_sql_route_not_found`. It is stale at
+HEAD: its docstring says "similarity below threshold (< 0.65)", but
+`VECTOR_COSINE_THRESHOLD` was recalibrated to `0.48`, and the query it uses now
+scores `0.5444` — above the gate, so the endpoint correctly answers `ok` and the
+test's `not_found` expectation is obsolete. It reproduces at HEAD and touches no
+session code. Left alone rather than rewritten here, because that file has
+unrelated concurrent edits and the fix is a product call: either pick a genuinely
+sub-threshold query, or assert the gate invariant (evidence returned ⇒ score ≥
+configured threshold) instead of a hardcoded expectation.
 
 The migration was validated by executing the real DDL inside a transaction that
 was then rolled back, so syntax, constraint names, FK targets, index definitions

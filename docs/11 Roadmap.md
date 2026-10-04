@@ -45,7 +45,7 @@ Pengembangan tidak boleh dimulai dari UI atau orkestrasi kompleks. Urutan prasya
 - **QueryRouter Multi-Rute** yang memprioritaskan aturan pola deterministik dan ekstraksi entitas (fallback router LLM).
 - **Empat Retriever Inti**:
   - `SqlRetriever` (tervalidasi AST pada 9 tabel kanonikal, peran read-only, pemeriksaan agregasi eksak, `LIMIT 50`).
-  - `VectorRetriever` (`bge-m3` 1024d, similaritas kosinus HNSW pgvector, jendela ANN ber-*overfetch* lalu `DISTINCT ON` di luar jendela, ambang $\ge 0.65$).
+  - `VectorRetriever` (`bge-m3` 1024d, similaritas kosinus HNSW pgvector, jendela ANN ber-*overfetch* lalu `DISTINCT ON` di luar jendela, ambang $\ge 0.48$).
   - `GraphRetriever` (derived edge tables `institution_collaboration` dan `author_collaboration`; traversal terbatas maks 3 hop; pelacakan provenance).
   - `HybridRetriever` (Lapisan Gold `topics`, `topic_evolution`, `researcher_expertise` + Silver & `chunks`).
 - **Lapisan Bukti (Evidence Layer)**: skema `Evidence`, `EvidenceSet`, dan `EvidenceUnifier` yang memastikan tidak ada baris/chunk mentah yang melewati normalisasi.
@@ -257,7 +257,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 
 ### Fase 4 — Mesin Retrieval Semantik / Vector
 **Status:** `[IMPLEMENTED — VERIFICATION PENDING]` (unit + integration hijau; checklist runtime live-DB + sign-off E2E Task 12 pending)
-**Tujuan:** Menghadirkan pencarian dokumen berbasis kemiripan pada abstrak publikasi riset dengan deduplikasi ketat dan penegakan ambang ($\ge 0.65$).
+**Tujuan:** Menghadirkan pencarian dokumen berbasis kemiripan pada abstrak publikasi riset dengan deduplikasi ketat dan penegakan ambang ($\ge 0.48$, dikalibrasi P1 dari 0.65 via benchmark berlabel).
 
 - **Prasyarat:** Fase 1 (Embedding Terisi & Terindeks) dan Fase 2 (Basis FastAPI).
 - **Cakupan & Deliverable:**
@@ -267,9 +267,9 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
     - Eksekusi kueri jarak kosinus (`<=>`) terhadap `chunks` dalam **jendela ANN** yang diurutkan murni oleh operator jarak (satu-satunya urutan yang dapat dilayani indeks HNSW), dengan *overfetch* 25× limit.
     - Tegakkan deduplikasi **setelah** jendela ANN: `DISTINCT ON (ac.publication_id)` pada hasil ANN, baru `LIMIT 8`. Deduplikasi tidak boleh berada di dalam jendela ANN — `ORDER BY publication_id` di depan operator jarak membuat plansyenya memindai penuh dan indeks HNSW tidak terpakai.
     - Gabung (join) dengan tabel `publications` untuk mengambil metadata kanonikal (`title`, `year`, `doi`, `eid`).
-  - Implementasikan gerbang ambang skor similaritas: saring chunk di bawah ambang dasar similaritas ($\ge 0.65$).
+  - Implementasikan gerbang ambang skor similaritas: saring chunk di bawah ambang dasar similaritas ($\ge 0.48$, dikalibrasi P1 dari 0.65 via benchmark berlabel).
   - Tangani skenario nol-kecocokan: kembalikan daftar kosong segera jika tidak ada chunk lolos ambang.
-- **Output:** `VectorRetriever` teruji yang mengembalikan chunk publikasi topikal terdedup menurut naskah (paper). Implementasi: `backend/app/services/embedding.py` (dual-path lokal + fallback Ollama, dim-check 1024, guard non-finite) + `backend/app/services/retrievers/vector_retriever.py` (`build_query` dua tahap ANN→dedup, `LIMIT 8`, gate `>= 0.65`, `filters_ignored`, vektor ter-*bind* sebagai `$1`) + `VectorAnswerSynthesizer`/`CitationVerifier` (Task 9a, Vector-scoped) + wiring `POST /api/v1/ask` (`VectorRoute`).
+- **Output:** `VectorRetriever` teruji yang mengembalikan chunk publikasi topikal terdedup menurut naskah (paper). Implementasi: `backend/app/services/embedding.py` (dual-path lokal + fallback Ollama, dim-check 1024, guard non-finite) + `backend/app/services/retrievers/vector_retriever.py` (`build_query` dua tahap ANN→dedup, `LIMIT 8`, gate `>= 0.48`, `filters_ignored`, vektor ter-*bind* sebagai `$1`) + `VectorAnswerSynthesizer`/`CitationVerifier` (Task 9a, Vector-scoped) + wiring `POST /api/v1/ask` (`VectorRoute`).
 - **Catatan verifikasi:** vektor precomputed divalidasi dimensi + finite sebelum di-*bind*; literal vektor dikirim sebagai parameter `$1` (bukan diinterpolasi) melalui codec `vector` di `pool._init_connection`, sedangkan threshold/filter/ID/limit juga `$N` parameterized; operator memakai kualifikasi `extensions.<=>` (asumsi ekstensi `vector` di skema `extensions`, layout Supabase). `hnsw.ef_search` dinaikkan ke `100` per koneksi karena deduksi ditumpuk di atas hasil ANN. Bentuk kueri diverifikasi terhadap **pernyataan produksi itu sendiri** melalui `VectorRetriever.build_query` pada `tests/integration/test_vector_live_hnsw.py`, bukan terhadap paraphrase tangan.
 - **Memblokir:** Fase 5 (Lapisan Bukti generik), Fase 7 (Retrieval Hybrid).
 - **Kriteria Penerimaan:**
@@ -358,7 +358,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 - **Prasyarat:** Fase 7 — **terpenuhi**.
 - **Rencana Eksekusi 7 Workstream (normatif; rinci di `reports/fase8_execution_plan.md`):**
   - **A — Baseline tooling (blocking):** pasang `pytest-cov` (ditunda eksplisit ke Fase 8 di `requirements.txt:53`), konfigurasi coverage gate ≥80% pada `router`/`retrievers`/`sql_security`/`synthesizer`, dan `.gitignore` untuk artefak `frontend/coverage/` serta `.coverage`.
-  - **B — Verification run:** jalankan ulang `pytest tests/unit tests/integration`, `E2E_LIVE=1 pytest tests/e2e`, dan `pytest --cov=backend/app --cov-report=term-missing`; tutup gap dengan unit test terarah; tutup sisa `docs/09` TBD-5 (parity check distribusi embedding fallback vs gate 0.65).
+  - **B — Verification run:** jalankan ulang `pytest tests/unit tests/integration`, `E2E_LIVE=1 pytest tests/e2e`, dan `pytest --cov=backend/app --cov-report=term-missing`; tutup gap dengan unit test terarah; tutup sisa `docs/09` TBD-5 (parity check distribusi embedding fallback vs gate 0.48).
   - **C — R2a: kejar `<200ms` nol-bukti:** cold path `VectorRoute` 246ms dengan 193ms `model.encode` bge-m3 CPU. Eksekusi **R2a.1** (tuning encoder: `torch.inference_mode()` + `set_num_threads`, dikunci parity test cosine ≈1.0). Bila masih gagal → **checkpoint owner** sebelum R2a.2 (re-scope `AC-RAG-4` per-route). **R2a.3** (pre-probe leksikal sebelum embedding) **ditolak di Fase 8** karena korpus prototipe hanya 40 chunk sehingga gate leksikal tidak dapat divalidasi; item FTS Hybrid di §5 tetap Fase 9.
   - **D — Baseline latensi formal:** catat spek environment, breakdown per-route dari `debug` (`validation_ms`…`total_ms`, warm dan cold), tulis `reports/fase8_latency_baseline.md` versus NFR1 (`<15 detik`).
   - **E — Task 11 Frontend:** audit `frontend/components/Workspace/` terhadap `AC-UI-1..7` (`docs/07` §4–§6), tutup gap, `npm run verify` + `npm run build`, smoke live 7 status, lalu commit bercabang.
@@ -406,7 +406,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 | **Penanganan Request** | Sinkron, validasi Pydantic, `request_id` | Respons ter-cache | Worker async Celery/Redis |
 | **Routing Kueri** | Deterministik / Berbasis Aturan (fallback rute VectorRoute/HybridRoute, bukan fallback klasifier LLM) | Penyetelan (tuning) intent via harness eval | Routing berbasis reinforcement-learning |
 | **Pencarian Terstruktur** | `SqlRetriever`, whitelist AST, 9 tabel kanonikal | Estimator biaya kueri | Eksekusi proxy ter-sandbox |
-| **Pencarian Semantik** | `VectorRetriever` (`bge-m3`, 1024d, HNSW pada `chunks`, $\ge 0.65$) | FTS Hybrid (`tsvector`), penyetelan ambang | Chunking multi-vector dinamis |
+| **Pencarian Semantik** | `VectorRetriever` (`bge-m3`, 1024d, HNSW pada `chunks`, $\ge 0.48$) | FTS Hybrid (`tsvector`), penyetelan ambang | Chunking multi-vector dinamis |
 | **Knowledge Graph** | Tabel edge (`institution`, `author`), maks 3 hop | Ekstensi Graf (Apache AGE), resolusi edge `CITES` | Graf jaringan sitasi penuh |
 | **Lapisan Bukti** | `EvidenceSet` ternormalisasi, peringkat deterministik | Regresi eval emas (golden) | Cross-encoder (`bge-reranker-large`) |
 | **Sintesis & Sitasi** | Prompt ter-grounding §6 docs/05, `[Title, Year, DOI/no-doi]`, pemeriksaan post-hoc; LLM opt-in (`llm_synthesis`) dengan fallback deterministik | Skor confidence sitasi | Chat multi-turn interaktif |
@@ -429,7 +429,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
 | **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold $\ge 0.48$ untuk model `BAAI/bge-m3`, dipilih dari benchmark berlabel 94 kueri (P1 recalibration dari 0.65); kueri di bawah ambang → short-circuit ke `status: not_found` (**PROTOTIPE-KALIBRASI**: validasi ulang setelah ingestion skala produksi) | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
 | **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
@@ -444,7 +444,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
 2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
-   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.48$ untuk model `BAAI/bge-m3` (recalibrated P1 dari 0.65 berdasarkan benchmark berlabel; `reports/retrieval_calibration.md`). Kueri dengan nilai $< 0.48$ langsung diarahkan ke `status: not_found`.
 3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
@@ -455,6 +455,7 @@ Fase 9 ──> Fase 10 ──> Fase 11 (Produksi)
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
 | `docs/11 Roadmap.md` v3.8.0 | Fase 8 dari `[PLANNED]` ke `[IN PROGRESS]`: cakupan 7 workstream A–G (coverage gate, verification run, R2a gate `<200ms` nol-bukti, baseline latensi, audit Task 11 `AC-UI-1..7`, pencentangan 24 AC, rekonsiliasi dokumen); tetapkan 3 keputusan owner (R1 didokumentasikan saja, R2a dikejar, sync `docs/01`+`docs/02` masuk scope); perbaiki label keliru "Fase 8 / Fase 11" menjadi Task 11 | Gate Fase 7 dibuka (`READY WITH CONDITIONS`, `reports/fase7_closeout.md`); Task 12 sudah 14/14 sehingga Fase 8 berisi formalisasi, bukan fitur baru. Rencana rinci di `reports/fase8_execution_plan.md`. Catatan: baris riwayat v3.7.x belum pernah ditulis di dokumen ini |
+| `docs/11 Roadmap.md` v3.7.0 | **P1 recalibration:** ambang `VectorRoute` 0.65 $\rightarrow$ 0.48 dari benchmark berlabel 94 kueri + harness sweep (`scripts/bench_retrieval.py`) + regression gate (12 pemeriksaan). Q04/Q05 E2E dibalik dari `not_found` ke bukti (keduanya match valid). PROTOTIPE-KALIBRASI | `reports/retrieval_calibration.md` |
 | `docs/11 Roadmap.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Vertical Slice`, `Source-of-Truth Invariant`, `Evidence Normalization Invariant`, `Zero-Hallucination Invariant`, `Vector Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/11 Roadmap.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/11 Roadmap.md` v3.5.0 | Menandai cleaning + cleaned export sebagai DONE; menambah Progress Tracker DONE/NEXT/PENDING; menandai vector storage sebagai PENDING eksplisit; memberi status-tag pada blueprint offline pipeline | Sinkronisasi progress aktual 2026-09-27 |

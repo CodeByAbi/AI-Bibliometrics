@@ -219,7 +219,7 @@ def _sql_result(
 
 def _vec_result(
     matches: List[VectorMatchItem],
-    threshold: float = 0.65,
+    threshold: float = 0.48,
     filters_ignored: List[str] | None = None,
 ) -> VectorRetrievalResult:
     return VectorRetrievalResult(
@@ -228,6 +228,54 @@ def _vec_result(
         filters_ignored=filters_ignored or [],
         sql_executed="SELECT DISTINCT ON (p.publication_id) ...",
     )
+
+
+def _vec_matches_ok() -> List[VectorMatchItem]:
+    """Two real VectorRoute matches with benchmark-measured similarity.
+
+    Scores are the values ``scripts/bench_retrieval.py`` recorded at the
+    selected gate (0.48) for the matching benchmark queries, so the E2E mock
+    tracks measured retrieval behaviour rather than an invented fixture.
+    """
+    return [
+        VectorMatchItem(
+            publication_id="PUB000003",
+            title=(
+                "Anti-Inflammatory Properties of Conditioned Medium From "
+                "Human Wharton's Jelly Mesenchymal Stem Cells"
+            ),
+            year=2025,
+            doi="10.22146/ijbiotech.107035",
+            eid="2-s2.0-85123456",
+            citation_count=3,
+            chunk_id="PUB000003_CH001",
+            chunk_text=(
+                "Human Wharton's Jelly Mesenchymal Stem Cells possess "
+                "regenerative and anti-inflammatory activities through "
+                "cytokine, chemokine and growth factor secretion."
+            ),
+            similarity_score=0.6788,
+        ),
+        VectorMatchItem(
+            publication_id="PUB000004",
+            title=(
+                "Ethanol Extract of Cosmos Caudatus Attenuates Oxidative "
+                "Stress and Inflammation in a Testosterone-Induced Benign "
+                "Prostatic Hyperplasia Rat Model"
+            ),
+            year=2025,
+            doi="10.26538/tjnpr/v9i12.35",
+            eid="2-s2.0-85123457",
+            citation_count=1,
+            chunk_id="PUB000004_CH001",
+            chunk_text=(
+                "This study evaluated the in vivo efficacy of ethanolic "
+                "extract of Cosmos caudatus leaves on oxidative stress and "
+                "systemic inflammation."
+            ),
+            similarity_score=0.4841,
+        ),
+    ]
 
 
 async def _post(client: AsyncClient, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -252,10 +300,12 @@ def _route_of(question: str, filters: Dict[str, Any] | None = None) -> str:
 E2E_QUERIES: List[Tuple[str, str, str, Dict[str, Any] | None, Dict[str, Any]]] = [
     # (id, question, expected_route, filters, expected_assertions)
     # NOTE: expectations reflect the live prototype dataset (~20 pubs, 40 chunks,
-    # 138 authors, 107 institutions) as of 2026-09-29, NOT a fully populated prod DB.
+    # 138 authors, 107 institutions) as of 2026-10-04, NOT a fully populated prod DB.
     # Q02 total_publications in 2025 = 20 (all prototype pubs are year 2025).
-    # Q04/Q05 VectorRoute: Ollama bge-m3 embeddings differ from the HF-embedded
-    # chunks; max cosine sim ~0.56 < 0.65 gate -> honest not_found.
+    # Q04/Q05 VectorRoute: recalibrated by the P1 retrieval task. Both were
+    # asserted not_found at the old 0.65 gate; both are genuine topical matches
+    # (PUB000003, PUB000004) and now return evidence at the benchmark-selected
+    # gate of 0.48. See reports/retrieval_calibration.md.
     # Q10 "J. Wang": gate resolves to "Liwang, Tony" (1 match, ILIKE '%wang%'),
     # NOT needs_clarification; the SQL template then returns the author's count.
     (
@@ -284,15 +334,24 @@ E2E_QUERIES: List[Tuple[str, str, str, Dict[str, Any] | None, Dict[str, Any]]] =
         "Paper yang membahas stres oksidatif pada Wharton's jelly",
         "VectorRoute",
         None,
-        # Ollama bge-m3 max cosine ~0.56 < 0.65 gate -> not_found (honest)
-        {"status": "not_found", "evidence_objects_min": 0},
+        # P1 recalibration: was asserted not_found at the old 0.65 gate with the
+        # comment "max cosine ~0.56< 0.65 -> honest not_found". That was the
+        # retrieval miss this task fixed, not correct behaviour: PUB000003 is
+        # literally "Anti-Inflammatory Properties of Conditioned Medium From
+        # Human Wharton's Jelly Mesenchymal Stem Cells" and PUB000004 is an
+        # oxidative-stress study. At the benchmark-selected gate (0.48) both are
+        # reachable, so the honest answer is evidence. See
+        # reports/retrieval_calibration.md.
+        {"status": "ok", "evidence_objects_min": 1, "metric": "similarity_score"},
     ),
     (
         "Q05",
         "Studies exploring anti-inflammatory mechanisms of conditioned medium",
         "VectorRoute",
         None,
-        {"status": "not_found", "evidence_objects_min": 0},
+        # P1 recalibration: flipped from not_found for the same reason as Q04.
+        # PUB000003 is an exact topical match for this phrasing.
+        {"status": "ok", "evidence_objects_min": 1, "metric": "similarity_score"},
     ),
     (
         "Q06",
@@ -407,9 +466,14 @@ def _mock_for_query(qid: str, question: str, filters: Dict[str, Any] | None):
         )
         return sql, None, _entity_ok(), None, None
     if qid in ("Q04", "Q05"):
-        # Ollama bge-m3 vs HF bge-m3 chunk embeddings: max cosine ~0.56 < 0.65
-        # gate → 0 distinct matches → not_found.  Mock mirrors live behaviour.
-        vec = _vec_result([])
+        # P1 recalibration: both queries are genuine topical matches for the
+        # prototype corpus (PUB000003 = Wharton's-jelly conditioned medium,
+        # PUB000004 = oxidative stress), so they now clear the benchmark-selected
+        # gate and return evidence. Scores below are the values measured by
+        # scripts/bench_retrieval.py at threshold 0.48, so the mock mirrors live
+        # behaviour instead of asserting an arbitrary fixture.
+        # The VectorRoute not_found path stays covered by Q12.
+        vec = _vec_result(_vec_matches_ok())
         return None, vec, _entity_ok(), None, None
     if qid in ("Q06", "Q07"):
         # GraphRoute: Task 8-retriever landed; happy-path T1 with provenance

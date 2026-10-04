@@ -212,12 +212,47 @@ async def test_ask_endpoint_unknown_entity_not_found():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_non_sql_route_not_found():
-    """Semantic query with similarity below threshold (< 0.65) returns honest not_found."""
+async def test_ask_endpoint_vector_semantic_match_returns_evidence():
+    """A semantic query the corpus can answer returns evidence.
+
+    P1 recalibration: this test previously asserted ``not_found`` for the
+    xanthine-oxidase query and documented it as "similarity below threshold
+    (< 0.65) -> honest not_found". That premise was wrong. PUB000014 is titled
+    "Xanthine Oxidase Inhibition And Metabolite Profiling Of Aquilaria
+    Malaccensis Lam Leaves Extract", so the corpus did contain the answer and
+    the old gate was suppressing a true positive. The not_found path is covered
+    by the strict-absence sibling test below.
+    """
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/v1/ask",
             json={"question": "Paper yang membahas mekanisme inhibisi xanthine oxidase"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["route"] == "VectorRoute"
+        assert data["status"] == "ok"
+        assert data["evidence_objects"], "suppressed a true positive for PUB000014"
+        assert any(
+            (src.get("publication_id") == "PUB000014")
+            for src in data["sources"]
+        ), "expected the xanthine-oxidase publication among the sources"
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_non_sql_route_not_found():
+    """A semantic query absent from the corpus returns honest not_found.
+
+    Uses a strict-absence topic (quantum computing; benchmark query
+    ``retrieval_072``) rather than a topic the corpus actually covers. The gate
+    at 0.48 sits at the measured negative ceiling, so an absent topic must still
+    short-circuit to not_found instead of returning weak semantic noise. This is
+    the property that makes the lowered gate safe.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "publications about quantum computing"},
         )
         assert resp.status_code == 200
         data = resp.json()

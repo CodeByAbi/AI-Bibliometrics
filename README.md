@@ -66,7 +66,7 @@ Next.js Frontend
 ## Key Capabilities
 
 - **Bibliometric Q&A (SQLRoute):** top-N rankings, aggregations, and time filters over 9 Silver tables, guarded by a `sqlglot` AST validator (SELECT-only, table whitelist, aggregate-shape check, `COUNT(DISTINCT publication_id)` on junction joins, `LIMIT 50`).
-- **Semantic discovery (VectorRoute):** multilingual ID/EN search over `chunks.embedding vector(1024)` (`BAAI/bge-m3`, HNSW `m=16, ef_construction=64`), `DISTINCT ON (publication_id) LIMIT 8`, cosine gate `>= 0.65`.
+- **Semantic discovery (VectorRoute):** multilingual ID/EN search over `chunks.embedding vector(1024)` (`BAAI/bge-m3`, HNSW `m=16, ef_construction=64`), `DISTINCT ON (publication_id) LIMIT 8`, cosine gate `>= 0.48` (benchmark-calibrated; prototype-calibrated).
 - **Collaboration networks (GraphRoute):** parameterized templates T1–T4 over `institution_collaboration` / `author_collaboration` edge tables, `max_hops = 3`, every edge carrying `via_publication_ids` provenance. No LLM-generated graph SQL.
 - **Topic & expertise analytics (HybridRoute):** Gold tables `topics`, `topic_evolution`, `researcher_expertise` (weighted `ExpertiseScore = 0.30·Relevance + 0.25·Productivity + 0.25·Impact + 0.20·Recency`, range 0–100).
 - **Grounded synthesis:** deterministic renderer by default; `llm_synthesis: true` opts into Qwen refinement with automatic fallback (`synthesis_backend: deterministic-fallback`) — a request never fails because of synthesis.
@@ -223,7 +223,7 @@ Delivered and verified: `QuestionRouter` (deterministic regex/keyword rules firs
 
 ### Phase 4 — Semantic Retrieval — DONE
 
-Delivered and verified: `VectorRetriever` (online bge-m3 query embedding with dim/finite guards, pgvector `<=>` search, `DISTINCT ON (publication_id) LIMIT 8`, cosine gate `>= 0.65`, `filters_ignored` reporting) + `VectorAnswerSynthesizer` + vector-scoped `CitationVerifier`, wired as `VectorRoute` in `POST /api/v1/ask`. Known behavior: embedding cold-start (~14s model load) is a one-time cost; warm queries pass the ≤1.5s NFR.
+Delivered and verified: `VectorRetriever` (online bge-m3 query embedding with dim/finite guards, pgvector `<=>` search, `DISTINCT ON (publication_id) LIMIT 8`, cosine gate `>= 0.48` recalibrated against a 94-query labelled benchmark, `filters_ignored` reporting) + `VectorAnswerSynthesizer` + vector-scoped `CitationVerifier`, wired as `VectorRoute` in `POST /api/v1/ask`. Known behavior: embedding cold-start (~14s model load) is a one-time cost; warm queries pass the ≤1.5s NFR.
 
 ### Phase 5 — Evidence Layer — DONE
 
@@ -328,7 +328,7 @@ Derived (all DONE): `institution_collaboration` (254), `author_collaboration` (4
 | Route | Engine | Gate |
 |---|---|---|
 | `SQLRoute` | `SqlRetriever` + `sqlglot` AST over 9 Silver tables | SELECT-only, whitelist, aggregate-shape, double-count check, `LIMIT 50` |
-| `VectorRoute` | `VectorRetriever`, bge-m3 1024-d + HNSW `<=>` | `DISTINCT ON (publication_id) LIMIT 8`, cosine `>= 0.65` |
+| `VectorRoute` | `VectorRetriever`, bge-m3 1024-d + HNSW `<=>` | `DISTINCT ON (publication_id) LIMIT 8`, cosine `>= 0.48` |
 | `GraphRoute` | `GraphRetriever` templates T1–T4 | `max_hops = 3`, `LIMIT 50`, `via_publication_ids` provenance |
 | `HybridRoute` | `HybridRetriever`: 4 sequential parameterized templates (Gold trends, expertise, ILIKE topic resolution + centroid-vector fallback gate `>= 0.50`, supporting publications) | Pydantic operator whitelist (`YearOp` literal) — operator strings never reach SQL |
 
