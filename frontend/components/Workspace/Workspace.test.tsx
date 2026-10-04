@@ -102,7 +102,12 @@ describe("Workspace — answer flow", () => {
     expect(screen.getByRole("heading", { level: 2, name: /verified evidence/i })).toBeInTheDocument();
   });
 
-  it("falls back to a snapshot and says so when the backend is unreachable", async () => {
+  it("renders an explicit error state when the backend is unreachable", async () => {
+    // P0-A: this test previously asserted the OPPOSITE — that a transport
+    // failure degrades to a "prototype snapshot". That fallback shipped a
+    // fabricated brief (invented authors, publication counts and expertise
+    // scores) behind a one-line disclaimer. A failed request now renders an
+    // error and nothing else. See NoFakeData.test.tsx for the full matrix.
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -112,10 +117,11 @@ describe("Workspace — answer flow", () => {
     await user.type(box, "MSC therapy trend in Indonesia?");
     await user.click(screen.getByRole("button", { name: /synthesize/i }));
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: /grounded answer/i })).toBeInTheDocument());
-    expect(screen.getByRole("status")).toHaveTextContent(/showing a prototype snapshot instead/i);
-    // Live/snapshot state is text, not a coloured dot alone.
-    expect(screen.getAllByText(/prototype snapshot/i).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent(/could not be completed/i);
+    // No brief, and no snapshot disclaimer either.
+    expect(screen.queryByRole("heading", { name: /grounded answer/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/prototype snapshot/i)).not.toBeInTheDocument();
   });
 });
 

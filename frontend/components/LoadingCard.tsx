@@ -4,8 +4,12 @@ import { useEffect, useState } from "react";
 import { Check } from "lucide-react";
 
 /* Research pipeline stages — the readout mirrors the real system.
-   In prototype/fixture mode the stage advance is simulated; in a live
-   backend the elapsed timer would gate it instead. */
+   The stage advance is driven by an ELAPSED-TIME timer, never by a fixture
+   and never by a hardcoded per-stage delay: the card mounts fresh on every
+   retrieval and is torn down when the request settles, so a slow backend
+   genuinely shows a slower walk through these stages. The labels describe
+   pipeline stages and carry NO bibliometric values, so this is progress
+   feedback, not a data surface. */
 const STAGES = [
   { t: "Understanding question", meta: "router · entity gate" },
   { t: "Searching structured data", meta: "SQL · Gold analytics" },

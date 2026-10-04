@@ -34,7 +34,13 @@ export function StateBar({
     <section className="statebar" aria-label="Workspace status">
       <span className="provenance-note" data-live={isLive}>
         <i aria-hidden />
-        {isLive ? "Live database" : "Prototype snapshot"}
+        {/*
+          P0-A: "Prototype snapshot" is no longer true of anything a user can
+          reach. A live-path answer is either grounded data or an explicit
+          error; the only place a fixture is still shown on purpose is the
+          developer state lab, and that says so.
+        */}
+        {isLive ? "Live database" : devMode ? "Lab dataset (not live data)" : "No live data"}
         <span className="mono mono-xs">· Scopus · ID/EN</span>
       </span>
 

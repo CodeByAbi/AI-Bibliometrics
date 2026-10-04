@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { animate, motion, useReducedMotion, useMotionValue } from "motion/react";
-import { Bookmark, Compass, History, Plus, Settings, User, X } from "lucide-react";
+import { Bookmark, Compass, History, Plus, Settings, X } from "lucide-react";
 import { SEEDS } from "../lib/api";
 import { motionTokens } from "../lib/motion-tokens";
 import { useMediaQuery } from "../hooks/use-media-query";
@@ -25,7 +25,6 @@ const NAV: Array<{ view: WorkspaceView; icon: typeof Compass; label: string; id:
   { view: "explore", icon: Compass, label: "Explore", id: "nav-explore" },
   { view: "answer", icon: History, label: "Research History", id: "nav-history" },
   { view: "answer", icon: Bookmark, label: "Saved Research", id: "nav-saved" },
-  { view: "author", icon: User, label: "Author Index", id: "nav-author" },
 ];
 
 const DISMISS_OFFSET_X = -100;
@@ -243,7 +242,18 @@ export function Sidebar({
         <span className="side-db-sub">Silver &amp; Gold Provenance Layer</span>
         <span className="db-pill" data-live={live}>
           <span className="pulse" aria-hidden />
-          {live ? "Live · prototype DB" : "Prototype snapshot · fixtures ready"}
+          {/*
+            P0-A: this read "Prototype snapshot · fixtures ready" whenever
+            `live` was false, which is the idle state AND the error state AND
+            the timeout state. It told the user fixtures were standing in for
+            the backend when no fixture is served on any live path any more.
+            Now it names the actual condition.
+          */}
+          {live
+            ? "Live · prototype DB"
+            : devMode
+              ? "Lab dataset · not live"
+              : "Not connected · no live data"}
         </span>
       </div>
     </motion.aside>

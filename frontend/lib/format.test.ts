@@ -170,7 +170,7 @@ describe("statusLabel", () => {
   });
 
   it("labels a snapshot ok response", () => {
-    expect(statusLabel(fixtureHybrid, false)).toBe("Verified against prototype snapshot");
+    expect(statusLabel(fixtureHybrid, false)).toBe("Lab dataset — not live data");
   });
 
   it("surfaces a non-ok status verbatim", () => {

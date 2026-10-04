@@ -13,17 +13,7 @@ import {
 import type { WorkspaceView } from "../../lib/views";
 import type { WorkspaceStore } from "./use-workspace-store";
 
-const LAB_VIEWS: WorkspaceView[] = [
-  "empty",
-  "loading",
-  "answer",
-  "clarify",
-  "notfound",
-  "explore",
-  "author",
-  "publication",
-  "error",
-];
+const LAB_VIEWS: WorkspaceView[] = ["empty", "loading", "answer", "clarify", "notfound", "explore", "publication", "error"];
 
 /** Active-question label per break-ui dataset — dev-only copy, never user-facing. */
 function dataQuestion(kind: DataKind): string {
@@ -48,8 +38,20 @@ export const LAB_DATA_LIST: DataKind[] = ["demo", "worst", "empty", "one", "huge
  * State lab and break-ui dataset switch — dev-only tooling that forces any
  * workspace state without a backend. `?lab=<state>` runs once on first load;
  * `?data=<worst|empty|one|huge>` swaps the answer fixture and is honored ONLY
- * alongside `?lab=`, so no production path can serve adversarial data.
+ * alongside `?lab=`.
+ *
+ * P0-A: `?lab=` was previously honored in production, so `?lab=answer` on a
+ * deployed build forced `fixtureHybrid` — a brief full of invented
+ * publication counts and expertise scores — with no dev-mode toggle and no
+ * indication it was not real. Both the state override and the fixture
+ * datasets are now gated behind `NODE_ENV !== "production"`, so a deployed
+ * build ignores the query string entirely. The in-app StateBar controls stay
+ * available (they are behind the dev-mode toggle) for local testing.
  */
+function labEnabled(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
 export function useLab(store: WorkspaceStore, runAsk: (q: string) => Promise<void>) {
   const {
     question,
@@ -100,7 +102,7 @@ export function useLab(store: WorkspaceStore, runAsk: (q: string) => Promise<voi
         showResponse(fixtureNotFound, false);
         return;
       }
-      if (v === "explore" || v === "author" || v === "publication") {
+      if (v === "explore" || v === "publication") {
         if (!response) {
           setActiveQuestion(SEEDS[0].question);
           setResponse(fixtureHybrid);
@@ -141,7 +143,8 @@ export function useLab(store: WorkspaceStore, runAsk: (q: string) => Promise<voi
       setDataKind(k);
       setSelectedCand(null);
       setHighlightId(null);
-      const fixture = resolveDataFixture(k);
+      // P0-A: never serve an adversarial dataset outside development.
+      const fixture = labEnabled() ? resolveDataFixture(k) : null;
       if (fixture) {
         setActiveQuestion(dataQuestion(k));
         showResponse(fixture, false);
@@ -162,6 +165,8 @@ export function useLab(store: WorkspaceStore, runAsk: (q: string) => Promise<voi
   );
 
   useEffect(() => {
+    // P0-A: production builds ignore ?lab= and ?data= entirely.
+    if (!labEnabled()) return;
     const params = new URLSearchParams(window.location.search);
     const lab = params.get("lab");
     if (!lab || !LAB_VIEWS.includes(lab as WorkspaceView)) return;

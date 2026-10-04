@@ -11,7 +11,8 @@ export interface ClarifyPanelProps {
   selectedCand: string | null;
   onSelect: (id: string) => void;
   onResolve: () => void;
-  onLoadExample: () => void;
+  /** P0-A: injects a hardcoded answer. Optional; omitted in the default UI. */
+  onLoadExample?: () => void;
   titleRef: TitleRef;
 }
 
@@ -37,14 +38,16 @@ export function ClarifyPanel({
           No ambiguous entities
         </h2>
         <p className="sub">
-          The current answer set needs no disambiguation. Ask an author- or institution-scoped question — or load the
-          corpus disambiguation example.
+          The current answer set needs no disambiguation. Ask an author- or institution-scoped question
+          {onLoadExample ? " — or load the corpus disambiguation example" : ""}.
         </p>
-        <div className="resolve-row">
-          <button type="button" className="ask-btn btn-resolve" onClick={onLoadExample}>
-            Load corpus example <ArrowRight size={15} aria-hidden />
-          </button>
-        </div>
+        {onLoadExample && (
+          <div className="resolve-row">
+            <button type="button" className="ask-btn btn-resolve" onClick={onLoadExample}>
+              Load corpus example <ArrowRight size={15} aria-hidden />
+            </button>
+          </div>
+        )}
       </section>
     );
   }
