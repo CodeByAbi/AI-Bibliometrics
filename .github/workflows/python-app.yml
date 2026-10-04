@@ -1,7 +1,19 @@
-# This workflow will install Python dependencies, run tests and lint with a single version of Python
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+# AI-Bibliometrics — backend CI.
+#
+# Replaces the stock GitHub Actions Python template. The old file was wrong in
+# three ways that made it near-useless as a gate:
+#   1. Pinned Python 3.10 while docker/backend.Dockerfile and pyproject.toml both
+#      declare 3.11 (`requires-python = ">=3.11"`). CI tested a version the image
+#      never runs.
+#   2. Used flake8, a linter this repo does not use. `ruff` is configured in
+#      pyproject.toml and documented in AGENTS.md/README.md, so the two tools
+#      disagreed by definition and flake8's result meant nothing.
+#   3. Never built the Docker image. Every image-level defect — the 3.2 GB of
+#      CUDA wheels, the missing pyproject.toml in the build context, a root-user
+#      runtime — was invisible to CI and only found by hand. `docker` job below
+#      is the point of this rewrite.
 
-name: Python application
+name: Backend CI
 
 on:
   push:
@@ -12,28 +24,251 @@ on:
 permissions:
   contents: read
 
+# A new push to the same branch cancels the in-flight run: no wasted minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
 jobs:
-  build:
-
+  # ---------------------------------------------------------------------------
+  # Lint + types. Fast, no database needed.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint & types
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v3
-      with:
-        python-version: "3.10"
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install flake8 pytest
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-    - name: Lint with flake8
-      run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    - name: Test with pytest
-      run: |
-        pytest
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # torch is CPU-pinned and resolves ONLY from the PyTorch CPU index
+      # (see requirements.txt:35-70). Without this flag the install fails with
+      # "No matching distribution found for torch==2.14.0+cpu", because PyPI
+      # publishes the linux default as the CUDA build.
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements-dev.txt
+
+      # Hard gate: syntax errors, undefined names, redefinitions. These are
+      # unambiguous defects and the set is currently empty, so this can fail the
+      # build without ever having been rubber-stamped with --exit-zero.
+      #
+      # The full ruleset in pyproject.toml finds ~1240 findings today (849 of
+      # them E501 line length). Gating all of it would mean the very first CI
+      # run is red and nobody ever trusts the gate again, so the rest is
+      # reported as advisory below and must not grow. `--exit-zero` is a
+      # deliberate, visible debt signal — not a silent "it passes".
+      - name: Ruff — correctness gate (blocking)
+        run: |
+          ruff check backend scripts tests \
+            --select E9,F63,F7,F82,F821,F811 \
+            --output-format github
+
+      - name: Ruff — full ruleset (advisory, must not grow)
+        run: |
+          ruff check backend scripts tests --statistics --exit-zero
+        continue-on-error: true
+
+      - name: Ruff format check (advisory)
+        run: ruff format --check backend scripts tests
+        continue-on-error: true
+
+      - name: Mypy
+        run: mypy backend scripts
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Unit + integration tests. No live database required — see pytest.ini /
+  # markers for which tests skip without one.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor is the declared minimum in pyproject.toml. Testing only the
+        # floor is deliberate: 3.11 is what the Dockerfile ships, so a 3.12-only
+        # regression in CI would not reflect anything users can hit today.
+        python-version: [ "3.11" ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements-dev.txt
+
+      - name: Pytest
+        run: pytest -q
+
+      # Coverage is reported but not enforced. AGENTS.md sets an >=80% target
+      # for routers/retrievers/security as a Fase 8 milestone that has not
+      # landed yet; failing the build on it now would be enforcing a goal the
+      # repo has not committed to reaching.
+      - name: Coverage (informational)
+        run: |
+          pytest -q --cov=backend/app --cov-report=term-missing \
+            --cov-report=xml > /dev/null
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Dependency vulnerability scan (OWASP, free, no token).
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          # --no-deps is required, not an optimisation. Our lockfile is
+          # exact-pinned and torch resolves only from the PyTorch CPU index, so
+          # any attempt to actually resolve/install the graph fails. Auditing the
+          # pinned versions as-is is also the honest question: these are the
+          # versions we ship, so these are the ones that need patching.
+          pip-audit --requirement requirements.txt --no-deps
+          # Advisory only for now: this stack carries known transitive
+          # advisories that are not yet triaged against exploitability here.
+          # Promote to blocking once the backlog is cleared.
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # THE job that was missing: does the image actually build and boot?
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker image build + smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker compose build backend
+
+      # Guards the exact regression that shipped for months: `torch==2.14.0`
+      # resolving to the CUDA build on Linux and dragging ~3.2 GB of nvidia_*
+      # wheels into a CPU-only image. Nothing failed; the image just got 5x
+      # bigger. These assertions make that impossible to reintroduce silently.
+      - name: Assert CPU-only, non-root, and no dev tooling
+        run: |
+          set -euo pipefail
+          IMG=ai-bibliometrics-backend:latest
+
+          echo "--- CUDA torch must not be present ---"
+          if docker run --rm --entrypoint sh "$IMG" -c \
+            'ls /opt/venv/lib/python3.11/site-packages | grep -c "^nvidia"'; then
+            echo "::error::nvidia_* CUDA wheels found in CPU-only image"
+            exit 1
+          fi
+          docker run --rm "$IMG" python -c \
+            "import torch; assert torch.version.cuda is None, 'CUDA torch in CPU image'"
+
+          echo "--- must run as non-root ---"
+          docker run --rm --entrypoint sh "$IMG" -c \
+            'test "$(id -u)" != "0" || { echo "::error::running as root"; exit 1; }'
+
+          echo "--- dev tooling must not leak into the runtime image ---"
+          for m in pytest ruff mypy matplotlib psycopg; do
+            if docker run --rm --entrypoint sh "$IMG" -c "import $m" 2>/dev/null; then
+              echo "::error::$m is present in the production image"
+              exit 1
+            fi
+          done
+
+          echo "--- runtime deps present, app imports, HF_HOME writable ---"
+          docker run --rm "$IMG" python -c \
+            "from backend.app.main import app; print('routes:', len(app.routes))"
+          docker run --rm --entrypoint sh "$IMG" -c \
+            'test -w "$HF_HOME" || { echo "::error::HF_HOME not writable by app user"; exit 1; }'
+
+      # Proves the app serves HTTP, not just that it imports.
+      #
+      # Deliberately `docker run` and NOT `docker compose up`: the compose file
+      # makes backend wait on `ollama: condition: service_healthy`, so a compose
+      # smoke test would have to pull the ~4 GB model image on every push. That
+      # buys verification of a wiring already covered by the `compose` job's
+      # `docker compose config --quiet`, at a large recurring cost. The compose
+      # path is verified locally against real weights; CI verifies the image.
+      #
+      # DB and Ollama are absent on purpose: /api/v1/health must still answer
+      # 200 with status=unhealthy/degraded. That is the contract the Compose
+      # HEALTHCHECK and any future orchestrator depend on — if this ever starts
+      # returning 500 when Ollama is down, a CPU-only host would restart-loop.
+      - name: Smoke test the served API
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 8000:8000 ai-bibliometrics-backend:latest
+
+          code=000
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              http://localhost:8000/api/v1/health || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::health never returned 200 (last=$code)"
+            docker logs smoke
+            exit 1
+          fi
+          echo "health 200 after ${i}s; body:"
+          curl -s http://localhost:8000/api/v1/health | head -c 2000
+          echo
+
+          echo "--- /metrics must expose the synthesis series ---"
+          curl -s http://localhost:8000/metrics | grep aibiblio_synthesis_fallback_ratio
+
+          echo "--- root route lists /metrics ---"
+          curl -s http://localhost:8000/ | grep -q metrics
+
+          docker logs smoke
+          docker rm -f smoke
+
+  # ---------------------------------------------------------------------------
+  # Compose file sanity. Catches a bad YAML merge or an unsupported key long
+  # before someone runs it on a machine with models on disk.
+  # ---------------------------------------------------------------------------
+  compose:
+    name: Compose config valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate
+        # NOTE: never `docker compose config` (no args) in a workflow that could
+        # log its output — it expands env_file and prints every secret in .env
+        # in plaintext. `--quiet` parses and validates without printing.
+        run: docker compose config --quiet

@@ -72,6 +72,83 @@ class ASTValidationError(AppException):
         )
 
 
+class LLMTimeoutError(AppException):
+    """A bounded Ollama generation exceeded its per-attempt budget.
+
+    Distinct from ``ASTValidationError`` (422 ``sql_generation_failed``) on
+    purpose. Those two mean opposite things to a caller: 422 says "your
+    question was understood but cannot be safely expressed as a query, try
+    different wording", while a timeout says "the generator was too slow to
+    answer in time". Collapsing them into one status would make an operator
+    chasing a slow model look like they were chasing a bad prompt.
+
+    Also distinct from ``DBTimeoutError`` (503 ``db_timeout``), which is the
+    database's ``statement_timeout`` firing. This one is the *upstream model*
+    failing to generate inside ``TEXT2SQL_TIMEOUT_S``.
+
+    504 Gateway Timeout rather than 503: the gateway itself is healthy and
+    answered; it is the upstream dependency that did not answer in time.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Model generasi terlalu lambat untuk menjawab dalam batas waktu. "
+            "Silakan persempit pertanyaan atau coba lagi sebentar lagi."
+        ),
+        details: Any | None = None,
+    ):
+        super().__init__(
+            message=message,
+            error_type="llm_timeout",
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            details=details,
+        )
+
+
+class SessionNotFoundError(AppException):
+    """Requested research session does not exist.
+
+    Raised by SessionRepository before any bibliometric work is attempted, so a
+    bad ``session_id`` costs one indexed lookup on schema ``app`` and never
+    reaches the retrieval path (spec Test 11).
+    """
+
+    def __init__(
+        self,
+        message: str = "Sesi riset tidak ditemukan.",
+        details: Any | None = None,
+    ):
+        super().__init__(
+            message=message,
+            error_type="session_not_found",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details=details,
+        )
+
+
+class SessionStoreUnavailableError(AppException):
+    """Session persistence is configured off or its pool could not be built.
+
+    Distinct from a 500 on purpose. The session store is optional infrastructure
+    (docs/08 §1.4); when it is absent the caller gets an explicit, actionable
+    503 rather than a stateless 200 that silently drops their ``session_id``.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Persistensi sesi tidak dikonfigurasi pada server ini "
+            "(DB_URL_SESSION belum diset). Endpoint sesi tidak tersedia."
+        ),
+    ):
+        super().__init__(
+            message=message,
+            error_type="session_store_unavailable",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
 def _get_active_request_id(request: Request) -> str:
     """Extract request_id from state, contextvar, header, or generate a fallback."""
     if hasattr(request.state, "request_id") and request.state.request_id:

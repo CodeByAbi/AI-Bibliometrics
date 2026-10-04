@@ -211,6 +211,27 @@ HYBRID_PATTERNS = [
     re.compile(r"\b(skor\s*kepakaran|expertise\s*score|pakar\s*(utama|terbaik|terkemuka)|leading\s*experts?)\b", re.IGNORECASE),
     re.compile(r"\b(sintesis\s*kebijakan|policy\s*synthesis|rekomendasi\s*kebijakan|arah\s*riset)\b", re.IGNORECASE),
     re.compile(r"\b(trend(s)?\s*(in|of)|how\s*has\s*.*evolved|growth\s*score|citation\s*acceleration)\b", re.IGNORECASE),
+    # Emerging-topic intent stated as "<adjective> ... topics" rather than the
+    # literal "emerging topics". Without these, "What are emerging stem cell
+    # therapy topics after 2020 and who are the experts?" matched nothing and
+    # fell through to the VectorRoute default — measured, not hypothetical.
+    re.compile(
+        r"\b(emerging|emergent|naissant|berkembang|baru|muncul|terbaru)\b"
+        r"[^?]{0,80}?\b(topics?|topik|bidang|research\s*areas?|clusters?)\b",
+        re.IGNORECASE,
+    ),
+    # "who are the experts" carries expertise intent on its own — Gold
+    # `researcher_expertise` answers it, VectorRoute does not. Deliberately
+    # narrow: only the copular forms, never a bare mention of the word
+    # "researcher", so "top 5 researchers by publication count" keeps its
+    # SQLRoute ranking semantics (HybridRoute is evaluated before SQLRoute).
+    re.compile(
+        r"\bwho\s+(?:are|is)\s+(?:the\s+|these\s+)?(?:top\s+|leading\s+|main\s+)?experts?\b"
+        r"|\bwho\s+(?:are|is)\s+the\s+(?:leading|top|main|key)\s+(?:researchers?|scientists?|authors?)\b"
+        r"|\bsiapa\s+(?:para\s+)?(?:pakar|ahli)\b"
+        r"|\bpakar\s+(?:terbaik|terutama|terkemuka)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 # 4. VectorRoute Patterns (Semantic/Conceptual exploration, abstract topics, biological/clinical mechanisms)
@@ -281,6 +302,61 @@ def _looks_like_name(captured: str) -> bool:
     # gracefully to an unfiltered search, while trusting a metric phrase causes
     # a hard false not_found before retrieval even runs.
     return any(ch.isupper() for ch in captured)
+
+
+# Generic type words a user may type as a *label* in front of an institution
+# name ("institusi Universitas Andalas"). Matched case-insensitively so the
+# capitalisation of the captured text stays available as the discriminator.
+_INST_TYPE_PREFIX_RE = re.compile(
+    r"^(?:institusi|institut|universitas|university|institute)\s+",
+    re.IGNORECASE,
+)
+
+
+def _strip_lowercase_type_prefix(captured: str) -> str:
+    """Drop a leading type word the user typed as a lowercase label.
+
+    The type word is part of the capture (see extract_candidate_names), because
+    Indonesian/Scopus institution names routinely begin with it — "Universitas
+    Indonesia" must not degrade to "Indonesia". But when the user wrote it as a
+    generic label it is not part of the name and must be removed, or the lookup
+    key "institusi Universitas Andalas" matches nothing and the gate reports a
+    false not_found.
+
+    Capitalisation is the discriminator, reusing the convention already applied
+    by :func:`_looks_like_name`: a word the user means as part of a proper noun
+    is capitalised ("Universitas Indonesia"), a generic label is lowercase
+    ("institusi Universitas Andalas").
+    """
+    m = _INST_TYPE_PREFIX_RE.match(captured)
+    if m is None:
+        return captured
+    prefix = captured[: m.end()]
+    if any(ch.isupper() for ch in prefix):
+        return captured
+    remainder = captured[m.end() :].strip()
+    return remainder or captured
+
+
+# Query grammar that terminates an entity-name capture, ID + EN. Shared by the
+# author and institution extractors so both stop at the same boundary.
+#
+# Only verbs, auxiliaries, and temporal words belong here. Prepositions such as
+# "of"/"and"/"from" are deliberately excluded because they occur INSIDE real
+# institution names ("University of Papua", "Universitas Sebelas Maret") and
+# would truncate the candidate to "University".
+#
+# Every alternative is matched with a trailing \b, so a short form never cuts a
+# longer word: "in" cannot split "Indonesia"/"Informatika", and "is" cannot split
+# "Ismail".
+_NAME_TERMINATOR_ALT = (
+    r"pada|tahun|sejak|setelah|sebelum|antara|"
+    r"di|in|with|yang|by|"
+    r"published|publishes|publishing|publish|"
+    r"produced|produces|producing|produce|"
+    r"written|writes|wrote|write|"
+    r"have|has|had|does|did|were|was|are|is|do"
+)
 
 
 class QuestionRouter:
@@ -415,7 +491,7 @@ class EntityResolutionGate:
             # capture just the name, not "Septi Gumiandari by year".
             # Iterate all matches: "penulis mana ..." must not block a later real name.
             for auth_match in re.finditer(
-                r"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|di|in|with|yang|by)\b|\?|$)",
+                rf"\b(?:penulis|author|peneliti|oleh|by)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:{_NAME_TERMINATOR_ALT})\b|\?|$)",
                 question,
                 re.IGNORECASE,
             ):
@@ -429,12 +505,23 @@ class EntityResolutionGate:
             # e.g., "institusi Universitas Andalas". Bare prepositions (di/at)
             # are deliberately excluded: they over-match phrases like
             # "Paper di Indonesia" or "published at ..." and poison the gate.
+            #
+            # The type word is captured INSIDE the name, not consumed as a
+            # prefix. Indonesian/Scopus institution names frequently *begin*
+            # with the type word ("Universitas Indonesia, Depok, Indonesia"),
+            # so consuming it truncated the candidate to "Indonesia" and sent a
+            # country word into institution resolution — measured to return 10
+            # bogus candidates for "Berapa publikasi Universitas Indonesia
+            # tahun 2023". _strip_lowercase_type_prefix removes the word again
+            # when the user typed it as a lowercase label instead.
             for inst_match in re.finditer(
-                r"\b(?:institusi|universitas|university|institut)\s+([A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:pada|tahun|in|with|yang)\b|\?|$)",
+                rf"\b((?:institusi|universitas|university|institut)\s+[A-Z][a-zA-Z\.\'\-\s]+?)(?:\s+(?:{_NAME_TERMINATOR_ALT})\b|\?|$)",
                 question,
                 re.IGNORECASE,
             ):
-                extracted = inst_match.group(1).strip()
+                extracted = _strip_lowercase_type_prefix(
+                    inst_match.group(1).strip()
+                )
                 if _looks_like_name(extracted):
                     institution_name = extracted
                     break

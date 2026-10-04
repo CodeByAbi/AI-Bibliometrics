@@ -46,7 +46,7 @@ export default function Workspace() {
     copyDoi,
   } = store;
 
-  const railHidden = view === "author" || view === "publication";
+  const railHidden = view === "publication";
 
   return (
     <div className="app-top page-enter">
@@ -55,7 +55,6 @@ export default function Workspace() {
         onSwitch={switchView}
         provenanceOpen={provenanceOpen}
         onToggleProvenance={() => store.setProvenanceOpen((o) => !o)}
-        onOpenAuthor={() => switchView("author")}
         sideOpen={sideOpen}
         onToggleSidebar={toggleSidebar}
       />

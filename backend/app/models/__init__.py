@@ -18,11 +18,29 @@ from backend.app.models.health import (
     LLMServiceHealth,
     SynthesisHealth,
 )
+from backend.app.models.session import (
+    SCOPE_INHERITABLE_KEYS,
+    SCOPE_KEY_ORDER,
+    ConversationContext,
+    ConversationMessage,
+    ConversationScope,
+    SessionCreatedResponse,
+    SessionCreateRequest,
+    SessionDetailResponse,
+    SessionListItem,
+    SessionMessageResponse,
+    merge_applied_filters,
+)
 
 __all__ = [
+    "SCOPE_INHERITABLE_KEYS",
+    "SCOPE_KEY_ORDER",
     "AskRequest",
     "AskResponse",
     "CandidateItem",
+    "ConversationContext",
+    "ConversationMessage",
+    "ConversationScope",
     "DatabaseHealth",
     "DebugInfo",
     "EmbeddingServiceHealth",
@@ -33,6 +51,12 @@ __all__ = [
     "FilterParams",
     "HealthResponse",
     "LLMServiceHealth",
+    "SessionCreateRequest",
+    "SessionCreatedResponse",
+    "SessionDetailResponse",
+    "SessionListItem",
+    "SessionMessageResponse",
     "SourceItem",
     "SynthesisHealth",
+    "merge_applied_filters",
 ]

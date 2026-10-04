@@ -336,3 +336,115 @@ async def test_ask_endpoint_keyword_filter_surfaced_not_dropped():
         data = resp.json()
         assert data["status"] == "ok"
         assert "keyword" in data["filters_ignored"]
+
+
+# ---------------------------------------------------------------------------
+# P0-B: bounded LLM fallback at the HTTP boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_llm_timeout_maps_to_504(monkeypatch):
+    """A stalled generator is 504 llm_timeout, distinct from 422 unsupported.
+
+    Exercises the REAL timeout path (the outbound HTTP client raising
+    ReadTimeout) rather than stubbing ``generate_llm_sql``, so the error
+    mapping and its ``details`` are both covered end to end.
+
+    The frontend keys its timeout UI state off this code, so it must be a
+    stable, distinct contract value — not folded into sql_generation_failed.
+    """
+    import httpx
+
+    class _StalledClient:
+        calls = 0
+
+        async def post(self, *args, **kwargs):
+            type(self).calls += 1
+            raise httpx.ReadTimeout("generation stalled")
+
+    monkeypatch.setattr(
+        "backend.app.services.retrievers.sql_retriever.get_http_client",
+        lambda: _StalledClient(),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Berapa rata-rata sitasi per tahun?"},
+        )
+        assert resp.status_code == 504
+        data = resp.json()
+        assert data["error"]["error_type"] == "llm_timeout"
+        assert data["error"]["status_code"] == 504
+        # request_id must survive so the operator can find the log line that
+        # recorded llm_fallback=true / llm_timeout=true / retry_count=0.
+        assert data["request_id"]
+        assert data["error"]["details"]["stage"] == "text2sql_generation"
+        # The whole point of P0-B: ONE outbound attempt, not two.
+        assert _StalledClient.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_timeout_and_unsupported_statuses_stay_distinct(monkeypatch):
+    """TIMEOUT, UNSUPPORTED and NOT_FOUND must never collapse into one code."""
+    from backend.app.core.errors import LLMTimeoutError
+    from backend.app.services.retrievers.sql_retriever import SqlRetriever
+    from backend.app.services.retrievers.sql_security import SqlSecurityError
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # unsupported -> 422
+        async def refuse(cls, question, filters=None, validation_error=None, **kw):
+            raise SqlSecurityError("LLM Text-to-SQL unavailable")
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(refuse))
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Berapa rata-rata sitasi per tahun?"},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["error_type"] == "sql_generation_failed"
+
+        # timeout -> 504
+        async def stall(cls, question, filters=None, validation_error=None, **kw):
+            raise LLMTimeoutError()
+
+        monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(stall))
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Berapa rata-rata sitasi per tahun?"},
+        )
+        assert resp.status_code == 504
+        assert resp.json()["error"]["error_type"] == "llm_timeout"
+
+        # empty result set -> 200 not_found, NOT an error
+        monkeypatch.undo()
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Daftar publikasi pada tahun 1950"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_never_fabricates_an_answer_after_llm_failure(monkeypatch):
+    """A failed generation must not produce 200 + evidence of any kind."""
+    from backend.app.core.errors import LLMTimeoutError
+    from backend.app.services.retrievers.sql_retriever import SqlRetriever
+
+    async def stall(cls, question, filters=None, validation_error=None, **kw):
+        raise LLMTimeoutError()
+
+    monkeypatch.setattr(SqlRetriever, "generate_llm_sql", classmethod(stall))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "Berapa rata-rata sitasi per tahun?"},
+        )
+        assert resp.status_code != 200
+        data = resp.json()
+        # No answer, no evidence, no sources, no citations — only an envelope.
+        assert "answer" not in data
+        assert "evidence_objects" not in data
+        assert "sources" not in data
+        assert "unverified_citations" not in data

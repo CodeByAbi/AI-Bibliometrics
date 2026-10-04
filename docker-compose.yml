@@ -1,5 +1,8 @@
-# AI-Bibliometrics — local/dev stack (Phase 0).
-# Services: backend (FastAPI, built from ./docker/backend.Dockerfile) + ollama (local model serving).
+﻿# AI-Bibliometrics â€” local/dev stack.
+# Service: backend (FastAPI, built from ./docker/backend.Dockerfile).
+# No ollama service on purpose: the model server is the operator's own native
+# Ollama install on the host, so Compose must not pull/duplicate a ~4 GB image.
+# The backend reaches it through the Docker host gateway instead.
 # No Postgres service: the live prototype DB is external (see DB_URL in .env).
 name: ai-bibliometrics
 
@@ -11,7 +14,30 @@ services:
     env_file:
       - .env
     environment:
-      OLLAMA_HOST: http://ollama:11434
+      # Native host Ollama (default port 11434) reached from inside the
+      # container. `host.docker.internal` is built into Docker Desktop; on
+      # Linux the extra_hosts mapping below resolves it via host-gateway.
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      # Must stay writable by the non-root `app` user in the image, or the first
+      # SentenceTransformer load fails and silently degrades to Ollama embedding.
+      HF_HOME: /home/app/.cache/huggingface
+    # Persist the HuggingFace cache across `up --build` / recreate.
+    #
+    # Measured on this deployment: bge-m3 is ~2.2 GB, and because HF_HOME lived
+    # only in the container filesystem every recreate discarded it and the next
+    # VectorRoute request re-downloaded and re-loaded the model —
+    # embedding_ms = 167,679 ms cold-cache vs 13,450 ms warm-cache vs 0.02 ms
+    # once the process is warm. The background pre-warm in the lifespan hides
+    # that cost from startup, but a request arriving mid-prewarm still blocks on
+    # the same lock, so the download was being charged to a user request.
+    # With the volume the first `up` still downloads once; every later recreate
+    # starts from the warm-cache figure.
+    volumes:
+      - hf-cache:/home/app/.cache/huggingface
+    # No-op on Docker Desktop, required on Linux engines where the magic DNS
+    # name is absent.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Override the Dockerfile CMD so proxy trust stays a deploy-time decision
     # (the same image runs locally with no proxy and behind Caddy/tunnel later).
     #
@@ -35,23 +61,34 @@ services:
       - --forwarded-allow-ips=${TRUSTED_PROXY_IPS:-127.0.0.1}
     ports:
       - "8000:8000"
-    depends_on:
-      - ollama
+    # No `depends_on` gate any more: the model server is external to Compose,
+    # so there is no Compose health condition to wait on. Every Ollama call
+    # site already degrades on failure (embedding fallback, deterministic
+    # synthesis fallback, `llm: down` in /api/v1/health).
+    restart: unless-stopped
+    # Cap the blast radius of a runaway request. The values are deliberately
+    # modest: bge-m3 + Qwen2.5-Coder on CPU is memory-hungry, and an unbounded
+    # container can starve the host and take Ollama down with it. Raise only with
+    # a measurement, not a guess.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          memory: 1G
+    # Defence in depth on top of the image already running as uid 10001:
+    # drop every capability (nothing here needs any) and forbid setuid
+    # binaries from regaining privilege.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # rootless Docker Desktop note: on Linux, `user:` here would be honoured but
+    # the image already sets USER app; setting it again to a different uid would
+    # break the HF_HOME ownership established in the Dockerfile.
 
-  ollama:
-    # Pinned to an explicit version AND digest (Task 3 follow-up). Reproducible
-    # and self-documenting: the version is readable in this file, the digest
-    # guarantees bit-identical bits. Digest is the linux/amd64+arm64 index for
-    # 0.35.1 (pushed 2026-10-02). Bump both together.
-    image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
-    ports:
-      # Host port defaults to 11435 to avoid clash with native Ollama Desktop
-      # (which already listens on 11434). Container port stays 11434 so
-      # backend OLLAMA_HOST=http://ollama:11434 keeps working.
-      # Override with OLLAMA_PORT=11434 in .env if native Ollama is stopped.
-      - "${OLLAMA_PORT:-11435}:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-
+# Named volumes. Kept at project level so `docker compose down` (without -v)
+# does not throw away the model cache.
 volumes:
-  ollama-data:
+  hf-cache:

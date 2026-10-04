@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any
+from typing import Any, ClassVar, Literal
 
 import asyncpg
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.core.config import get_settings
-from backend.app.core.errors import DBTimeoutError
+from backend.app.core.errors import DBTimeoutError, LLMTimeoutError
 from backend.app.core.http import get_http_client
-from backend.app.core.logging import logger
+from backend.app.core.logging import current_request_id, logger
 from backend.app.models.ask import FilterParams
 from backend.app.services.retrievers.sql_security import (
     SqlSecurityError,
@@ -67,6 +68,21 @@ class SqlRetrievalResult(BaseModel):
         default_factory=list,
         description="Filter names set by the caller but unused by the executed template",
     )
+    #: Which generator produced ``sql_executed`` — ``"deterministic"`` (rule
+    #: template, bound params) or ``"llm"`` (Ollama Text-to-SQL). Observable in
+    #: developer_mode because the two paths differ by two orders of magnitude
+    #: in latency and in whether the AST gate had to reject a first attempt.
+    sql_source: Literal["deterministic", "llm"] = "deterministic"
+    #: Per-stage wall-clock split (monotonic ``perf_counter``) so a slow
+    #: retrieval is attributable to generation, validation, or execution
+    #: instead of showing up as one opaque number (NFR4 observability).
+    generation_ms: float = 0.0
+    validation_ms: float = 0.0
+    db_query_ms: float = 0.0
+    #: Number of LLM Text-to-SQL invocations spent on this request (0 when the
+    #: deterministic template covered the question, 1 on first-try LLM success,
+    #: 2 when the AST gate rejected the first attempt and forced a repair).
+    llm_calls: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -109,6 +125,124 @@ class SqlRetriever:
         r"distribusi|distribution|per\s*tahun|grouped)\b",
         re.IGNORECASE,
     )
+
+    # --- Deterministic template intent coverage -----------------------------
+    #
+    # Each entry pairs the original literal substring list (kept verbatim so no
+    # already-covered phrasing can regress) with a regex that accepts the
+    # natural variants the literal list missed.
+    #
+    # Why this exists: a literal miss does not degrade to a slower answer, it
+    # degrades to the Ollama Text-to-SQL path. Measured on this deployment, a
+    # COUNT(*) phrased "Berapa publikasi …" cost 6,036 ms warm and 21.9-41.4 s
+    # cold (10.1 s of that is loading the 4.7 GB qwen2.5-coder weights) where
+    # the deterministic template answered in 84-90 ms. Every phrasing listed in
+    # docs/05 §5.1 must therefore resolve here, not in the LLM.
+    INTENT_PATTERNS: ClassVar[dict[str, tuple[re.Pattern[str], tuple[str, ...]]]] = {
+        "count_publications": (
+            re.compile(
+                r"\bberapakah?\s+(?:jumlah\s+|total\s+|banyak\s+|seluruh\s+)?"
+                r"(?:publikasi|paper|papers|artikel|artikelnya|jurnal|karya|publication|publications)\b"
+                r"|\b(?:jumlah|total)\s+(?:publikasi|paper|papers|artikel|jurnal|karya)\b"
+                r"|\b(?:total|jumlah)\s+(?:number\s+of\s+)?"
+                r"(?:publikasi|paper|papers|artikel|publication|publications)\b"
+                r"|\b(?:how\s+many|count\s+of|number\s+of)\s+"
+                r"(?:publications?|papers?|articles?|studies)\b"
+                r"|\btotal\s+(?:number\s+of\s+)?(?:publications?|papers?|articles?)\b"
+                r"|\bseberapa\s+banyak\s+(?:publikasi|paper|artikel)\b"
+                r"|\bcount\s+(?:of\s+)?(?:publications?|papers?|articles?)\b",
+                re.IGNORECASE,
+            ),
+            (
+                "berapa jumlah publikasi",
+                "total publikasi",
+                "how many publications",
+                "count of publications",
+                "total paper",
+                "jumlah paper",
+            ),
+        ),
+        "top_authors": (
+            re.compile(
+                r"\b(?:top\s*\d*\s*|\d+\s*)?"
+                r"(?:most\s+pro(?:ductive|lific)\s+authors?|"
+                r"authors?\s+(?:most\s+)?pro(?:ductive|lific)|"
+                r"top\s+authors?|"
+                r"(?:penulis|author)\s+(?:paling\s+produktif|ter(?:atas|produktif))|"
+                r"penulis\s+paling\s+produktif|"
+                r"most\s+active\s+authors?)\b",
+                re.IGNORECASE,
+            ),
+            (
+                "penulis paling produktif",
+                "most productive author",
+                "top author",
+                "penulis teratas",
+                "author paling produktif",
+                "most prolific author",
+            ),
+        ),
+        "most_cited": (
+            re.compile(
+                r"\b(?:most\s+cit(?:ed|ation)|highest\s+cit(?:ed|ation|ations)|"
+                r"paling\s+banyak\s+disitasi|sitasi\s+terbanyak|"
+                r"top\s+cit(?:ed|ation))\b",
+                re.IGNORECASE,
+            ),
+            (
+                "sitasi terbanyak",
+                "most cited",
+                "highest citation",
+                "paling banyak disitasi",
+            ),
+        ),
+        "top_institutions": (
+            re.compile(
+                r"\b(?:top\s*\d*\s*)?(?:institutions?|universit(?:y|ies)|"
+                r"institusi|universitas)\s+(?:teratas|paling\s+produktif|"
+                r"most\s+productive|top)\b"
+                r"|\btop\s+(?:institutions?|universities|institusi|universitas)\b"
+                r"|\b(?:most\s+productive|top)\s+(?:institutions?|universities)\b",
+                re.IGNORECASE,
+            ),
+            (
+                "top institusi",
+                "institusi teratas",
+                "top institutions",
+                "most productive institution",
+                "institusi paling produktif",
+            ),
+        ),
+        "list_publications": (
+            re.compile(
+                r"\b(?:daftar|list|show|tampilkan|sebutkan)\s+"
+                r"(?:semua\s+)?(?:publikasi|paper|papers|artikel|publication|publications)\b"
+                r"|\b(?:publikasi|papers?|articles?)\s+(?:pada\s+tahun|in\s+year|published\s+in)\s*\d{4}\b"
+                r"|\b(?:paper|artikel)\s+(?:in|on)\s+(?:year\s+)?\d{4}\b",
+                re.IGNORECASE,
+            ),
+            (
+                "daftar publikasi",
+                "list publications",
+                "show publications",
+                "tampilkan publikasi",
+                "artikel pada tahun",
+                "paper in year",
+            ),
+        ),
+    }
+
+    @classmethod
+    def _intent(cls, intent: str, question: str) -> bool:
+        """True when ``question`` expresses ``intent``.
+
+        Regex covers natural phrasing variants; the literal substring list is
+        retained as a second, independent check so previously-covered wording
+        can never regress when the patterns are extended.
+        """
+        pattern, literals = cls.INTENT_PATTERNS[intent]
+        q = question.strip().lower()
+        return bool(pattern.search(q)) or any(term in q for term in literals)
 
     @classmethod
     def detect_aggregate_intent(cls, question: str) -> bool:
@@ -159,7 +293,7 @@ class SqlRetriever:
                     year_clauses.append(f"p.year = {_ph(int(year_match.group(1)))}")
 
         # 1. Top productive authors
-        if any(term in q for term in ["penulis paling produktif", "most productive author", "top author", "penulis teratas", "author paling produktif", "most prolific author"]):
+        if cls._intent("top_authors", q):
             where_clauses = []
             where_clauses.extend(year_clauses)
             if filters and filters.country:
@@ -194,7 +328,7 @@ class SqlRetriever:
                 """, params
 
         # 2. Most cited publications
-        if any(term in q for term in ["sitasi terbanyak", "most cited", "highest citation", "paling banyak disitasi"]):
+        if cls._intent("most_cited", q):
             where_clauses = []
             where_clauses.extend(year_clauses)
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -207,7 +341,7 @@ class SqlRetriever:
             """, params
 
         # 3. Total publications / count
-        if any(term in q for term in ["berapa jumlah publikasi", "total publikasi", "how many publications", "count of publications", "total paper", "jumlah paper"]):
+        if cls._intent("count_publications", q):
             where_clauses = []
             where_clauses.extend(year_clauses)
             if resolved_author_id:
@@ -237,7 +371,7 @@ class SqlRetriever:
             """, params
 
         # 4. Top institutions
-        if any(term in q for term in ["top institusi", "institusi teratas", "top institutions", "most productive institution", "institusi paling produktif"]):
+        if cls._intent("top_institutions", q):
             where_clauses = []
             where_clauses.extend(year_clauses)
             if filters and filters.country:
@@ -256,7 +390,7 @@ class SqlRetriever:
             """, params
 
         # 5. List publications with filters
-        if any(term in q for term in ["daftar publikasi", "list publications", "show publications", "tampilkan publikasi", "artikel pada tahun", "paper in year"]):
+        if cls._intent("list_publications", q):
             where_clauses = []
             joins = ""
             where_clauses.extend(year_clauses)
@@ -285,14 +419,42 @@ class SqlRetriever:
         question: str,
         filters: FilterParams | None = None,
         validation_error: str | None = None,
+        timeout_s: float | None = None,
+        max_retries: int | None = None,
     ) -> str:
         """Call Ollama LLM to generate Text-to-SQL for arbitrary relational questions.
 
-        Raises SqlSecurityError (→ HTTP 422 sql_generation_failed) when the
-        LLM is unreachable or returns non-200, instead of answering with an
-        unrelated generic query (Phase 3 fix P0-3: never hallucinate scope).
+        Budget (P0-B). Three rules bound the synchronous ``/api/v1/ask`` path:
+
+        1. **One attempt per timeout.** ``retry_on_timeout=False`` makes an
+           ``httpx.TimeoutException`` terminal. Before this, a stalled
+           generation cost ``timeout + backoff + timeout`` — about 17 s at the
+           previous 8 s/2-attempt setting — and the identical retry could not
+           possibly succeed, since the same model on the same box needs the
+           same wall clock.
+        2. **A dedicated, shorter timeout.** Defaults to
+           ``TEXT2SQL_TIMEOUT_S`` (6 s) rather than ``OLLAMA_TIMEOUT_S`` (8 s),
+           because Text-to-SQL is the only LLM call a request can be blocked on
+           without the caller opting in via ``llm_synthesis``.
+        3. **A configured retry ceiling.** ``OLLAMA_MAX_RETRIES`` bounds the
+           extra attempts, and it is applied to *connect* errors only.
+
+        Raises:
+            LLMTimeoutError: the generation exceeded ``timeout_s`` →
+                HTTP 504 ``llm_timeout``. Distinct from the 422 below so a slow
+                model is never reported as an unsafe question.
+            SqlSecurityError: Ollama was unreachable, returned non-200, or
+                returned an empty body → HTTP 422 ``sql_generation_failed``.
+                Never answers with an unrelated generic query (Phase 3 fix
+                P0-3: never hallucinate scope).
         """
         settings = get_settings()
+        effective_timeout = (
+            settings.text2sql_timeout_s if timeout_s is None else timeout_s
+        )
+        effective_retries = (
+            settings.ollama_max_retries if max_retries is None else max_retries
+        )
         filter_context = ""
         if filters:
             f_dict = {k: v for k, v in filters.model_dump().items() if v is not None}
@@ -327,33 +489,95 @@ class SqlRetriever:
             return await get_http_client().post(
                 f"{settings.ollama_host.rstrip('/')}/api/generate",
                 json=payload,
-                timeout=settings.ollama_timeout_s,
+                timeout=effective_timeout,
             )
 
+        telemetry: dict[str, Any] = {}
         try:
-            resp = await with_retry(_post_text2sql, max_attempts=2, operation="ollama-text2sql")
-            if resp.status_code == 200:
-                raw_text = resp.json().get("response", "").strip()
-                # Strip any markdown code fence if returned
-                raw_text = re.sub(r"^```(?:sql)?\s*", "", raw_text, flags=re.MULTILINE)
-                raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE).strip()
-                if not raw_text:
-                    raise SqlSecurityError(
-                        "LLM Text-to-SQL returned an empty response"
-                    )
-                return raw_text
-            else:
-                logger.warning("Ollama Text-to-SQL call returned HTTP %s", resp.status_code)
-                raise SqlSecurityError(
-                    f"LLM Text-to-SQL unavailable (HTTP {resp.status_code})"
-                )
+            resp = await with_retry(
+                _post_text2sql,
+                max_attempts=1 + max(0, effective_retries),
+                operation="ollama-text2sql",
+                # A timeout is never retried here — see rule 1 in the docstring.
+                retry_on_timeout=False,
+                telemetry=telemetry,
+            )
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            # asyncio.TimeoutError is TimeoutError on 3.11+, so httpx and any
+            # outer deadline collapse into one bucket here.
+            logger.warning(
+                "Text-to-SQL generation timed out after %.1fs "
+                "(retry_count=%d, attempts=%d) — returning llm_timeout, "
+                "no retry issued",
+                effective_timeout,
+                max(0, effective_retries) if telemetry.get("retried") else 0,
+                telemetry.get("attempts", 1),
+                extra={
+                    "endpoint": "/api/v1/ask",
+                    "route": "SQLRoute",
+                    "request_id": current_request_id.get(),
+                    "llm_fallback": True,
+                    "llm_timeout": True,
+                    "retry_count": max(0, telemetry.get("attempts", 1) - 1),
+                    "status": "llm_timeout",
+                    "latency_ms": telemetry.get("total_ms"),
+                },
+            )
+            raise LLMTimeoutError(
+                details={
+                    "stage": "text2sql_generation",
+                    "timeout_s": effective_timeout,
+                    "attempts": telemetry.get("attempts", 1),
+                }
+            ) from exc
         except SqlSecurityError:
             raise
         except Exception as exc:
-            logger.warning("Ollama Text-to-SQL invocation failed: %s", exc)
+            logger.warning(
+                "Ollama Text-to-SQL invocation failed after %d attempt(s): %s",
+                telemetry.get("attempts", 1),
+                exc,
+                extra={
+                    "endpoint": "/api/v1/ask",
+                    "route": "SQLRoute",
+                    "request_id": current_request_id.get(),
+                    "llm_fallback": True,
+                    "llm_timeout": False,
+                    "retry_count": max(0, telemetry.get("attempts", 1) - 1),
+                    "status": "sql_generation_failed",
+                    "latency_ms": telemetry.get("total_ms"),
+                },
+            )
             raise SqlSecurityError(
                 "LLM Text-to-SQL unavailable; cannot answer non-canonical relational question"
             ) from exc
+
+        # Past this point the generator responded, so anything that follows is
+        # about the CONTENT of the response, not about waiting for one.
+        if resp.status_code != 200:
+            logger.warning(
+                "Ollama Text-to-SQL call returned HTTP %s",
+                resp.status_code,
+                extra={
+                    "endpoint": "/api/v1/ask",
+                    "route": "SQLRoute",
+                    "request_id": current_request_id.get(),
+                    "llm_fallback": True,
+                    "llm_timeout": False,
+                    "status": "sql_generation_failed",
+                },
+            )
+            raise SqlSecurityError(
+                f"LLM Text-to-SQL unavailable (HTTP {resp.status_code})"
+            )
+
+        raw_text = resp.json().get("response", "").strip()
+        # Strip any markdown code fence if returned
+        raw_text = re.sub(r"^```(?:sql)?\s*", "", raw_text, flags=re.MULTILINE)
+        raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE).strip()
+        if not raw_text:
+            raise SqlSecurityError("LLM Text-to-SQL returned an empty response")
+        return raw_text
 
     @classmethod
     def _reject_bare_placeholders(cls, sql_query: str, params: list[Any]) -> None:
@@ -381,33 +605,83 @@ class SqlRetriever:
         resolved_institution_id: str | None = None,
     ) -> SqlRetrievalResult:
         """Generate, validate, and execute SQL query against database."""
-        # 1. Try deterministic template generator first (returns bound params)
+        # 1. Try deterministic template generator first (returns bound params).
+        #    Timed separately from the LLM fallback so a template regression
+        #    shows up as sql_generation_ms growth instead of being hidden
+        #    inside one opaque sql_retrieval_ms number.
+        t_gen = time.perf_counter()
         sql_query, params = cls.generate_deterministic_sql(
             question,
             filters=filters,
             resolved_author_id=resolved_author_id,
             resolved_institution_id=resolved_institution_id,
         )
+        sql_source: Literal["deterministic", "llm"] = "deterministic"
+        llm_calls = 0
 
         # 2. Fall back to LLM Text-to-SQL if not matched deterministically
         if not sql_query:
+            sql_source = "llm"
+            llm_calls += 1
             sql_query = await cls.generate_llm_sql(question, filters=filters)
             params = []
 
-        # 3. Validate with the sqlglot AST gate; a single retry carries the
-        # AST error context back to the generator (FR3.3). Persistent
-        # failure raises SqlSecurityError, mapped to HTTP 422 upstream.
+        generation_ms = round((time.perf_counter() - t_gen) * 1000, 2)
+
+# 3. Validate with the sqlglot AST gate; a single retry carries the
+        #    AST error context back to the generator (FR3.3). Persistent
+        #    failure raises SqlSecurityError, mapped to HTTP 422 upstream.
+        #
+        #    The repair round trip is entered ONLY when the first call actually
+        #    returned SQL for the validator to reject. A generation that timed
+        #    out or never reached Ollama raises LLMTimeoutError /
+        #    SqlSecurityError out of step 2 and never gets here — retrying a
+        #    generation that produced nothing just pays the same budget twice
+        #    and still has nothing to repair.
         intent = cls.detect_aggregate_intent(question)
+        t_val = time.perf_counter()
+        repair_llm_ms = 0.0
         try:
             cls._reject_bare_placeholders(sql_query, params)
             sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
         except SqlSecurityError as first_exc:
+            llm_calls += 1
+            t_repair = time.perf_counter()
             sql_query = await cls.generate_llm_sql(
                 question, filters=filters, validation_error=str(first_exc)
             )
+            # Attributed to generation, not validation: it is a second LLM
+            # round trip triggered by the gate, and folding it into
+            # validation_ms would hide a doubled LLM budget behind a number
+            # an operator reads as AST-parse cost.
+            repair_llm_ms = (time.perf_counter() - t_repair) * 1000
             params = []
             cls._reject_bare_placeholders(sql_query, params)
             sanitized_sql = validate_and_sanitize_sql(sql_query, aggregate_intent=intent)
+        validation_ms = round((time.perf_counter() - t_val) * 1000 - repair_llm_ms, 2)
+        generation_ms = round(generation_ms + repair_llm_ms, 2)
+
+        # sql_source is the single most important field for latency triage:
+        # "llm" means this request paid a 4.7 GB model load plus CPU decode,
+        # measured at 6.0 s warm and 21.9-41.4 s cold on this deployment.
+        # llm_calls is the honest attempt count: 0 = deterministic template,
+        # 1 = one bounded Text-to-SQL call, 2 = that call plus one AST repair.
+        logger.info(
+            "SQL generation: source=%s llm_calls=%d generation_ms=%.2f validation_ms=%.2f",
+            sql_source,
+            llm_calls,
+            generation_ms,
+            validation_ms,
+            extra={
+                "endpoint": "/api/v1/ask",
+                "route": "SQLRoute",
+                "request_id": current_request_id.get(),
+                "llm_fallback": sql_source == "llm",
+                "llm_timeout": False,
+                "retry_count": max(0, llm_calls - 1),
+                "status": "retrieved",
+            },
+        )
 
         # 4. Execute query on PostgreSQL with bound parameters.
         # Statement timeouts surface as 503 db_timeout, never raw DB errors.
@@ -437,6 +711,11 @@ class SqlRetriever:
             row_count=len(rows),
             execution_time_ms=elapsed_ms,
             filters_ignored=cls.unused_filters(sql_query, filters, resolved_author_id, resolved_institution_id),
+            sql_source=sql_source,
+            generation_ms=generation_ms,
+            validation_ms=validation_ms,
+            db_query_ms=elapsed_ms,
+            llm_calls=llm_calls,
         )
 
     @classmethod

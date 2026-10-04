@@ -29,10 +29,6 @@ const ExploreView = dynamic(() => import("../ExploreView").then((m) => m.Explore
   ssr: false,
   loading: () => <ViewFallback label="explore view" />,
 });
-const AuthorDetailView = dynamic(() => import("../AuthorDetailView").then((m) => m.AuthorDetailView), {
-  ssr: false,
-  loading: () => <ViewFallback label="author view" />,
-});
 const PublicationDetailView = dynamic(
   () => import("../PublicationDetailView").then((m) => m.PublicationDetailView),
   { ssr: false, loading: () => <ViewFallback label="publication view" /> },
@@ -64,6 +60,7 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
     response,
     devMode,
     errorMsg,
+    errorKind,
     highlightId,
     selectedCand,
     periodIdx,
@@ -73,8 +70,6 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
     latencyRows,
     selectedPub,
     selectedPubEvidence,
-    selectedAuthor,
-    authorPubs,
     setPeriodIdx,
     setSelectedCand,
     setActiveQuestion,
@@ -82,16 +77,23 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
   } = store;
 
   const ask = (q: string) => void runAsk(q);
+  // P0-A: the "Load example" affordances inject a hardcoded answer, so they are
+  // developer tooling. Gated on devMode (default off) — a user in the default
+  // UI is never one click away from invented publication counts.
   const clarify = (
     <ClarifyPanel
       response={response}
       selectedCand={selectedCand}
       onSelect={setSelectedCand}
       onResolve={resolveCandidate}
-      onLoadExample={() => {
-        setActiveQuestion("Which Rahman collaborates with Bandung labs?");
-        showResponse(fixtureClarify, false);
-      }}
+      onLoadExample={
+        devMode
+          ? () => {
+              setActiveQuestion("Which Rahman collaborates with Bandung labs?");
+              showResponse(fixtureClarify, false);
+            }
+          : undefined
+      }
       titleRef={headingRef}
     />
   );
@@ -100,10 +102,14 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
       response={response}
       activeQuestion={activeQuestion}
       onTrySeed={ask}
-      onLoadExample={() => {
-        setActiveQuestion("Quantum-dot yields in deep-sea fisheries after 2020?");
-        showResponse(fixtureNotFound, false);
-      }}
+      onLoadExample={
+        devMode
+          ? () => {
+              setActiveQuestion("Quantum-dot yields in deep-sea fisheries after 2020?");
+              showResponse(fixtureNotFound, false);
+            }
+          : undefined
+      }
       titleRef={headingRef}
     />
   );
@@ -134,11 +140,9 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
         route={response && view !== "loading" && view !== "error" ? response.route : undefined}
       />
 
-      {errorMsg && view !== "loading" && view !== "empty" && !isLive && (
-        <p className="sub warn-inline" role="status">
-          {errorMsg} Showing a prototype snapshot instead.
-        </p>
-      )}
+      {/* P0-A: the "Showing a prototype snapshot instead" banner is gone.
+          A failed request no longer swaps in placeholder data, so there is
+          nothing to disclaim — the error view below is the whole story. */}
 
       {view === "empty" && <EmptyWorkspace onAsk={ask} />}
 
@@ -184,18 +188,6 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
         </Reveal>
       )}
 
-      {view === "author" && (
-        <Reveal key="author" delay={0}>
-          <AuthorDetailView
-            author={selectedAuthor}
-            publications={authorPubs}
-            onOpenPublication={openPublication}
-            onResolve={() => switchView("clarify")}
-            titleRef={headingRef}
-          />
-        </Reveal>
-      )}
-
       {view === "publication" && (
         <Reveal key="publication" delay={0}>
           <PublicationDetailView
@@ -209,15 +201,31 @@ export function WorkspaceCanvas({ ws }: WorkspaceCanvasProps) {
 
       {view === "error" && (
         <section className="error-card" aria-labelledby="err-title" role="alert">
-          <h2 id="err-title">The request could not be completed</h2>
+          <h2 id="err-title">
+            {errorKind === "timeout"
+              ? "The request timed out"
+              : "The request could not be completed"}
+          </h2>
           <p>{errorMsg}</p>
+          {/*
+            P0-A: state plainly that no data is shown. Without this line the
+            empty space below reads as "zero results", which is a different
+            and wrong claim — the backend never got to answer.
+          */}
+          <p className="mono error-note">
+            No data is displayed for this request — nothing was returned by the research backend.
+          </p>
           <button type="button" className="btn-retry" onClick={() => ask(activeQuestion || question)}>
             <RotateCcw size={15} aria-hidden /> Retry query
           </button>
         </section>
       )}
 
-      {response && view !== "empty" && view !== "loading" && (
+      {/* P0-A: the Replay strip renders hardcoded answers containing invented
+          publication and citation counts. Developer tooling, so it only
+          appears with devMode on (default off). In the default UI the only way
+          to see numbers is to ask the backend for them. */}
+      {devMode && response && view !== "empty" && view !== "loading" && (
         <div className="seeds" role="group" aria-label="Replay a sample route">
           <span className="seeds-label" aria-hidden>
             Replay

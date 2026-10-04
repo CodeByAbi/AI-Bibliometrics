@@ -54,6 +54,82 @@ Invarian Sesi Koneksi:
 
 ---
 
+### 1.4 Peran Sesi: `app_session` (DML pada schema `app`)
+
+Conversation state tidak boleh memakai kredensial yang sama dengan retrieval.
+Dua peran, dua DSN, dua pool:
+
+| Peran | Schema | Izin | Pool |
+|---|---|---|---|
+| `app_readonly` | `public` | `SELECT` saja | `backend/app/db/pool.py` |
+| `app_session` | `app` | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | `backend/app/db/session_pool.py` |
+
+```sql
+-- Dijalankan oleh: python scripts/grant_session_role.py
+CREATE SCHEMA IF NOT EXISTS app;
+REVOKE ALL ON SCHEMA app FROM PUBLIC;
+
+CREATE ROLE app_session NOLOGIN;   -- LOGIN + password adalah langkah operator
+GRANT USAGE ON SCHEMA app TO app_session;   -- tanpa CREATE
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO app_session;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_session;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app REVOKE ALL ON TABLES FROM PUBLIC;
+
+-- Reverse: jalur baca bibliometrik tidak boleh menyentuh state percakapan
+REVOKE ALL ON SCHEMA app FROM app_readonly;
+REVOKE ALL ON SCHEMA public FROM app_session;
+```
+
+**Kenapa dua peran, bukan satu.** Jika `app_readonly` memegang izin tulis,
+satu jalur yang lolos (atau satu prompt injection yang berhasil) dapat menulis
+canonical source of truth. Invarian Session Isolation (docs/03 §0.3 #5) mensyaratkan
+jalur baca bibliometrik dan jalur tulis sesi berada pada kredensial yang berbeda.
+
+**Izin lebih sempit dari `ALL` dengan sengaja.** Tidak ada `TRUNCATE`, tidak ada
+`REFERENCES`, tidak ada `TRIGGER`. `TRUNCATE research_messages` yang tidak
+disengaja tidak dapat lolos lewat grant ini.
+
+**Verifikasi dua arah.** `scripts/grant_session_role.py` keluar non-nol kecuali
+**kedua** arah benar:
+
+```
+app_readonly  -> 0 privilege pada schema app
+app_session   -> 0 privilege pada schema public
+```
+
+Arah kedua inilah yang paling sering bocor dalam praktik: peran sesi yang mewarisi
+cakupan `public` bisa membaca seluruh korpus, dan "tambahkan satu `UPDATE` untuk
+pekerjaan pemeliharaan" berikutnya menjadikannya penulisan korpus. Perintah
+`--check-only` tersedia untuk probe pra-flight tanpa menerapkan apa pun.
+
+**Prompt injection pada state percakapan.** `research_messages` dan
+`research_session_summaries` berisi konten yang dikendalikan pengguna. Keduanya
+diperlakukan sebagai **UNTRUSTED DATA**, setara dengan teks publikasi. Saat
+dikirim ke LLM, session context dibungkus dalam delimiter terpisah yang berada
+**di bawah** blok evidence:
+
+```
+=== BEGIN RETRIEVED EVIDENCE (UNTRUSTED DATA) === ... === END RETRIEVED EVIDENCE ===
+
+=== BEGIN CONVERSATION CONTEXT (UNTRUSTED DATA - NOT EVIDENCE) === ... === END CONVERSATION CONTEXT ===
+Pertanyaan Pengguna: ...
+```
+
+Blok percakapan tidak pernah sampai ke routing atau retrieval, sehingga tidak
+dapat mengubah SQL yang dihasilkan maupun sitasi yang diterima. Sistem prompt
+mendapat aturan tambahan yang eksplisit menolak kutipan angka dari blok itu dan
+meminta hitung ulang dari blok evidence.
+
+**Fitur opsional, gagal secara eksplisit.** Tanpa `DB_URL_SESSION`, seluruh
+endpoint sesi dan `/api/v1/ask` dengan `session_id` mengembalikan
+`503 session_store_unavailable`. `/api/v1/ask` tanpa `session_id` tetap berfungsi
+penuh. `503` eksplisit dipilih daripada `200` yang diam-diam membuang `session_id`
+pengguna, karena `200` tersebut akan terlihat seperti fitur bekerja.
+
+---
+
 ## 2. Pertahanan Injeksi SQL & Injeksi Prompt
 
 ### 2.1 Vektor Ancaman
@@ -147,7 +223,9 @@ Invarian Sesi Koneksi:
 ## 8. Riwayat Perubahan
 
 | Dokumen | Perubahan | Alasan |
-|---|---|---|
+|---|---|
+| `docs/08 Security.md` v3.7.0 | Tambah §1.4: peran `app_session`, model dua-kredensial, verifikasi dua arah, dan perlakuan session context sebagai untrusted data | Menegakkan Session Isolation Invariant sebagai syarat least-privilege, bukan sekadar konvensi |
+---|
 | `docs/08 Security.md` v3.8.1 | §1.1 diberi blok "Status nyata per 2026-10-03 (risiko R1)": `.env DB_URL` masih role `postgres` sehingga penolakan write tidak ditegakkan di level role, guard primer tetap AST whitelist + templat terparameterisasi; keputusan owner 2026-10-03 menetapkan migrasi ke `app_readonly` sebagai prosedur dokumentasi + langkah verifikasi `role` lewat `/api/v1/health`, tanpa agent menyentuh `.env`, dan R1 dinyatakan tetap terbuka | Risiko R1 dari `reports/fase7_closeout.md` §2 belum tertutup; Fase 8 memverifikasi, bukan diam-diam mengubah kredensial. Menyeimbangkan pernyataan "Peran Read-Only (Wajib)" dengan kenyataan runtime agar tidak terbaca sudah terpenuhi |
 | `docs/08 Security.md` v3.8.0 | CORS jadi env var `CORS_ORIGINS` (fail-fast bila nol entri) + aturan trust proxy (`TRUSTED_PROXY_IPS`, larangan `*`); rate limit 20 → **60 rpm** (`RATE_LIMIT_RPM`) + endpoint operasional dikecualikan; dokumentasikan penghitung `synthesis` fallback + `/metrics` beserta batas cakupan process-local | 2026-10-03 |
 | `docs/08 Security.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Vector Storage`, `Dynamic 4-Route`, `Vector Similarity Gate`, dll); sync status Task 1 + Task 8 DONE | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |

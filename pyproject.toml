@@ -8,13 +8,15 @@ requires-python = ">=3.11"
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+
+[tool.ruff.lint]
 # E: pycodestyle errors · F: pyflakes · I: isort · UP: pyupgrade (modern
 # list[X] / X | None syntax) · B: bugbear · SIM: simplify · RUF: ruff
 # specifics · C4: comprehensions · BLE: blind-except (probes document
 # their broad catch in per-file-ignores below).
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C4", "BLE"]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 # Graceful-degradation probes: a broad catch is intentional here — every
 # handler logs with context and returns a safe fallback (never silent).
 # Narrowing them would let a probe take down health/pool/embedding.
@@ -24,6 +26,15 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C4", "BLE"]
 "backend/app/services/retrievers/graph_retriever.py" = ["BLE001"]
 "backend/app/services/retrievers/hybrid_retriever.py" = ["BLE001"]
 "backend/app/services/retrievers/sql_security.py" = ["BLE001"]
+# Session persistence (docs/04 §13). Same rationale as the entries above: every
+# broad catch here is deliberate degradation that logs with context and returns a
+# safe value, never a silent swallow.
+#   session_pool.py     — a session-store outage must not kill the retrieval gateway
+#   session_service.py  — best-effort persistence/summary must never fail an answer
+#   grant_session_role.py — a fatal ACL error must still print what it was
+"backend/app/db/session_pool.py" = ["BLE001"]
+"backend/app/services/session_service.py" = ["BLE001"]
+"scripts/grant_session_role.py" = ["BLE001"]
 
 [tool.mypy]
 python_version = "3.11"

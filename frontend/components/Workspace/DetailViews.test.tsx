@@ -3,7 +3,6 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { fixtureHybrid, type AskResponse } from "../../lib/api";
-import { AuthorDetailView } from "../AuthorDetailView";
 import { ExploreView } from "../ExploreView";
 import { PublicationDetailView } from "../PublicationDetailView";
 
@@ -59,104 +58,6 @@ describe("PublicationDetailView", () => {
       />,
     );
     expect(screen.getByText("—")).toBeInTheDocument();
-  });
-});
-
-describe("AuthorDetailView", () => {
-  const author = fixtureHybrid.candidates?.[0] ?? {
-    id: "auth_014",
-    name: "Dr. A. Rahman",
-    type: "author" as const,
-    publication_count: 14,
-    affiliation: "Universitas Indonesia",
-  };
-
-  it("falls back to a disambiguation route when no researcher is selected", async () => {
-    const user = userEvent.setup();
-    const onResolve = vi.fn();
-    render(
-      <AuthorDetailView
-        author={null}
-        publications={[]}
-        onOpenPublication={vi.fn()}
-        onResolve={onResolve}
-        titleRef={ref()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /go to disambiguation/i }));
-    expect(onResolve).toHaveBeenCalled();
-  });
-
-  it("shows corpus counts and the verified marker", () => {
-    render(
-      <AuthorDetailView
-        author={author}
-        publications={fixtureHybrid.sources}
-        onOpenPublication={vi.fn()}
-        onResolve={vi.fn()}
-        titleRef={ref()}
-      />,
-    );
-    expect(screen.getByRole("heading", { name: author.name, level: 2 })).toBeInTheDocument();
-    expect(screen.getByText(/corpus verified/i)).toBeInTheDocument();
-    expect(screen.getByText(/indexed pubs/i)).toBeInTheDocument();
-  });
-
-  it("builds initials safely from names, including emoji and blanks", () => {
-    const { rerender } = render(
-      <AuthorDetailView
-        author={{ ...author, name: "\u{1F98A} Fox" }}
-        publications={[]}
-        onOpenPublication={vi.fn()}
-        onResolve={vi.fn()}
-        titleRef={ref()}
-      />,
-    );
-    expect(screen.getByRole("heading", { name: "\u{1F98A} Fox" })).toBeInTheDocument();
-
-    rerender(
-      <AuthorDetailView
-        author={{ ...author, name: "" }}
-        publications={[]}
-        onOpenPublication={vi.fn()}
-        onResolve={vi.fn()}
-        titleRef={ref()}
-      />,
-    );
-    expect(screen.getByText("?")).toBeInTheDocument();
-  });
-
-  it("toggles follow state with aria-pressed", async () => {
-    const user = userEvent.setup();
-    render(
-      <AuthorDetailView
-        author={author}
-        publications={fixtureHybrid.sources}
-        onOpenPublication={vi.fn()}
-        onResolve={vi.fn()}
-        titleRef={ref()}
-      />,
-    );
-    const follow = screen.getByRole("button", { name: /follow updates/i });
-    expect(follow).toHaveAttribute("aria-pressed", "false");
-    await user.click(follow);
-    expect(screen.getByRole("button", { name: /following/i })).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it("opens a linked publication from the CV list", async () => {
-    const user = userEvent.setup();
-    const onOpenPublication = vi.fn();
-    render(
-      <AuthorDetailView
-        author={author}
-        publications={[src]}
-        onOpenPublication={onOpenPublication}
-        onResolve={vi.fn()}
-        titleRef={ref()}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: new RegExp(src.title) }));
-    expect(onOpenPublication).toHaveBeenCalledWith(src.publication_id);
   });
 });
 

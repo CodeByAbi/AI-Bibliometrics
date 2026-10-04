@@ -11,6 +11,7 @@ from fastapi import APIRouter, status
 
 from backend.app.db.pool import check_db_health
 from backend.app.models.health import HealthResponse, SynthesisHealth
+from backend.app.services.embedding import local_embedding_model_state
 from backend.app.services.ollama import check_ollama_health
 from backend.app.services.synthesizer.stats import get_synthesis_stats
 
@@ -96,6 +97,14 @@ async def get_health() -> HealthResponse:
     )
     llm_health, embed_health = ollama_pair
     evidence_ready = check_evidence_layer_health()
+
+    # Surface the preferred local embedding path separately: embed_health.status
+    # comes from the Ollama probe and reports "ready" even while the local
+    # SentenceTransformer is still cold, which is exactly the window in which a
+    # VectorRoute request blocks on the model load.
+    embed_health = embed_health.model_copy(
+        update={"local_model_state": local_embedding_model_state()}
+    )
 
     # Determine overall system health status. A degraded synthesis path does NOT
     # downgrade system_status: docs/05 §7 requires the deterministic renderer to

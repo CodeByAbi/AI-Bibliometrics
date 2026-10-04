@@ -8,17 +8,16 @@ interface TopBarProps {
   onSwitch: (v: WorkspaceView) => void;
   provenanceOpen: boolean;
   onToggleProvenance: () => void;
-  onOpenAuthor: () => void;
   sideOpen: boolean;
   onToggleSidebar: () => void;
 }
 
 /**
- * Calm top chrome: brand, ⌘K context pill, the view switcher, the provenance
- * toggle, and the researcher avatar.
+ * Calm top chrome: brand, ⌘K context pill, the view switcher, and the
+ * provenance toggle.
  *
  * The view switcher is a labelled `<nav>` with `aria-current="page"` rather
- * than a `tablist`: these eight controls swap the region below them rather
+ * than a `tablist`: these seven controls swap the region below them rather
  * than selecting among peer tab panels, so a tab role would promise a
  * tabpanel that does not exist. Every control is also a real focus stop, which
  * is what keyboard users expect from view navigation.
@@ -28,7 +27,6 @@ export function TopBar({
   onSwitch,
   provenanceOpen,
   onToggleProvenance,
-  onOpenAuthor,
   sideOpen,
   onToggleSidebar,
 }: TopBarProps) {
@@ -89,13 +87,6 @@ export function TopBar({
       >
         <SlidersHorizontal size={14} aria-hidden />
         <span>Provenance Info</span>
-      </button>
-
-      <button type="button" className="topbar-avatar" onClick={onOpenAuthor} title="View researcher profile">
-        <span className="topbar-avatar-mark" aria-hidden>
-          RF
-        </span>
-        <span className="topbar-avatar-name">Dr. Foster</span>
       </button>
     </header>
   );

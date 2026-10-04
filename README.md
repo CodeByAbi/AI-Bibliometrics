@@ -249,9 +249,10 @@ Delivered and verified: unified `AnswerSynthesizer` (deterministic default), opt
 - **Stack (verified in `frontend/package.json`):** Next.js 14.2.18, React 18.3.1, TypeScript 5.6.3, `lucide-react`, `motion`. No Tailwind — styling is `app/globals.css` + motion tokens (`lib/motion-tokens.ts`, `lib/motion-config.ts`).
 - **Entry:** `app/page.tsx` → `components/Workspace.tsx` (2-panel dense layout: `Sidebar`, `TopBar`, `AnswerBrief`, `ExploreView`, `InspectorBar`).
 - **API integration (`lib/api.ts`):** typed `AskResponse` client posting to `${NEXT_PUBLIC_API_BASE}/api/v1/ask` with `{ question, filters, developer_mode }`, typed routes/statuses/sources/candidates, `unverified_citations` + `debug` (SQL, route reasoning, latency breakdown) surfaced in the Dev-Mode inspector.
-- **Views:** `PublicationDetailView`, `AuthorDetailView`, `ResearchHero`, loading (`LoadingCard`), animated counters (`CountUp`), reveal transitions (`Reveal`), `use-media-query` / `use-reduced-motion` hooks, plus `app/prototypes/` design variants.
+- **Views:** `PublicationDetailView`, `ResearchHero`, loading (`LoadingCard`), animated counters (`CountUp`), reveal transitions (`Reveal`), `use-media-query` / `use-reduced-motion` hooks, plus `app/prototypes/` design variants.
 - **Concept:** clean, minimal, dense-but-readable research workspace (Notion/Linear-inspired) for submitting a research question and inspecting the grounded answer, evidence, sources, citations, and retrieval status.
 - **Config:** `frontend/.env.example` contains only `NEXT_PUBLIC_API_BASE=http://localhost:8000`.
+- **Performance:** judge the UI with `npm run build && npm start`, never `npm run dev`. A cold `next dev` compiles `/` on demand (1,445–1,474 modules, **9–21 s** measured) and is not representative; warm dev TTFB is ~80 ms and production TTFB ~15 ms. Production initial load is ~164 kB First Load JS, ~284 kB total transfer, LCP ~1.2–1.5 s, CLS ≈0, and issues **zero** `/api/` requests before you submit a question. Web Vitals are reported by `components/WebVitals.tsx`: console-only in development, and forwarded only when `NEXT_PUBLIC_VITALS_ENDPOINT` is set, so the default adds no network request and never couples the frontend to a backend route. `lib/assets.test.ts` guards the icon/asset invariants (no duplicate asset in both `app/` and `public/`, no oversized preloaded logo).
 
 ---
 
@@ -372,7 +373,8 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 # Frontend (http://localhost:3000)
 cd frontend
 npm install
-npm run dev                     # npm run build / npm run lint for prod/lint
+npm run dev                     # iterate locally; NOT a perf baseline
+npm run build && npm run start  # use this to judge real load performance
 ```
 
 ```bash
@@ -402,14 +404,13 @@ Variable names only (see `.env.example` / `frontend/.env.example`):
 ```text
 DB_URL                      # live PostgreSQL (runtime role per docs/08)
 DB_URL_OWNER                # owner role for DDL/migrations only
-OLLAMA_HOST                 # default http://ollama:11434 under Compose
+OLLAMA_HOST                 # default http://host.docker.internal:11434 (native host Ollama)
 LLM_MODEL                   # qwen2.5-coder:7b-instruct
 EMBEDDING_MODEL             # BAAI/bge-m3
 EMBEDDING_DIMENSION         # 1024
 VECTOR_SCHEMA               # extensions (Supabase) or public (vanilla)
 DB_STATEMENT_TIMEOUT_MS     # 10000
 OLLAMA_TIMEOUT_S            # 8
-OLLAMA_PORT                 # host port mapping (default 11435)
 NEXT_PUBLIC_API_BASE        # frontend → backend base URL
 ```
 

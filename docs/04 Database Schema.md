@@ -513,10 +513,188 @@ ORDER BY table_name, ordinal_position;
 
 ---
 
-## 13. Riwayat Perubahan
+---
+
+## 13. Skema Aplikasi: Persistensi Sesi (Conversation State)
+
+**Ini BUKAN bagian dari canonical bibliometric source of truth.** Bagian §4–§7
+(Silver, Vector, Edge, Gold) tetap satu-satunya sumber kebenaran untuk data
+ilmiah. Schema `app` menyimpan satu-satunya hal yang tidak terkait dengan itu:
+apa yang telah dibicarakan pengguna dan assistant.
+
+### 13.1 Kenapa Skema Terpisah, Bukan Sekadar Tabel Tambahan
+
+Pool retrieval mengunci `SET search_path = public` (`backend/app/db/pool.py`).
+Tabel sesi yang diletakkan di `public` akan bisa dijangkau oleh SELECT yang lolos
+AST whitelist — cukup dengan satu perubahan `search_path`, dan satu prompt
+injection pada teks publikasi sudah cukup untuk membuatnya masuk ke jalur baca.
+Dengan meletakkan tabel sesi di schema `app`, objek tersebut **tidak dapat
+diresolve** dari jalur baca retrieval sama sekali. Batas ini ditegakkan oleh
+database, bukan oleh disiplin developer.
+
+Dua batas lain yang saling lepas:
+
+| Batas | Mekanisme | Ditegakkan oleh |
+|---|---|---|
+| Skema | `search_path` pool baca = `public`; sesi = `app` | Database |
+| Kredensial | `app_readonly` (SELECT/`public`) vs `app_session` (DML/`app`) | `scripts/grant_session_role.py`, diverifikasi dua arah |
+| Whitelist SQL | `ALLOWED_TABLES` tidak memuat tabel sesi | `sql_security.py` |
+
+### 13.2 DDL (migration `005_session_persistence_schema.sql`)
+
+```sql
+CREATE SCHEMA IF NOT EXISTS app;
+REVOKE ALL ON SCHEMA app FROM PUBLIC;
+
+CREATE TABLE app.research_sessions (
+    session_id       UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    title            TEXT        NOT NULL,
+    status           TEXT        NOT NULL DEFAULT 'active',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_message_at  TIMESTAMPTZ,
+    CONSTRAINT research_sessions_title_not_blank  CHECK (btrim(title) <> ''),
+    CONSTRAINT research_sessions_status_valid
+        CHECK (status IN ('active', 'archived')),
+    CONSTRAINT research_sessions_updated_after_created
+        CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE app.research_messages (
+    message_id       UUID        NOT NULL DEFAULT gen_random_uuid(),
+    session_id       UUID        NOT NULL,
+    role             TEXT        NOT NULL,
+    content          TEXT        NOT NULL,
+    status           TEXT        NOT NULL DEFAULT 'complete',
+    applied_filters  JSONB,
+    request_id       TEXT,
+    route            TEXT,
+    seq              BIGINT      GENERATED ALWAYS AS IDENTITY,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT research_messages_pkey PRIMARY KEY (message_id),
+    CONSTRAINT research_messages_session_fk
+        FOREIGN KEY (session_id) REFERENCES app.research_sessions (session_id)
+        ON DELETE CASCADE,
+    CONSTRAINT research_messages_role_valid   CHECK (role IN ('user','assistant')),
+    CONSTRAINT research_messages_status_valid CHECK (status IN ('complete','failed')),
+    CONSTRAINT research_messages_content_not_blank CHECK (btrim(content) <> '')
+);
+
+CREATE TABLE app.research_session_summaries (
+    session_id       UUID        PRIMARY KEY,
+    summary          TEXT        NOT NULL,
+    messages_covered INTEGER     NOT NULL DEFAULT 0,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT research_session_summaries_session_fk
+        FOREIGN KEY (session_id) REFERENCES app.research_sessions (session_id)
+        ON DELETE CASCADE,
+    CONSTRAINT research_session_summaries_summary_not_blank
+        CHECK (btrim(summary) <> ''),
+    CONSTRAINT research_session_summaries_covered_non_negative
+        CHECK (messages_covered >= 0),
+    CONSTRAINT research_session_summaries_updated_after_created
+        CHECK (updated_at >= created_at)
+);
+```
+
+**Keputusan desain yang perlu dicatat:**
+
+- **`research_session_summaries` 1:1, dengan `session_id` sebagai PK** — bukan riwayat
+  append-only. Ringkasan adalah satu proyeksi bergulir dari transkrip, dan
+  menjadikan `session_id` PK mengubah masalah konkurensi menjadi satu
+  `INSERT ... ON CONFLICT`, yang atomik secara konstruksi. Index pada
+  `(session_id)` **sengaja tidak dibuat** karena PK sudah meng-cover-nya
+  (konsisten dengan §7.4 yang menghapus index yang persis prefix PK).
+- **`seq` adalah identity global tabel, bukan per-sesi** — memberi urutan sisip
+  total untuk pemutus tie ketika dua turn ditulis pada milidetik yang sama,
+  sehingga `GET /api/v1/sessions/{id}` tetap promised chronological.
+- **Tidak ada foreign key dari `app` ke `public`.** Ini bukan kebijakan melainkan
+  struktural: `ON DELETE CASCADE` secara fisik tidak dapat menjangkau korpus,
+  sehingga AC-SESSION-9 dijamin oleh skema, bukan oleh disiplin aplikasi.
+- **Tidak ada `CREATE EXTENSION` yang dibutuhkan.** `gen_random_uuid()` adalah
+  builtin sejak PostgreSQL 13+.
+
+### 13.3 Atribut Kepemilikan Data (Data Ownership)
+
+Setiap data memiliki satu owner. Tidak ada duplikasi kepemilikan:
+
+| Data | Owner | Bukan |
+|---|---|---|
+| Metadata publikasi kanonik | `public.publications` | tidak disalin ke sesi |
+| Chunk semantik | `public.chunks` | tidak disalin ke sesi |
+| Relasi graf | tabel edge turunan | tidak disalin ke sesi |
+| Analitik | tabel Gold | tidak disalin ke sesi |
+| Pesan percakapan | `app.research_messages` | bukan evidence |
+| Konteks percakapan | `app.research_session_summaries` | **bukan** bibliometric memory |
+| Tracing request | `request_id` + application log | bukan evidence |
+| Evidence hasil retrieval | `EvidenceSet` (request-scoped) | bukan sesi |
+
+**Larangan eksplisit.** Tabel sesi tidak pernah memuat `publication_count`,
+`citation_count`, `top_authors`, `top_institutions`, `expertise_score`, atau
+`growth_score` sebagai state kanonik. Nilai tersebut menjadi stale begitu korpus
+di-reingest, dan tidak ada pembaca yang bisa tahu angka mana yang otoritatif.
+`scripts/verify_schema.py` memindai schema `app` dan **gagal** bila kolom
+bermetric ditemukan di sana.
+
+### 13.4 Invarian `applied_filters`
+
+`research_messages.applied_filters` (JSONB) menyimpan **cakupan yang benar-benar
+di-resolve untuk turn tersebut** — hanya kunci scope berbentuk `FilterParams`
+(`country`, `author_name`, `institution_name`, `topic_name`, `keyword`,
+`document_type`, `year_from`, `year_to`). Field ini dipersempit oleh
+`SessionRepository._sanitize_filters()` sebelum disimpan dan tidak pernah memuat
+output retrieval.
+
+> **`applied_filters` adalah metadata provenance saja.** Ia mencatat *scope* yang
+> di-resolve, bukan *jawaban*-nya. Kegunaannya deterministik: pertanyaan lanjutan
+> tanpa filter eksplisit mewarisi scope yang sudah ditetapkan, lalu retrieval
+> meng-query ulang `public` dari nol. Bukti database tetap menang.
+
+Alternatifnya — mem-parse scope kembali dari teks pesan — ditolak karena bisa
+mengarang constraint yang tidak pernah dinyatakan pengguna, dan membutuhkan
+heuristik NLP yang perilakunya berubah diam-diam saat kalimatnya berubah.
+
+### 13.5 Ringkasan Sesi Bukan Memory Bibliometrik
+
+`SessionSummaryService.build()` bersifat deterministik, tanpa panggilan LLM.
+Determinisme itu dijamin secara struktural: urutan iterasi kunci scope mengikuti
+`SCOPE_KEY_ORDER` (tuple), **bukan** `frozenset`, karena urutan iterasi
+`frozenset` untuk string bergantung pada `PYTHONHASHSEED` — dua proses akan
+menghasilkan string berbeda untuk transkrip yang sama.
+
+Jaminan "tidak bisa memuat angka" juga struktural, bukan daftar forbidden:
+`build()` hanya menerima `messages` dan `max_chars`. **Tidak ada parameter** yang
+dapat membawa `EvidenceSet`, `EvidenceObject`, atau hasil sintesis. Ringkasan
+adalah *conversation memory*, bukan *bibliometric memory*.
+
+Jika suatu saat ada yang menambahkan `evidence_set=` demi "lebih pintar",
+`tests/unit/test_session_summary.py::TestSummaryCannotSeeEvidence` akan gagal —
+dan memang harus gagal, karena saat itu ringkasan telah menjadi sumber angka
+kedua yang tidak diaudit.
+
+### 13.6 Audit Skema
+
+`scripts/verify_schema.py` mengaudit schema `app` secara terpisah dari gate
+Silver/Gold, dengan sifat gagal yang berbeda secara sengaja:
+
+- **Schema `app` tidak ada** → *note*, bukan error. Persistensi sesi bersifat
+  opt-in lewat `DB_URL_SESSION`, jadi absennya `app` adalah state awal yang valid.
+- **Schema `app` ada tetapi ada drift kolom** → *error*. Runtime membaca dan
+  menulis tabel itu pada setiap request session-aware.
+- **Ada FK `app` → `public`** → *error* berlabel `VIOLATION Session Isolation
+  Invariant`.
+- **Ada kolom metrik bibliometrik di `app`** → *error* berlabel `VIOLATION data
+  ownership`.
+
+---
+
+## 14. Riwayat Perubahan
 
 | Dokumen | Perubahan | Alasan |
-|---|---|---|
+|---|---
+| `docs/04 Database Schema.md` v3.7.0 | Tambah §13 Skema Aplikasi (`app`): DDL `research_sessions`/`research_messages`/`research_session_summaries`, aturan data ownership, invarian `applied_filters`, audit `verify_schema` | Memisahkan conversation state dari canonical bibliometric source of truth (docs/03 §0.3 invarian 5) tanpa mengubah satu pun tabel Silver/Edge/Gold |
+|---|
 | `docs/04 Database Schema.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Source of Truth`, `Vector Storage`, `Dynamic 4-Route`, `Vector Similarity Gate`, dll); sync status Task 1 + Task 8 DONE | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/04 Database Schema.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/04 Database Schema.md` v3.5.0 | Menandai DB + prototype + cleaning/cleaned-export sebagai DONE; menandai vector storage (kolom, data, HNSW) sebagai PENDING eksplisit; menambah rantai linkage article → embedding input → vector → record | Sinkronisasi progress aktual 2026-09-27 |
