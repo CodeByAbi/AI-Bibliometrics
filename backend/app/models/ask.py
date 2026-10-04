@@ -6,6 +6,8 @@ Docs Reference: docs/06 Api Design.md §5, docs/05 Retrieval Rag Design.md §4.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -71,6 +73,27 @@ class AskRequest(BaseModel):
         False,
         description="Opt-in sintesis naratif LLM (Qwen2.5-Coder via Ollama, docs/05 §6) "
         "di atas EvidenceSet; fallback deterministik bila LLM tak tersedia",
+    )
+    session_id: Optional[UUID] = Field(
+        default=None,
+        description="Sesi riset opsional (schema `app`). Bila diisi, percakapan "
+        "sebelumnya dipakai sebagai konteks pemHAMAN pertanyaan — bukan sebagai "
+        "sumber fakta. Hanya filter yang tidak disebutkan pertanyaan saat ini "
+        "yang diisi dari sesi; `question` sendiri tidak pernah diubah, sehingga "
+        "routing, Text-to-SQL, dan verifikasi sitasi tetap persis sama "
+        "(docs/03 §0.3 invarian 5).",
+    )
+    use_session_context: bool = Field(
+        True,
+        description=(
+            "Set false untuk mengabaikan konteks sesi pada permintaan ini. "
+            "Mematikannya berarti dua hal sekaligus, bukan satu: (1) scope "
+            "dihitung dari nol sehingga filter sesi tidak diwariskan, dan "
+            "(2) transkrip percakapan sebelumnya TIDAK dikirim ke prompt LLM "
+            "untuk narasi. Persistensi turn tetap berjalan — permintaan ini "
+            "masuk ke riwayat sesi seperti biasa. Berguna ketika pengguna "
+            "ingin pertanyaan bersifat global, bukan melanjuti sesi."
+        ),
     )
 
     @field_validator("question")
@@ -157,6 +180,28 @@ class DebugInfo(BaseModel):
     sql_executed: Optional[str] = None
     route_reasoning: Optional[str] = None
     latency_breakdown_ms: Dict[str, float] = Field(default_factory=dict)
+    #: Which generator produced ``sql_executed`` — ``"deterministic"`` (rule
+    #: template with bound parameters) or ``"llm"`` (Ollama Text-to-SQL).
+    #: The two paths differ by two orders of magnitude in measured latency
+    #: (84-90 ms vs 6,036 ms warm / 21.9-41.4 s cold), so a request that fell
+    #: through to the LLM is otherwise indistinguishable from a slow database.
+    sql_source: Optional[Literal["deterministic", "llm"]] = None
+    #: Typed entity contract extracted from the question (year_filter,
+    #: country, author_name, institution_name, keyword, topic_name,
+    #: document_type) — the router's structured output, not model reasoning.
+    entities: Optional[Dict[str, Any]] = None
+    #: VectorRoute gate diagnostics: embedding model/dimension/backend,
+    #: ANN candidate window and rows, rows after the cosine threshold, unique
+    #: publications, and ``top_similarity`` even when the gate dropped every
+    #: row. Lets a zero-evidence answer be classified as corpus-absence versus
+    #: gate-miscalibration instead of collapsing into "data not found".
+    vector_diagnostics: Optional[Dict[str, Any]] = None
+    #: Why the request returned zero evidence, when it did. One of:
+    #: ``entity_not_found`` | ``entity_needs_clarification`` | ``no_candidates``
+    #: | ``below_vector_threshold`` | ``empty_result_set`` | ``unhandled_route``.
+    #: The user-facing answer stays concise; this keeps the internal failure
+    #: class distinguishable.
+    zero_evidence_class: Optional[str] = None
     scored_chunks: Optional[List[Dict[str, Any]]] = Field(
         None,
         description="Deduped vector matches for inspection (VectorRoute only): "
@@ -173,6 +218,16 @@ class DebugInfo(BaseModel):
         '("deterministic" | "llm" | "deterministic-fallback"; Fase 7 B1)',
     )
     evidence_set: Optional[Dict[str, Any]] = None
+    #: Which filter keys were auto-filled from session context because the
+    #: current question left them unspecified. Reported so an inherited scope
+    #: is visible rather than silently narrowing the answer — an auto-applied
+    #: filter a user cannot see is indistinguishable, from the outside, from a
+    #: wrong answer.
+    session_filters_applied: Optional[List[str]] = None
+    #: Rendered conversation block handed to the LLM narration step. Untrusted
+    #: conversational recall, never evidence. Only populated when a session is
+    #: attached AND llm_synthesis=true AND developer_mode=true.
+    session_context_used: Optional[bool] = None
 
 
 class AskResponse(BaseModel):
@@ -211,4 +266,9 @@ class AskResponse(BaseModel):
     debug: Optional[DebugInfo] = Field(
         None,
         description="Metadata debug jika developer_mode=true",
+    )
+    session_id: Optional[UUID] = Field(
+        None,
+        description="Echo dari session_id permintaan bila sesi terlampir. "
+        "Hanya penanda percakapan; tidak memuat fakta bibliometrik apa pun.",
     )
