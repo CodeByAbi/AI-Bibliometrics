@@ -1018,6 +1018,12 @@ li.active .step-ic { border-color: var(--accent); color: var(--accent); }
 .pipeline li[data-state="done"] .pipe-dot { background: #171717; border-color: #171717; color: #fff; }
 .pipeline li[data-state="active"] { color: var(--text-primary); font-weight: 600; }
 .pipeline li[data-state="active"] .pipe-dot { border-color: var(--accent); color: var(--accent-ink); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+/* A failed stage reads as a hollow ring, deliberately NOT the filled "done"
+   dot. Colour is supplementary only — the sr-only text on the stage already
+   says "failed", so this stays legible without colour perception. Reuses the
+   existing --warn-text token rather than introducing a new colour. */
+.pipeline li[data-state="failed"] { color: var(--text-primary); font-weight: 600; }
+.pipeline li[data-state="failed"] .pipe-dot { border-color: var(--warn-text); color: var(--warn-text); }
 .pipe-bar { width: 26px; height: 1px; background: var(--border-strong); margin: 0 8px; flex: none; }
 .pipeline li[data-state="done"] + li .pipe-bar,
 .pipeline li:has(+ li[data-state="done"]) .pipe-bar { background: #171717; }

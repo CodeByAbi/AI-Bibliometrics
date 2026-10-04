@@ -1,6 +1,11 @@
 """Integration tests for VectorRoute execution in POST /api/v1/ask (Phase 4).
 
 Docs Reference: docs/05 Retrieval Rag Design.md §5.2, docs/06 Api Design.md §5, docs/11 Roadmap.md (Fase 4).
+
+Each test embeds a real question, scores it against the real pgvector HNSW
+index, and asserts the resulting cosine distance crosses the 0.65 gate. A mock
+cannot stand in for that, so ``requires_live_biblio`` skips these when no DSN is
+configured rather than letting them pass against a fake retriever.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ from backend.app.main import app
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_vector_route_successful_match():
+async def test_ask_endpoint_vector_route_successful_match(requires_live_biblio: None):
     """Verify semantic query matching a prototype document returns status=ok with EvidenceObjects."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -38,7 +43,9 @@ async def test_ask_endpoint_vector_route_successful_match():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_vector_route_unrelated_query_not_found():
+async def test_ask_endpoint_vector_route_unrelated_query_not_found(
+    requires_live_biblio: None,
+):
     """Verify completely unrelated query (< 0.65) returns status=not_found deterministically."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -55,7 +62,9 @@ async def test_ask_endpoint_vector_route_unrelated_query_not_found():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_vector_route_developer_mode_diagnostics():
+async def test_ask_endpoint_vector_route_developer_mode_diagnostics(
+    requires_live_biblio: None,
+):
     """Verify developer_mode on VectorRoute returns executed SQL and latency breakdown."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -81,7 +90,7 @@ async def test_ask_endpoint_vector_route_developer_mode_diagnostics():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_vector_route_with_filters():
+async def test_ask_endpoint_vector_route_with_filters(requires_live_biblio: None):
     """Verify year and document_type filters are applied to VectorRoute query."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(

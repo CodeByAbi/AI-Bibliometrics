@@ -1,6 +1,13 @@
 """Integration tests for GET /api/v1/health endpoint.
 
 Docs Reference: docs/06 Api Design.md §6, docs/11 Roadmap.md §4 (Fase 2).
+
+Only ``test_health_endpoint_success`` needs a live database: it asserts
+``database.status == "connected"`` and reads back ``public_tables_count``. The
+endpoint still answers 200 with ``unhealthy``/``degraded`` when a dependency is
+down — that contract is verified by the Docker smoke job, which deliberately
+runs with no DB and no Ollama. The remaining tests here are pure and must keep
+running without a DSN.
 """
 
 from __future__ import annotations
@@ -11,7 +18,7 @@ from backend.app.main import app
 
 
 @pytest.mark.asyncio
-async def test_health_endpoint_success():
+async def test_health_endpoint_success(requires_live_biblio: None):
     """Verify /api/v1/health returns HTTP 200 with full dependency readiness."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/v1/health")

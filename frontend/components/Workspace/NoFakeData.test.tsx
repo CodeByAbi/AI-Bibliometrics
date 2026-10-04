@@ -319,6 +319,141 @@ describe("P0-A: production build ignores the ?lab= fixture override", () => {
   });
 });
 
+/**
+ * Read the pipeline trail's screen-reader text per stage.
+ *
+ * Deliberately reads the sr-only text rather than `data-state`, because that
+ * text IS the accessibility contract: the filled/hollow dot is decoration and
+ * must never be the only signal. If a state is only visible as a colour or a
+ * dot, a test that reads `data-state` would pass while the screen-reader user
+ * is still misinformed.
+ */
+function pipelineStages(): Record<string, string> {
+  const list = screen.getByRole("list", { name: /research pipeline/i });
+  const stages: Record<string, string> = {};
+  for (const li of Array.from(list.querySelectorAll("li"))) {
+    // Unanchored on purpose: each stage's dot renders the step number, so a
+    // non-completed stage reads "2Retrieval — pending", not "Retrieval — ...".
+    const m = (li.textContent ?? "").match(/(Question|Retrieval|Evidence|Answer)\s*—\s*(.+)$/);
+    if (m) stages[m[1]] = m[2].trim();
+  }
+  return stages;
+}
+
+describe("pipeline trail reports the truth about what actually ran", () => {
+  it("a backend failure never marks Retrieval/Evidence/Answer complete", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<Workspace />);
+    await askQuestion(user);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    // The bug this locks down: `pipeStates` fell through to all-"done" for any
+    // unhandled view, so an outage painted four completed stages directly above
+    // an error saying the request failed.
+    const stages = pipelineStages();
+    expect(stages.Retrieval).toBe("failed");
+    expect(stages.Evidence).not.toBe("complete");
+    expect(stages.Answer).not.toBe("complete");
+    // The question DID get sent, so that stage is honest as complete.
+    expect(stages.Question).toBe("complete");
+  });
+
+  it("an HTTP 500 does the same — the failure kind does not change the trail", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          { request_id: "r-500", error: { error_type: "internal_error", message: "boom", status_code: 500 } },
+          500,
+        ),
+      ),
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<Workspace />);
+    await askQuestion(user);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    expect(pipelineStages().Retrieval).toBe("failed");
+    expectNoFabricatedData();
+  });
+
+  it("a genuine 200 not_found is NOT a failure: retrieval ran and Evidence completed", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(fixtureNotFound)));
+
+    render(<Workspace />);
+    await askQuestion(user);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: /no supporting evidence found/i })).toBeInTheDocument(),
+    );
+
+    // This is the distinction the pipeline must keep: the backend answered, the
+    // database was searched, and zero evidence came back. Retrieval is NOT
+    // "failed" — collapsing this into the error state would misreport a
+    // successful retrieval of nothing as a broken system.
+    const stages = pipelineStages();
+    expect(stages.Retrieval).toBe("complete");
+    expect(stages.Evidence).toBe("complete");
+    expect(stages.Answer).toBe("pending");
+    expect(stages.Retrieval).not.toBe("failed");
+  });
+
+  it("a successful answer completes all four stages (positive control)", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(fixtureHybrid)));
+
+    render(<Workspace />);
+    await askQuestion(user);
+    await waitFor(() => expect(screen.getByRole("heading", { name: /grounded answer/i })).toBeInTheDocument());
+
+    // Without this, the three assertions above could all hold for a trail that
+    // never reports "complete" at all.
+    const stages = pipelineStages();
+    expect(stages).toEqual({
+      Question: "complete",
+      Retrieval: "complete",
+      Evidence: "complete",
+      Answer: "complete",
+    });
+  });
+
+  it("Retry re-posts the same question and clears the failure", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(jsonResponse(fixtureHybrid));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(<Workspace />);
+    await askQuestion(user);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(pipelineStages().Retrieval).toBe("failed");
+
+    await user.click(screen.getByRole("button", { name: /retry query/i }));
+
+    // The retry must reach the backend again with the SAME question, not an
+    // empty or mutated body.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    for (const call of fetchMock.mock.calls) {
+      const [url, init] = call as [string, RequestInit];
+      expect(url).toContain("/api/v1/ask");
+      expect(JSON.parse(String(init.body)).question).toBe(QUESTION);
+    }
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: /grounded answer/i })).toBeInTheDocument());
+    // The stale error is gone and the trail recovered — no lingering "failed".
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(pipelineStages().Retrieval).toBe("complete");
+  });
+});
+
 describe("P0-A: fixture replay controls are dev-only", () => {
   it("hides the Replay strip in the default UI", async () => {
     const user = userEvent.setup();

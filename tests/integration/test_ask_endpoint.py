@@ -1,6 +1,21 @@
 """Integration tests for POST /api/v1/ask endpoint across Phase 3 vertical slice.
 
 Docs Reference: docs/06 Api Design.md §5, docs/11 Roadmap.md §4 (Fase 3).
+
+Every test here but the three ``validation_*`` ones reaches a retriever, and a
+retriever opens the real read-only pool. Without a configured DSN that raises
+``ValueError: DB_URL is not set``, the middleware turns it into a 500, and the
+test fails on a missing environment rather than on a broken contract - which is
+exactly how 21 of these were red in CI while CI has no database.
+
+So the retrieval tests carry the ``requires_live_biblio`` guard from
+``tests/integration/conftest.py`` and skip without a DSN. The assertions are left
+exactly as they were: weakening them to run without a database would let a
+grounding regression pass silently, which is the opposite of what these tests
+are for. The three ``validation_*`` tests reject the request before any retriever
+runs, so they stay unguarded and keep executing on every CI run.
+
+With a DSN these all run for real against the corpus.
 """
 
 from __future__ import annotations
@@ -14,7 +29,7 @@ from backend.app.main import app
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_sql_route_total_publications():
+async def test_ask_endpoint_sql_route_total_publications(requires_live_biblio: None):
     """Verify POST /api/v1/ask executes SQL query and returns grounded EvidenceObject."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         custom_req_id = str(uuid.uuid4())
@@ -39,7 +54,7 @@ async def test_ask_endpoint_sql_route_total_publications():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_sql_route_top_authors():
+async def test_ask_endpoint_sql_route_top_authors(requires_live_biblio: None):
     """Verify top authors ranking query produces grounded list and evidence objects."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -57,7 +72,7 @@ async def test_ask_endpoint_sql_route_top_authors():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_zero_match_short_circuit():
+async def test_ask_endpoint_zero_match_short_circuit(requires_live_biblio: None):
     """Verify zero-match query returns status: not_found deterministically."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -73,7 +88,9 @@ async def test_ask_endpoint_zero_match_short_circuit():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_ambiguous_entity_needs_clarification():
+async def test_ask_endpoint_ambiguous_entity_needs_clarification(
+    requires_live_biblio: None,
+):
        """Ambiguous AUTHOR returns status: needs_clarification with candidates.
 
        Author names are still asked about (W4 narrowed institutions only):
@@ -104,7 +121,9 @@ async def test_ask_endpoint_ambiguous_entity_needs_clarification():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_unresolved_topic_needs_clarification():
+async def test_ask_endpoint_unresolved_topic_needs_clarification(
+    requires_live_biblio: None,
+):
     """A topic-scoped question with no matching topic must NOT answer corpus-wide (W3).
 
     Regression for the worst failure mode found in the audit: the Gold SQL treats
@@ -133,7 +152,9 @@ async def test_ask_endpoint_unresolved_topic_needs_clarification():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_ambiguous_institution_auto_narrows():
+async def test_ask_endpoint_ambiguous_institution_auto_narrows(
+    requires_live_biblio: None,
+):
     """Whole-university names auto-narrow instead of dead-ending (W4).
 
     "Universitas" matches many department-level Scopus affiliation rows. Asking
@@ -157,7 +178,7 @@ async def test_ask_endpoint_ambiguous_institution_auto_narrows():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_developer_mode_diagnostics():
+async def test_ask_endpoint_developer_mode_diagnostics(requires_live_biblio: None):
     """Verify developer_mode returns executed SQL and full latency breakdown."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -193,7 +214,7 @@ async def test_ask_endpoint_validation_short_question():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_destructive_input_neutralized():
+async def test_ask_endpoint_destructive_input_neutralized(requires_live_biblio: None):
     """DROP-table input never reaches the database; tables stay intact (AC Fase 3)."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -212,7 +233,7 @@ async def test_ask_endpoint_destructive_input_neutralized():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_injection_filter_safe_envelope():
+async def test_ask_endpoint_injection_filter_safe_envelope(requires_live_biblio: None):
     """Tautology payload in filters yields a safe envelope, never a 500 or leak."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -230,7 +251,7 @@ async def test_ask_endpoint_injection_filter_safe_envelope():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_top_author_matches_direct_db():
+async def test_ask_endpoint_top_author_matches_direct_db(requires_live_biblio: None):
     """Endpoint ranking values match a direct COUNT(DISTINCT) query."""
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -254,7 +275,7 @@ async def test_ask_endpoint_top_author_matches_direct_db():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_unknown_entity_not_found():
+async def test_ask_endpoint_unknown_entity_not_found(requires_live_biblio: None):
     """Fictitious filtered author short-circuits to not_found without SQL."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -274,7 +295,9 @@ async def test_ask_endpoint_unknown_entity_not_found():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_vector_semantic_match_returns_evidence():
+async def test_ask_endpoint_vector_semantic_match_returns_evidence(
+    requires_live_biblio: None,
+):
     """A semantic query the corpus can answer returns evidence.
 
     P1 recalibration: this test previously asserted ``not_found`` for the
@@ -302,7 +325,7 @@ async def test_ask_endpoint_vector_semantic_match_returns_evidence():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_non_sql_route_not_found():
+async def test_ask_endpoint_non_sql_route_not_found(requires_live_biblio: None):
     """A semantic query absent from the corpus returns honest not_found.
 
     Uses a strict-absence topic (quantum computing; benchmark query
@@ -324,7 +347,7 @@ async def test_ask_endpoint_non_sql_route_not_found():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_pending_graph_route_not_found():
+async def test_ask_endpoint_pending_graph_route_not_found(requires_live_biblio: None):
     """GraphRoute answers honest not_found until Task 8 lands."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -337,7 +360,7 @@ async def test_ask_endpoint_pending_graph_route_not_found():
         assert data["status"] == "not_found"
         assert data["evidence_objects"] == []
 @pytest.mark.asyncio
-async def test_ask_endpoint_filters_ignored_surfaced():
+async def test_ask_endpoint_filters_ignored_surfaced(requires_live_biblio: None):
     """Unconsumed structured filters are reported, not silently dropped."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -354,7 +377,7 @@ async def test_ask_endpoint_filters_ignored_surfaced():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_zero_match_latency_guard():
+async def test_ask_endpoint_zero_match_latency_guard(requires_live_biblio: None):
     """Zero-match slice must stay far below the 8s LLM timeout (no synthesis call)."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         start = time.perf_counter()
@@ -398,7 +421,9 @@ async def test_ask_endpoint_validation_invalid_year_range():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_sql_llm_failure_maps_to_422(monkeypatch):
+async def test_ask_endpoint_sql_llm_failure_maps_to_422(
+    monkeypatch, requires_live_biblio: None,
+):
     """P0-3/P1-2: SQLRoute forcing the LLM path surfaces 422, never ok-hallucination."""
     from backend.app.services.retrievers.sql_retriever import SqlRetriever
     from backend.app.services.retrievers.sql_security import SqlSecurityError
@@ -419,7 +444,9 @@ async def test_ask_endpoint_sql_llm_failure_maps_to_422(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_keyword_filter_surfaced_not_dropped():
+async def test_ask_endpoint_keyword_filter_surfaced_not_dropped(
+    requires_live_biblio: None,
+):
     """P1-4: keyword filter is reported in filters_ignored, not silently dropped."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -441,7 +468,9 @@ async def test_ask_endpoint_keyword_filter_surfaced_not_dropped():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_llm_timeout_maps_to_504(monkeypatch):
+async def test_ask_endpoint_llm_timeout_maps_to_504(
+    monkeypatch, requires_live_biblio: None,
+):
     """A stalled generator is 504 llm_timeout, distinct from 422 unsupported.
 
     Exercises the REAL timeout path (the outbound HTTP client raising
@@ -482,7 +511,9 @@ async def test_ask_endpoint_llm_timeout_maps_to_504(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_timeout_and_unsupported_statuses_stay_distinct(monkeypatch):
+async def test_ask_endpoint_timeout_and_unsupported_statuses_stay_distinct(
+    monkeypatch, requires_live_biblio: None
+):
     """TIMEOUT, UNSUPPORTED and NOT_FOUND must never collapse into one code."""
     from backend.app.core.errors import LLMTimeoutError
     from backend.app.services.retrievers.sql_retriever import SqlRetriever
@@ -524,7 +555,9 @@ async def test_ask_endpoint_timeout_and_unsupported_statuses_stay_distinct(monke
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_never_fabricates_an_answer_after_llm_failure(monkeypatch):
+async def test_ask_endpoint_never_fabricates_an_answer_after_llm_failure(
+    monkeypatch, requires_live_biblio: None
+):
     """A failed generation must not produce 200 + evidence of any kind."""
     from backend.app.core.errors import LLMTimeoutError
     from backend.app.services.retrievers.sql_retriever import SqlRetriever
