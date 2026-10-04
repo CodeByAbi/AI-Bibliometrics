@@ -115,10 +115,45 @@ class Settings(BaseModel):
         "resolution + the 10 s DB statement_timeout inside the documented "
         "request SLA.",
     )
+    synthesis_timeout_s: int = Field(
+        default=90,
+        ge=5,
+        le=300,
+        description="Per-attempt timeout for narrative synthesis (POST "
+        "/api/v1/ask with llm_synthesis=true, or GET /api/v1/synthesize). "
+        "Separate from OLLAMA_TIMEOUT_S because the two calls have wildly "
+        "different work: Text-to-SQL emits 256 tokens, synthesis emits ~512. "
+        "Measured on the CPU-only reference deployment, qwen2.5-coder:7b "
+        "sustains 6.79 tok/s, so 512 tokens need ~75 s of generation. Sizing "
+        "synthesis against the 8 s health/embedding budget guaranteed a 100% "
+        "timeout rate: the answer was never produced, only reported as a "
+        "fallback. Default 90 s leaves headroom over the measured 75 s.",
+    )
+    synthesis_num_predict: int = Field(
+        default=512,
+        ge=32,
+        le=2048,
+        description="Token cap for narrative synthesis. Paired with "
+        "SYNTHESIS_TIMEOUT_S: at the measured 6.79 tok/s this budget is what "
+        "makes a single generation fit inside the timeout.",
+    )
     vector_schema: str = Field(
         default="extensions",
         description="PostgreSQL schema holding the pgvector extension "
         "(Supabase layout: 'extensions'; vanilla local installs: 'public').",
+    )
+    hnsw_ef_search: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        description="pgvector HNSW search breadth, applied once per pooled "
+        "connection via server_settings. It was previously issued as a "
+        "per-request set_config() before every ANN query, costing 29-54 ms of "
+        "measured round trips with no effect on the observed plans: at the "
+        "prototype corpus size (40 chunks) the planner chooses Seq Scan + Sort "
+        "and never touches the HNSW index. Kept so recall is correct once the "
+        "corpus passes the planner's crossover point. Lower = faster/narrower, "
+        "higher = more accurate/slower.",
     )
     cors_origins: list[str] = Field(
         default_factory=lambda: list(DEFAULT_CORS_ORIGINS),

@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 import argparse
+import os
 import pathlib
 import sys
 
@@ -44,8 +45,57 @@ ALL_PUBLIC_TABLES = [
 SUPABASE_API_ROLES = ("anon", "authenticated")
 
 
+def _vector_schema() -> str:
+    """Schema holding the pgvector extension, from the same source the app uses.
+
+    Read from the backend settings so this script and VectorRetriever can never
+    disagree about where `<=>` lives. Falls back to querying the server when the
+    settings object cannot be imported (e.g. this script run standalone against a
+    database the local .env does not describe), and to ``public`` as a last
+    resort so the grant degrades to a harmless self-grant.
+    """
+    try:
+        from backend.app.core.config import get_settings
+
+        return get_settings().vector_schema
+    except Exception:
+        pass
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT n.nspname
+                      FROM pg_extension e
+                      JOIN pg_namespace n ON n.oid = e.extnamespace
+                     WHERE e.extname = 'vector';
+                    """
+                )
+                row = cur.fetchone()
+                return row[0] if row else "public"
+    except Exception:
+        return "public"
+
+
 def _apply_readonly_grants(cur) -> list[str]:
     cur.execute("GRANT USAGE ON SCHEMA public TO app_readonly;")
+
+    # USAGE on the pgvector schema. Required, and discovered the hard way: the
+    # VectorRetriever calls the distance operator schema-qualified as
+    # `OPERATOR(extensions.<=>)`, and without USAGE on that schema PostgreSQL
+    # cannot resolve the operator — the query fails with
+    # `InsufficientPrivilegeError: permission denied for schema extensions`.
+    #
+    # USAGE grants the ability to RESOLVE objects in the schema; it conveys no
+    # privilege on anything inside it. The corpus tables live in `public`, so
+    # this does not widen data access at all — without it the role cannot read
+    # the corpus either. The schema name is read from the same VECTOR_SCHEMA
+    # setting the retriever uses, so a vanilla `public` install is a no-op here
+    # (the grant is then identical to the one above).
+    vector_schema = _vector_schema()
+    if vector_schema and vector_schema != "public":
+        cur.execute(f'GRANT USAGE ON SCHEMA "{vector_schema}" TO app_readonly;')
+        print(f"grants: USAGE on schema {vector_schema} (pgvector operator resolution)")
 
     # Strip the PostgreSQL default privileges on schema public from PUBLIC.
     # Verified on this deployment (PostgreSQL 17.6, Supabase): PUBLIC already
@@ -170,6 +220,76 @@ def _revoke_api_roles(cur, live_tables: list[str]) -> None:
         print(f"revoke: ALL on public tables + defaults FROM {role}")
 
 
+def _set_password(cur, password: str) -> None:
+    """Set the role's password from a value held only in memory.
+
+    Migration 007 owns ``ALTER ROLE app_readonly LOGIN``; this function owns the
+    credential, which is why it lives in a script instead of in
+    ``database/migrations/``.
+
+    ``ALTER ROLE ... PASSWORD`` is a utility statement, so it cannot take a bound
+    parameter — ``cur.execute("... PASSWORD %s", (password,))`` fails with
+    ``syntax error at or near "$1"``. The password is therefore composed with
+    ``psycopg.sql.Literal``, which renders it as a correctly quoted SQL string
+    literal. That is the same escaping a manual paste would get, and it keeps the
+    value out of shell history, process listings, and any tracked file.
+
+    A password rotation must also update ``DB_URL`` in ``.env``; the two are
+    separate steps because ``.env`` is git-ignored and is not part of any
+    migration ledger.
+    """
+    from psycopg import sql
+
+    cur.execute(
+        sql.SQL("ALTER ROLE app_readonly PASSWORD {}").format(sql.Literal(password))
+    )
+    print("role app_readonly: password set (value not echoed)")
+
+
+def _verify_readonly(cur, live_tables: list[str]) -> list[str]:
+    """Assert SELECT works and no write privilege exists.
+
+    The write check is the point of the whole exercise: ``docs/02`` FR7.4 and
+    ``docs/08`` §1.1 promise a read-only runtime role, and the deployment was
+    connecting as the table owner. Verifying only SELECT would pass on a role
+    that could also INSERT, which is the failure being closed.
+    """
+    missing = []
+    for t in live_tables:
+        cur.execute(
+            "SELECT has_table_privilege('app_readonly', %s, 'SELECT');", (t,)
+        )
+        if not cur.fetchone()[0]:
+            missing.append(t)
+    if missing:
+        print(f"VERIFY FAIL: no SELECT on {missing}", file=sys.stderr)
+        return missing
+
+    cur.execute(
+        """
+        SELECT COALESCE(string_agg(
+                   quote_ident(table_schema) || '.' || quote_ident(table_name),
+                   ', ' ORDER BY table_name), '')
+          FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_type = 'BASE TABLE'
+           AND has_table_privilege('app_readonly',
+                                   quote_ident(table_schema) || '.' || quote_ident(table_name),
+                                   'INSERT,UPDATE,DELETE,TRUNCATE');
+        """
+    )
+    writable = cur.fetchone()[0]
+    if writable:
+        print(
+            f"VERIFY FAIL: app_readonly can WRITE {writable}",
+            file=sys.stderr,
+        )
+        return [writable]
+
+    print(f"verify: SELECT OK and no write privilege on all {len(live_tables)} public tables")
+    return []
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -179,7 +299,25 @@ def main() -> int:
              "privileges. Off by default: whether the Supabase API roles should "
              "ever have access is a project policy decision, not a default.",
     )
+    ap.add_argument(
+        "--set-password",
+        action="store_true",
+        help="Read the role password from the APP_READONLY_PASSWORD environment "
+             "variable and apply it, then verify the role can log in and still "
+             "cannot write. The value is never written to a tracked file. "
+             "Requires migration 006 (ALTER ROLE app_readonly LOGIN).",
+    )
     args = ap.parse_args()
+
+    password = os.environ.get("APP_READONLY_PASSWORD") if args.set_password else None
+    if args.set_password and not password:
+        print(
+            "FATAL: --set-password requires APP_READONLY_PASSWORD in the "
+            "environment. The password is deliberately not accepted as a CLI "
+            "argument, where it would land in shell history and process listings.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         with get_db_connection(autocommit=True) as conn:
@@ -187,7 +325,10 @@ def main() -> int:
                 cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'app_readonly';")
                 if not cur.fetchone():
                     cur.execute("CREATE ROLE app_readonly NOLOGIN;")
-                    print("role app_readonly: CREATED (NOLOGIN; LOGIN diatur saat Task 3)")
+                    print(
+                        "role app_readonly: CREATED (NOLOGIN). Apply migration 006 "
+                        "then re-run with --set-password to enable the runtime role."
+                    )
                 else:
                     print("role app_readonly: already exists")
 
@@ -196,17 +337,26 @@ def main() -> int:
                 if args.revoke_supabase_roles:
                     _revoke_api_roles(cur, live_tables)
 
-                missing = []
-                for t in live_tables:
-                    cur.execute(
-                        "SELECT has_table_privilege('app_readonly', %s, 'SELECT');", (t,)
-                    )
-                    if not cur.fetchone()[0]:
-                        missing.append(t)
-                if missing:
-                    print(f"VERIFY FAIL: no SELECT on {missing}", file=sys.stderr)
+                if _verify_readonly(cur, live_tables):
                     return 1
-                print(f"verify: SELECT OK on all {len(live_tables)} public tables")
+
+                if args.set_password:
+                    assert password is not None  # guarded above
+                    _set_password(cur, password)
+                    cur.execute(
+                        "SELECT rolcanlogin FROM pg_roles WHERE rolname = 'app_readonly';"
+                    )
+                    row = cur.fetchone()
+                    can_login = bool(row[0]) if row else False
+                    if not can_login:
+                        print(
+                            "VERIFY FAIL: password set but rolcanlogin is still "
+                            "false. Apply migration 006 (ALTER ROLE app_readonly "
+                            "LOGIN) and re-run.",
+                            file=sys.stderr,
+                        )
+                        return 1
+                    print("verify: rolcanlogin = true")
 
                 exposed = _report_exposure(cur)
                 if exposed:

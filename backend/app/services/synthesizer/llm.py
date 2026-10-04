@@ -158,8 +158,21 @@ async def generate_synthesis_text(system: str, prompt: str) -> str:
     """Call Ollama ``/api/generate`` once and return the raw synthesis text.
 
     Raises :class:`LlmSynthesisError` on unreachable daemon, missing model,
-    non-200 status, or empty response. Timeout is ``OLLAMA_TIMEOUT_S``
+    non-200 status, or empty response. Timeout is ``SYNTHESIS_TIMEOUT_S``
     (NFR: LLM synthesis budget, docs/03 §3).
+
+    The timeout is NOT ``OLLAMA_TIMEOUT_S``. That 8 s budget is sized for the
+    health probe and the Text-to-SQL fallback, and it was previously reused here
+    while asking for 512 tokens. On the CPU-only reference deployment
+    qwen2.5-coder:7b sustains a measured 6.79 tok/s, so 512 tokens need ~75 s of
+    generation. Against an 8 s deadline that could never complete: synthesis
+    timed out on every single attempt and the deterministic renderer answered
+    100% of the time. The feature was dead in practice while reporting
+    "success" through the fallback path.
+
+    ``SYNTHESIS_TIMEOUT_S`` (90 s) is sized against the measured generation time
+    with headroom, and ``SYNTHESIS_NUM_PREDICT`` is the matching token budget, so
+    one call fits inside one deadline.
 
     Route attribution is deliberately NOT a parameter here: this function is
     monkeypatched in tests and by embedders, and a keyword-only diagnostic
@@ -175,7 +188,7 @@ async def generate_synthesis_text(system: str, prompt: str) -> str:
         "stream": False,
         "options": {
             "temperature": 0.0,
-            "num_predict": 512,
+            "num_predict": settings.synthesis_num_predict,
         },
     }
     url = f"{settings.ollama_host.rstrip('/')}/api/generate"
@@ -184,13 +197,15 @@ async def generate_synthesis_text(system: str, prompt: str) -> str:
     # responses fail fast (never retried) via the status check below.
     # A TIMEOUT is never retried (P0-B): the same model on the same box needs
     # the same wall clock, so a second attempt would burn an identical
-    # OLLAMA_TIMEOUT_S and still fail. Synthesis is opt-in and degrades to the
+    # SYNTHESIS_TIMEOUT_S and still fail. Synthesis is opt-in and degrades to the
     # deterministic renderer anyway, so there is nothing to gain by waiting
     # twice for text the request does not strictly need.
     from backend.app.core.retry import with_retry
 
     async def _post_generate():
-        return await get_http_client().post(url, json=payload, timeout=settings.ollama_timeout_s)
+        return await get_http_client().post(
+            url, json=payload, timeout=settings.synthesis_timeout_s
+        )
 
     telemetry: dict = {}
     try:
@@ -203,9 +218,11 @@ async def generate_synthesis_text(system: str, prompt: str) -> str:
         )
     except httpx.TimeoutException as exc:
         logger.warning(
-            "LLM synthesis timeout after %ss (retry_count=%d, attempts=%d) — "
-            "no retry issued, falling back to deterministic renderer",
-            settings.ollama_timeout_s,
+            "LLM synthesis timeout after %ss for %d tokens (retry_count=%d, "
+            "attempts=%d) — no retry issued, falling back to deterministic "
+            "renderer",
+            settings.synthesis_timeout_s,
+            settings.synthesis_num_predict,
             max(0, telemetry.get("attempts", 1) - 1),
             telemetry.get("attempts", 1),
             extra={
@@ -217,7 +234,7 @@ async def generate_synthesis_text(system: str, prompt: str) -> str:
             },
         )
         raise LlmSynthesisError(
-            f"Ollama synthesis timeout after {settings.ollama_timeout_s}s",
+            f"Ollama synthesis timeout after {settings.synthesis_timeout_s}s",
             REASON_TIMEOUT,
         ) from exc
     except httpx.ConnectError as exc:

@@ -93,6 +93,25 @@ class SynthesisSnapshot:
         """True once any attempt has fallen back — a latching hint for health."""
         return self.fallback_calls > 0
 
+    @property
+    def synthesis_path_dead(self) -> bool:
+        """True when synthesis has been tried and has NEVER once succeeded.
+
+        Distinct from :attr:`degraded`, which latches on a single fallback and
+        so is the wrong signal for a service-level verdict: one transient connect
+        error would flip it. This one requires the pattern that actually
+        matters — attempts happened, successes did not — which is the exact state
+        that was invisible on the reference deployment. Synthesis was requested,
+        timed out on every attempt at a deadline far shorter than the work
+        required, and the deterministic renderer answered every time, so
+        ``fallback_rate`` sat at 1.0 while ``/api/v1/health`` reported
+        ``status="healthy"`` because the renderer kept serving.
+
+        Requires ``fallback_calls > 0`` as well as ``llm_calls == 0``, so a
+        process where nobody opted into synthesis is never reported degraded.
+        """
+        return self.fallback_calls > 0 and self.llm_calls == 0
+
 
 class SynthesisStats:
     """Thread-safe counter registry for the synthesis path."""
