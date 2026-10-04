@@ -174,7 +174,7 @@ export function TranscriptView({
 
   if (loading) {
     return (
-      <section className="transcript" aria-busy="true">
+      <section className="transcript" aria-busy="true" aria-label="Conversation history">
         <p className="tr-empty">Loading conversation…</p>
       </section>
     );
