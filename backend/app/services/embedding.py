@@ -19,6 +19,19 @@ from backend.app.core.logging import logger
 _st_model: Any | None = None
 _st_lock = asyncio.Lock()
 
+# Observable state of the preferred local path. The health endpoint used to
+# report the embedding service as "ready" based purely on the Ollama probe,
+# which stays green while this model is still being materialised — so a
+# container that had just started looked healthy while the next VectorRoute
+# request was still going to block on the load. Measured on this deployment:
+# 167,679 ms with an empty HF cache, 12,012 ms with a warm cache (the volume
+# in docker-compose.yml), ~150-450 ms once resident.
+_LOCAL_MODEL_UNSET = "not_started"
+_LOCAL_MODEL_LOADING = "loading"
+_LOCAL_MODEL_LOADED = "loaded"
+_LOCAL_MODEL_UNAVAILABLE = "unavailable"
+_st_state: str = _LOCAL_MODEL_UNSET
+
 # P3 server-* (Fase B7): bounded TTL cache for repeat query embeddings —
 # seed/replay queries skip the CPU/HTTP encode entirely. Key includes model
 # + dim so a config change can never serve stale-dimension vectors.
@@ -119,7 +132,14 @@ async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: in
     except Exception as exc:
         logger.debug("Ollama /api/embed attempt failed, falling back to /api/embeddings: %s", exc)
 
-    # Fallback to /api/embeddings with one transient retry (timeouts/connect only).
+    # Fallback to /api/embeddings with one transient CONNECT retry.
+    #
+    # A TIMEOUT is not retried (P0-B). Query embedding already has two worst
+    # cases that dwarf a retry: a cold bge-m3 load measures 29.9-185.8 s and a
+    # warm call 154-185 ms. Retrying a timeout therefore either doubles an
+    # already-failed cold load or adds a second full timeout to a warm miss,
+    # and the identical retry cannot beat the same model on the same box. The
+    # caller degrades to a structured not_found / embedding error instead.
     async def _post_legacy():
         return await client.post(
             f"{base_url}/api/embeddings",
@@ -127,7 +147,13 @@ async def _embed_via_ollama(text: str, host: str, model_name: str, timeout_s: in
             timeout=req_timeout,
         )
 
-    resp = await with_retry(_post_legacy, max_attempts=2, operation="ollama-embeddings")
+    settings = get_settings()
+    resp = await with_retry(
+        _post_legacy,
+        max_attempts=1 + max(0, settings.ollama_max_retries),
+        operation="ollama-embeddings",
+        retry_on_timeout=False,
+    )
     if resp.status_code != 200:
         raise EmbeddingError(
             f"Ollama embedding request failed with HTTP {resp.status_code}",
@@ -165,7 +191,7 @@ async def generate_query_embedding_with_backend(query: str) -> tuple[list[float]
     if cached is not None:
         return cached
 
-    global _st_model
+    global _st_model, _st_state
     vector: list[float] | None = None
     backend = "local"
     local_err: Exception | None = None
@@ -175,9 +201,15 @@ async def generate_query_embedding_with_backend(query: str) -> tuple[list[float]
         if _st_model is None:
             async with _st_lock:
                 if _st_model is None:
-                    _st_model = await asyncio.to_thread(_load_sentence_transformer, model_name)
+                    _st_state = _LOCAL_MODEL_LOADING
+                    _st_model = await asyncio.to_thread(
+                        _load_sentence_transformer, model_name
+                    )
+                    _st_state = _LOCAL_MODEL_LOADED
         vector = await asyncio.to_thread(_encode_local_sync, _st_model, clean_query)
     except Exception as exc:
+        if _st_state != _LOCAL_MODEL_LOADED:
+            _st_state = _LOCAL_MODEL_UNAVAILABLE
         local_err = exc
         logger.warning(
             "Local SentenceTransformer embedding failed (%s), attempting Ollama fallback...",
@@ -229,6 +261,68 @@ async def generate_query_embedding(query: str) -> list[float]:
 
 def clear_embedding_model_cache() -> None:
     """Clear cached SentenceTransformer instance (for unit testing)."""
-    global _st_model
+    global _st_model, _st_state
     _st_model = None
+    _st_state = _LOCAL_MODEL_UNSET
     _query_cache.clear()
+
+
+def local_embedding_model_state() -> str:
+    """Report the preferred local embedding path's state, without loading it.
+
+    One of ``"loaded"``, ``"loading"``, ``"unavailable"``, ``"not_started"``.
+    Never triggers the (expensive) load itself — it is a status probe for
+    ``/api/v1/health``, which must stay cheap.
+    """
+    if _st_model is not None:
+        return _LOCAL_MODEL_LOADED
+    return _st_state
+
+
+async def prewarm_embedding_model() -> str:
+    """Load and cache the query-embedding model outside the request path.
+
+    ``generate_query_embedding_with_backend`` already caches the model in a
+    module global, but it does so lazily — on the *first* VectorRoute request.
+    Measured on this deployment that first call cost 29.9-185.8 s (the
+    SentenceTransformer is fetched from the HuggingFace Hub and its 391 weight
+    tensors are then materialised), against 154-185 ms once warm. The cost was
+    therefore being charged to a user request.
+
+    Called from the FastAPI lifespan so the download and load overlap startup
+    instead of the first question. Safe to call when the model is already
+    cached (returns immediately) and when it cannot be loaded at all: the
+    per-request path still has the Ollama bge-m3 fallback, so a pre-warm failure
+    degrades to that rather than to an error.
+
+    Returns the backend that ended up serving embeddings: ``"local"`` when the
+    SentenceTransformer is resident, ``"ollama"`` when only the HTTP fallback
+    is available.
+    """
+    global _st_model, _st_state
+    if _st_model is not None:
+        return "local"
+    settings = get_settings()
+    try:
+        async with _st_lock:
+            if _st_model is None:
+                _st_state = _LOCAL_MODEL_LOADING
+                _st_model = await asyncio.to_thread(
+                    _load_sentence_transformer, settings.embedding_model
+                )
+                _st_state = _LOCAL_MODEL_LOADED
+        logger.info(
+            "Embedding model '%s' pre-warmed (%d dims).",
+            settings.embedding_model,
+            settings.embedding_dimension,
+        )
+        return "local"
+    except Exception as exc:  # noqa: BLE001 - availability probe, never fatal
+        _st_state = _LOCAL_MODEL_UNAVAILABLE
+        logger.warning(
+            "Embedding model pre-warm failed (%s); VectorRoute will fall back to "
+            "the Ollama '%s' endpoint per request until the model is available.",
+            exc,
+            settings.embedding_model,
+        )
+        return "ollama"

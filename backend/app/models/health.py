@@ -44,6 +44,17 @@ class EmbeddingServiceHealth(BaseModel):
     model: str = Field(..., description="Configured embedding model")
     dimension: int = Field(default=1024, description="Vector dimension")
     source: str = Field(default="pgvector (stored) + Ollama/HF", description="Embedding provider source")
+    local_model_state: Literal["loaded", "loading", "unavailable", "not_started"] = Field(
+        default="not_started",
+        description="State of the PREFERRED local SentenceTransformer path, which "
+        "'status' does not cover: 'status' reflects only the Ollama probe and "
+        "stays 'ready' while the local model is still cold. 'loaded' = resident "
+        "(~150-450 ms per encode); 'loading' = the background pre-warm is still "
+        "materialising weights and a VectorRoute request arriving now blocks on "
+        "the same lock; 'unavailable' = load failed and requests fall back to "
+        "Ollama. Measured cost of that blocking window: 167,679 ms with an empty "
+        "HF cache, 12,012 ms once the cache is volume-backed.",
+    )
 
 
 class SynthesisHealth(BaseModel):
