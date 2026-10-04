@@ -921,7 +921,14 @@ async def ask_question(
             route=response.route,
             request_id=req_id,
             applied_filters=effective_filters_obj.model_dump(exclude_none=True),
-            status="complete",
+            status=(
+                # Mirror the retrieval outcome onto the stored turn. "complete"
+                # answers "did it finish?", which is true of a not_found turn too
+                # — but a restored workspace needs "did it find anything?", and
+                # recording not_found is the only way a reader can later tell
+                # "checked, found nothing" from "found a result". Migration 009.
+                "not_found" if response.status == "not_found" else "complete"
+            ),
             evidence_objects=evidence_payload,
             sources=sources_payload,
         )
