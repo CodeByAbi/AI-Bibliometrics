@@ -569,6 +569,9 @@ CREATE TABLE app.research_messages (
     applied_filters  JSONB,
     request_id       TEXT,
     route            TEXT,
+    -- Migrasi 006: provenance rendering per-turn (lihat §13.1)
+    evidence_objects JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    sources          JSONB        NOT NULL DEFAULT '[]'::jsonb,
     seq              BIGINT      GENERATED ALWAYS AS IDENTITY,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT research_messages_pkey PRIMARY KEY (message_id),
@@ -576,7 +579,9 @@ CREATE TABLE app.research_messages (
         FOREIGN KEY (session_id) REFERENCES app.research_sessions (session_id)
         ON DELETE CASCADE,
     CONSTRAINT research_messages_role_valid   CHECK (role IN ('user','assistant')),
-    CONSTRAINT research_messages_status_valid CHECK (status IN ('complete','failed')),
+    CONSTRAINT research_messages_status_valid CHECK (status IN ('complete','failed','not_found')),
+    CONSTRAINT research_messages_evidence_objects_array CHECK (jsonb_typeof(evidence_objects) = 'array'),
+    CONSTRAINT research_messages_sources_array            CHECK (jsonb_typeof(sources) = 'array'),
     CONSTRAINT research_messages_content_not_blank CHECK (btrim(content) <> '')
 );
 
@@ -612,6 +617,93 @@ CREATE TABLE app.research_session_summaries (
 - **Tidak ada foreign key dari `app` ke `public`.** Ini bukan kebijakan melainkan
   struktural: `ON DELETE CASCADE` secara fisik tidak dapat menjangkau korpus,
   sehingga AC-SESSION-9 dijamin oleh skema, bukan oleh disiplin aplikasi.
+
+### 13.1 Pengecualian Terelatasi: `evidence_objects` / `sources` (Migrasi 006)
+
+**Latar belakang.** Migrasi 005 menyatakan sebuah invarian: *tidak ada kolom pun
+pada tabel sesi yang boleh memuat metrik bibliometrik* (`publication_count`,
+`citation_count`, `top_authors`, `expertise_score`, ...). Alasannya pragmatif:
+salinan `public` yang basi, dengan tidak ada cara bagi pembaca untuk mengetahui
+yang mana yang basi.
+
+Kolom `evidence_objects` dan `sources` **memang memuat nilai metrik** —
+`EvidenceObject` membawa `value`. Jadi migrasi 006 adalah **penyempitan invarian
+yang disetujui owner**, dan ia dipagar — bukan dilonggarkan diam-diam.
+
+**Yang diizinkan — persis satu:** snapshot immutable **per-turn** dari apa yang
+sudah dibawa satu `AskResponse` terverifikasi. Sengaja JSONB agar buram dan tidak
+bisa dijumlahkan dengan aritika SQL biasa. Tujuannya hanya satu: workspace yang
+ditutup dapat menggambar kembali evidence rail dan source card persis seperti yang
+ditampilkan, tanpa menjalankan ulang RAG.
+
+Snapshot ikut dalam **satu INSERT yang sama** dengan turn-nya, di dalam transaksi
+`_persist_turn` yang sudah ada — sehingga snapshot tidak mungkin ter-commit tanpa
+turn-nya, atau sebaliknya.
+
+**Yang tetap dilarang — tidak berubah oleh migrasi ini:**
+
+1. **Bukan penyimpanan metrik kanonik.** `value` di sini tidak pernah menjadi
+   jawaban atas sebuah pertanyaan; ia bukti kwitansi atas jawaban yang sudah diberikan.
+2. **Bukan sumber kebenaran.** Tidak ada jalur retrieval, agregasi, peringkat,
+   analitik, routing, sintesis, maupun verifikasi sitasi yang boleh membaca kolom
+   ini untuk membenarkan klaim bibliometrik. Menjawab selalu requery ke `public`.
+3. **Bukan agregat.** Tidak ada rollup tingkat sesi secara sengaja. Angka yang
+   dibaca dari turn lampau harus diverifikasi ulang dengan bertanya lagi — aturan
+   yang sama seperti yang sudah mengunci `summary` dan `content` jawaban sebelumnya.
+4. **Tidak terjangkau dari jalur baca retrieval.** Pool bibliometrik runtime mengunci
+   `SET search_path = public` (`backend/app/db/pool.py`), sehingga kolom ini secara
+   struktural mustahil disentuh Text-to-SQL.
+5. **Bukan pembalikan kepemilikan.** Tetap nol FK dari `app` ke `public`.
+
+**Kunci re-verifikasi:** `request_id` (sudah ada sejak migrasi 005). Dari sebuah
+turn tersimpan, `request_id` menunjuk ke baris log aplikasi dan `AskResponse` yang
+menghasilkannya; snapshot adalah apa yang dirender, `request_id` adalah cara
+memeriksa ulang.
+
+**Pagar agar pengecualian ini tidak melebar diam-diam:**
+
+- `scripts/verify_schema.py` mengaudit kedua kolom secara eksplisit
+  (`audit_provenance_columns`): harus `jsonb`, dan hanya boleh ada di
+  `research_messages` — tidak pernah di `research_sessions`. Kolom provenance
+  bernama serupa yang tidak terdaftar akan dilaporkan.
+- `SessionRepository.list_recent_messages()` **sengaja tetap tidak** memilih kedua
+  kolom, sementara `list_messages()` memilihnya. Yang pertama menyusun prompt
+  narasi; membiarkan metrik tersimpan sampai ke prompt itu akan menciptakan
+  kembali jalur sumber-kebenaran yang tepat dipagar di atas.
+- `tests/unit/test_session_provenance.py` menanam snapshot bermusuh
+  (`"Dataset memiliki 999999 publications"`) dan membuktikan dua sisi pagar:
+  snapshot itu tetap dirender apa adanya (menyerap/memalsukan nilainya akan
+  bersikap tidak jujur — tugasnya mencatat apa yang dirender), sementara tidak ada
+  jalur baca sesi yang menjumlahkannya.
+
+### 13.2 `status` tiga nilai: `not_found` (Migrasi 009)
+
+Pasangan `('complete','failed')` dari migrasi 005 menjawab satu pertanyaan:
+*"apakah turn ini selesai?"*. menurut pertanyaan itu sebuah turn `not_found`
+**adalah** selesai — retrieval berjalan, dengan benar menemukan nol bukti, dan
+kembali deterministik tanpa pernah memanggil LLM.
+
+Workspace yang dipulihkan membutuhkan pertanyaan lain: *"apakah turn ini menemukan
+sesuatu?"*. `status = 'complete'` tidak dapat membawa itu. Akibatnya percakapan
+yang turn terakhirnya nihil memulih **tidak dapat dibedakan** dari percakapan yang
+menemukan sesuatu — dan pembaca menyimpulkan ada hasil padahal tidak ada. Itu kelas
+defek yang sama yang diperlakukan sebagai bug kebenaran di tempat lain: menyajikan
+ketiadaan sebagai keberadaan.
+
+| Nilai | Arti | Alasan |
+|---|---|---|
+| `complete` | jawaban ter-grounding dengan bukti dihasilkan | jalur normal |
+| `not_found` | retrieval berjalan dan benar mengembalikan nol bukti (short-circuit Zero-Hallucination, tanpa LLM) | **hasil truthfully, bukan error dan bukan kelalaian** |
+| `failed` | turn gagal sebelum ada jawaban apa pun | tidak ada yang dibuat-buat |
+
+Menyatukannya ke tetangga mana pun kehilangan informasi: gabung ke `complete`
+menyembunyikan hasil; gabung ke `failed` akan melaporkan short-circuit deterministik
+yang benar sebagai **sistem error** — orang akan dikejar atas perilaku
+yang memang dirancang benar. Migrasi 009 hanya memperluas CHECK; tidak ada data
+lama yang ditulis ulang, dan tidak ada tabel `public` yang disentuh.
+
+### 13.3 Catatan lain pada §13
+
 - **Tidak ada `CREATE EXTENSION` yang dibutuhkan.** `gen_random_uuid()` adalah
   builtin sejak PostgreSQL 13+.
 

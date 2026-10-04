@@ -341,8 +341,15 @@ class SessionService:
         request_id: str | None,
         applied_filters: dict[str, Any] | None = None,
         status: MessageStatusLiteral = "complete",
+        evidence_objects: list[dict[str, Any]] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """Persist the assistant turn. Transaction 3 — committed AFTER synthesis."""
+        """Persist the assistant turn. Transaction 3 — committed AFTER synthesis.
+
+        ``evidence_objects`` / ``sources`` are the migration 006 rendering
+        provenance. They default to empty, which is the correct value both for a
+        ``user``-less path and for a turn that produced no citations.
+        """
         return await self._persist_turn(
             session_id=session_id,
             role="assistant",
@@ -351,6 +358,8 @@ class SessionService:
             applied_filters=applied_filters,
             request_id=request_id,
             route=route,
+            evidence_objects=evidence_objects,
+            sources=sources,
         )
 
     async def adopt_title_from_first_question(

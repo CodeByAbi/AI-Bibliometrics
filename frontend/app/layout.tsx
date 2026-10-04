@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { WebVitals } from "../components/WebVitals";
 import "./globals.css";
+import "./sessions.css";
 
 export const metadata: Metadata = {
   title: "AI Bibliometrics — Research Intelligence Workspace",

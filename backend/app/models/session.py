@@ -194,7 +194,7 @@ class SessionStatus(BaseModel):
 #: The two-state lifecycle as a plain literal alias, for use in signatures.
 SessionStatusLiteral = Literal["active", "archived"]
 MessageRoleLiteral = Literal["user", "assistant"]
-MessageStatusLiteral = Literal["complete", "failed"]
+MessageStatusLiteral = Literal["complete", "failed", "not_found"]
 
 
 class SessionCreateRequest(BaseModel):
