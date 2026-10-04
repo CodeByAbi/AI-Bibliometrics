@@ -361,3 +361,51 @@ class TestInstitutionIndonesiaFix:
             "Paper di Indonesia?"
         )
         assert inst is None
+
+    @pytest.mark.asyncio
+    async def test_institution_type_word_is_not_stripped_from_a_proper_noun(self):
+        """"Universitas Indonesia" must keep its type word.
+
+        Regression: the extractor consumed "Universitas" as a type keyword and
+        captured only the remainder, so "Berapa publikasi Universitas Indonesia
+        tahun 2023" resolved the candidate "Indonesia" — a country. The gate
+        then partial-matched '%Indonesia%' and returned 10 unrelated candidates
+        (needs_clarification) instead of the two that actually contain the
+        phrase.
+        """
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "Berapa publikasi Universitas Indonesia tahun 2023"
+        )
+        assert inst == "Universitas Indonesia"
+
+    @pytest.mark.asyncio
+    async def test_lowercase_type_label_is_stripped(self):
+        """A lowercase generic label is a query word, not part of the name."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "Berapa publikasi institusi Universitas Andalas tahun 2023"
+        )
+        assert inst == "Universitas Andalas"
+
+    @pytest.mark.asyncio
+    async def test_english_verb_terminates_institution_capture(self):
+        """Query grammar must not leak into the institution candidate."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "How many publications did Universitas Gadjah Mada publish in 2025?"
+        )
+        assert inst == "Universitas Gadjah Mada"
+
+    @pytest.mark.asyncio
+    async def test_english_verb_terminator_does_not_truncate_of_names(self):
+        """"of" is never a terminator: it occurs inside real institution names."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "institutions University of Papua in 2025"
+        )
+        assert inst is None or "of" in inst
+
+    @pytest.mark.asyncio
+    async def test_country_word_alone_is_never_an_institution(self):
+        """"Paper di Indonesia" must not send a country into the gate."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "Paper di Indonesia tahun 2023"
+        )
+        assert inst is None
