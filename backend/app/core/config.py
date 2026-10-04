@@ -115,6 +115,40 @@ class Settings(BaseModel):
         "resolution + the 10 s DB statement_timeout inside the documented "
         "request SLA.",
     )
+    synthesis_timeout_s: int = Field(
+        default=120,
+        ge=5,
+        le=600,
+        description="Per-attempt timeout for narrative synthesis (POST "
+        "/api/v1/ask with llm_synthesis=true). Separate from OLLAMA_TIMEOUT_S "
+        "because the two calls have very different work. MEASURED on the "
+        "CPU-only reference deployment, not estimated: qwen2.5-coder:7b "
+        "(4.36 GB) sustains 5.7-7.3 tok/s generation and ~70 tok/s prompt eval, "
+        "and loading the weights costs 69 s. The resulting budget is therefore "
+        "dominated by WHETHER THE MODEL IS RESIDENT, not by generation: warm, a "
+        "real synthesis call measures 22 s (1359 prompt tokens, 128 generated); "
+        "cold, the 69 s load is added and the same call needs ~91 s. The previous "
+        "8 s budget could never emit a token, and a 60 s budget still failed 100% "
+        "of the time in practice because Ollama's default 5-minute keep_alive "
+        "evicts the model between requests, so every call was a cold one. 120 s "
+        "covers the cold path with headroom. To make synthesis FAST rather than "
+        "merely possible, raise Ollama's KEEP_ALIVE so the model stays resident; "
+        "that is a server-side setting, not an application one.",
+    )
+    synthesis_num_predict: int = Field(
+        default=128,
+        ge=32,
+        le=2048,
+        description="Token cap for narrative synthesis. Sized from measurement, "
+        "not convenience: at 5.9 tok/s, 512 tokens is ~87 s of generation, which "
+        "does not fit any budget a synchronous request should honour. 128 tokens "
+        "measured 14-19 s warm and yields a usable paragraph. Raise only together "
+        "with SYNTHESIS_TIMEOUT_S and only after re-measuring tok/s on the target "
+        "hardware. NOTE: if the model has been idle past Ollama's keep_alive, the "
+        "next request also pays the ~69 s load and will exceed this budget, "
+        "falling back to the deterministic renderer. Raise OLLAMA_KEEP_ALIVE for "
+        "deployments that need always-warm synthesis.",
+    )
     vector_schema: str = Field(
         default="extensions",
         description="PostgreSQL schema holding the pgvector extension "
