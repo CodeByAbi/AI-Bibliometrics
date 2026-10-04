@@ -23,14 +23,27 @@
 # Measured on this repo's image: site-packages 5.9 GB, of which nvidia_* =
 # 3.2 GB. The image shipped at 6.24 GB. The extra 3.2 GB buys nothing.
 #
-# So the CPU wheel index is pinned explicitly below. `+cpu` is a LOCAL VERSION
-# LABEL on a PyPI-published wheel — not a PEP 440 local version, and not
-# `--find-links`. It resolves normally from PyPI with no extra index.
+# PyPI publishes only the DEFAULT variant per platform, and on linux-x86_64 that
+# default is the CUDA build. The `+cpu` wheels live on a SEPARATE index:
+#
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+#
+# Verified: that index resolves `torch-2.14.0+cpu-cp311-cp311-manylinux_2_28_x86_64.whl`.
+# With PyPI alone it fails outright — "No matching distribution found for
+# torch==2.14.0+cpu" — so plain PyPI cannot satisfy this line.
+#
+# !! Therefore requirements.txt is NOT pip-installable on its own. Always:
+#      pip install -r requirements-dev.txt          (dev/CI, applies the index)
+#      docker/backend.Dockerfile                    (applies the index explicitly)
+#    The `--extra-index-url` is passed by THOSE consumers, not declared here, so
+#    that the production build and CI resolve torch identically from one lockfile.
+#    The Windows dev venv happens to already have +cpu, which is why this only
+#    surfaced on the Linux image — do not assume your local venv proves anything.
 #
 # Do NOT "simplify" this back to plain `torch==`. That silently reintroduces
 # 3.2 GB of dead CUDA libraries on every Linux build, and nothing fails — the
-# image just gets 5x bigger. This is pinned at requirements.txt:41-45 for the
-# same reason docker-compose.yml pins the Ollama digest: bit-reproducibility.
+# image just gets ~5x bigger. Pinned for the same reason docker-compose.yml pins
+# the Ollama digest: bit-reproducibility.
 # If a future GPU host needs CUDA, that is a deliberate new decision (separate
 # requirements file / build arg), not a casual version edit here.
 # ---------------------------------------------------------------------------
