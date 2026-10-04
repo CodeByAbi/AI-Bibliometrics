@@ -1,0 +1,92 @@
+{
+  "baseline_version": "v1",
+  "generated_from": "reports/retrieval_benchmark/sweep_v2.json",
+  "purpose": "Committed regression floor for tests/integration/test_retrieval_benchmark.py. Regenerate with `python scripts/bench_retrieval.py --tag sweep_v2` after an intentional retrieval change, and review the diff before committing it.",
+  "selected_threshold": 0.48,
+  "operational": {
+    "embedding_model": "BAAI/bge-m3",
+    "embedding_dimension": 1024,
+    "embedding_backend": "local",
+    "top_k": 8,
+    "granularity": "publication",
+    "benchmark_version": "v1",
+    "benchmark_file": "retrieval_benchmark_v1.json",
+    "corpus_publications": 20,
+    "corpus_chunks": 40,
+    "timestamp": "2026-10-04T12:54:32"
+  },
+  "regression_floor": {
+    "note": "The integration gate asserts the live run is at or above every floor below.",
+    "selected_gate": {
+      "ndcg_at_k": 0.8257,
+      "precision_at_k": 0.706,
+      "recall_at_k": 0.8043,
+      "recall_ceiling": 0.9861,
+      "hit_at_k": 0.8861,
+      "mrr": 0.8713,
+      "negative_fp_rate": 0.0,
+      "negative_fp_count": 0,
+      "mean_corpus_top_negative": 0.4319,
+      "max_corpus_top_negative": 0.4793,
+      "mean_returned_positive": 1.7975,
+      "n_queries": 94,
+      "n_positive": 79,
+      "n_negative": 15
+    },
+    "per_category_ndcg_floor": {
+      "ambiguous": {
+        "0.48": 0.3229
+      },
+      "conceptual": {
+        "0.48": 0.5341
+      },
+      "natural_language": {
+        "0.48": 0.9408
+      },
+      "negative": {
+        "0.48": 0.0
+      },
+      "paraphrase": {
+        "0.48": 0.8977
+      },
+      "short": {
+        "0.48": 0.8886
+      },
+      "title_entity": {
+        "0.48": 1.0
+      }
+    },
+    "negative_ceiling": {
+      "max_negative_corpus_top_similarity": 0.4793,
+      "note": "A gate at or above this value cannot admit any strict-absence negative in the benchmark. The selected gate sits exactly on it, so this floor has zero margin at prototype scale - see reports/retrieval_calibration.md Known limitations."
+    }
+  },
+  "historical_baseline_0_65": {
+    "note": "Pre-calibration operating point, kept for before/after reporting. Not enforced as a floor: the whole point of the recalibration was that 0.65 was far below it.",
+    "metrics": {
+      "ndcg_at_k": 0.3991,
+      "precision_at_k": 0.4051,
+      "recall_at_k": 0.3956,
+      "recall_ceiling": 0.9861,
+      "hit_at_k": 0.4051,
+      "mrr": 0.4051,
+      "negative_fp_rate": 0.0,
+      "negative_fp_count": 0,
+      "mean_corpus_top_negative": 0.4319,
+      "max_corpus_top_negative": 0.4793,
+      "mean_returned_positive": 0.4051,
+      "n_queries": 94,
+      "n_positive": 79,
+      "n_negative": 15
+    },
+    "per_category_ndcg": {
+      "ambiguous": 0.0,
+      "conceptual": 0.0,
+      "natural_language": 0.6351,
+      "negative": 0.0,
+      "paraphrase": 0.0,
+      "short": 0.125,
+      "title_entity": 1.0
+    }
+  }
+}

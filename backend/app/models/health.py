@@ -117,6 +117,17 @@ class HealthResponse(BaseModel):
 
     status: Literal["healthy", "degraded", "unhealthy"]
     version: str = Field(default="1.0.0", description="API application version")
+    degraded: bool = Field(
+        default=False,
+        description="True when the service is answering but a capability is "
+        "effectively dead — currently only the narrative synthesis path "
+        "(attempted, never once succeeded). Deliberately separate from "
+        "`status`: `status` stayed `healthy` while synthesis timed out on 100% "
+        "of requests, because the deterministic renderer kept serving. A "
+        "dashboard that reads only `status` could not see it; this field is at "
+        "the top level so it cannot be missed. Does NOT flip on a single "
+        "fallback, only on a path with no successes at all.",
+    )
     database: DatabaseHealth
     llm_service: LLMServiceHealth
     embedding_service: EmbeddingServiceHealth

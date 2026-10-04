@@ -54,14 +54,47 @@ def _titles_match(cite_norm: str, valid_norm: str) -> bool:
 
 
 def _years_match(cite_year: Optional[int], evidence_year: Optional[int]) -> bool:
-    """Strict year check: numeric years must be equal.
+    """Strict year check against a single evidence record.
 
-    Either side unknown (None / n.d.) defers to title matching alone so
-    legitimate "n.d." citations are not rejected.
+    Rules, in both directions:
+      * A numeric citation year must equal the evidence year. A correct DOI or
+        title with a hallucinated year is still a hallucination and is stripped
+        (zero-hallucination invariant).
+      * ``n.d.`` (cite_year is None) does NOT bypass the check. Previously
+        either side being None returned True, which made ``n.d.`` a universal
+        escape hatch: a generator could emit ``[Title, n.d., DOI]`` for every
+        citation and never have a year verified at all. If the evidence carries
+        a year, ``n.d.`` is now a mismatch.
+      * The reverse stays permissive: when the evidence itself has no year, a
+        numeric citation year cannot contradict it, so the citation stands.
+
+    The per-record call site is what makes this meaningful — the previous code
+    asked "does this year match ANY valid year", which is not the same question
+    as "does this year match the record this citation points at".
     """
-    if cite_year is None or evidence_year is None:
+    if cite_year is None:
+        return evidence_year is None
+    if evidence_year is None:
         return True
     return cite_year == evidence_year
+
+
+def _collapse_whitespace(text: str) -> str:
+    """Collapse runs of spaces/tabs without touching line structure.
+
+    The previous ``re.sub(r" +", " ", ...)`` only handled literal spaces, so a
+    run of spaces around a stripped citation could still leave ``"a  b"`` while
+    tabs and non-breaking spaces passed through untouched. Line breaks are
+    preserved deliberately: answers are multi-line and joining them would change
+    the rendered output.
+
+    Also repairs the punctuation a removal leaves behind, e.g. ``"word ."`` →
+    ``"word."`` and ``"a , b"`` → ``"a, b"``.
+    """
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"[ \t]+([.,;:!?])", r"\1", text)
+    text = re.sub(r"([.,;:!?])(?=[ \t]*[\n\r])", r"\1", text)
+    return text.strip()
 
 
 class CitationVerifier:
@@ -75,6 +108,25 @@ class CitationVerifier:
     ) -> CitationVerificationResult:
         """Scan text for citations, verify against known valid sources, and strip fictitious ones.
 
+        Verification is per-record and conjunctive: a citation is verified only
+        if EVERY field it asserts agrees with ONE evidence record.
+
+        The previous implementation was disjunctive — rule 1 accepted a known DOI
+        plus a matching year while never looking at the title, and rule 2
+        accepted a matching title plus year while never looking at the DOI.
+        Both halves are separately exploitable, and both were confirmed against
+        this corpus:
+
+          * ``[Real Title, 2025, 10.9999/fabricated]`` — the fabricated DOI is
+            unknown, so rule 1 declined, and rule 2 verified on the title alone.
+            A DOI that exists nowhere in the database survived verification.
+          * ``[Fabricated Title, 2025, <real DOI>]`` — rule 1 verified on the
+            real DOI and year, so a title that appears in no evidence survived.
+
+        Under the zero-hallucination invariant both must be stripped. Now a DOI
+        citation must match the title AND year of the record owning that DOI, and
+        a ``no-doi`` citation must match the title AND year of some record.
+
         Parameters
         ----------
         text : str
@@ -85,17 +137,12 @@ class CitationVerifier:
         if not text:
             return CitationVerificationResult(cleaned_text="", verified_citations=[], unverified_citations=[])
 
-        # Build index of valid citations
-        valid_dois: Set[str] = set()
-        valid_titles: Set[str] = set()
-        valid_title_years: Set[Tuple[str, Optional[int]]] = set()
-        valid_doi_to_year: Dict[str, Optional[int]] = {}
+        # One entry per evidence record: (doi_lower | None, normalized title, year).
+        # Kept as a list rather than a dict because title matching is fuzzy
+        # (Jaccard), so it cannot be keyed by exact normalized title.
+        records: List[Tuple[Optional[str], str, Optional[int]]] = []
 
         for src in valid_sources:
-            doi = None
-            title = None
-            year = None
-
             if isinstance(src, dict):
                 doi = src.get("doi")
                 title = src.get("title")
@@ -106,59 +153,52 @@ class CitationVerifier:
                 year = getattr(src, "year", None)
 
             norm_year = int(year) if year is not None else None
+            doi_key = None
             if doi and str(doi).strip() and str(doi).strip().lower() != "no-doi":
                 doi_key = str(doi).strip().lower()
-                valid_dois.add(doi_key)
-                valid_doi_to_year[doi_key] = norm_year
             if title:
                 norm_t = _normalize_title(str(title))
                 if norm_t:
-                    valid_titles.add(norm_t)
-                    valid_title_years.add((norm_t, norm_year))
+                    records.append((doi_key, norm_t, norm_year))
 
         verified: List[str] = []
         unverified: List[str] = []
 
         def _replace_cite(match: re.Match) -> str:
-            full_cite = match.group(0)
-            cite_title = match.group(1).strip()
-            cite_year_str = match.group(2).strip()
-            cite_doi = match.group(3).strip()
+            # Annotated: `Match.group` is typed as returning Any on an unparameterised
+            # Match, which made `return full_cite` an implicit Any return.
+            full_cite: str = match.group(0)
+            cite_title: str = match.group(1).strip()
+            cite_year_str: str = match.group(2).strip()
+            cite_doi: str = match.group(3).strip()
 
             cite_year = int(cite_year_str) if cite_year_str.isdigit() else None
             norm_cite_title = _normalize_title(cite_title)
+            cite_doi_key = (
+                cite_doi.strip().lower()
+                if cite_doi.strip().lower() != "no-doi"
+                else None
+            )
 
-            # Verification rule 1: DOI + strict year match.
-            # DOI alone is not enough: a correct DOI with a hallucinated
-            # year must still be stripped (zero-hallucination invariant).
-            if cite_doi.lower() != "no-doi" and cite_doi.lower() in valid_dois:
-                evidence_year = valid_doi_to_year.get(cite_doi.lower())
-                if _years_match(cite_year, evidence_year):
-                    verified.append(full_cite)
-                    return full_cite
-                logger.warning("Stripped citation with DOI/year mismatch: %s", full_cite)
-                unverified.append(full_cite)
-                return ""
-
-            # Verification rule 2: Title + strict year match.
-            is_valid_title = False
-            for vt, vy in valid_title_years:
-                if _titles_match(norm_cite_title, vt) and _years_match(cite_year, vy):
-                    is_valid_title = True
-                    break
-
-            if is_valid_title:
+            # Conjunctive match against a SINGLE record. Every field the citation
+            # asserts must agree with the same record; fields it does not assert
+            # are not consulted.
+            for rec_doi, rec_title, rec_year in records:
+                if cite_doi_key is not None and rec_doi != cite_doi_key:
+                    continue
+                if not _titles_match(norm_cite_title, rec_title):
+                    continue
+                if not _years_match(cite_year, rec_year):
+                    continue
                 verified.append(full_cite)
                 return full_cite
 
-            # Unverified / Hallucinated citation: strip from text and record
             logger.warning("Stripped unverified citation from answer: %s", full_cite)
             unverified.append(full_cite)
             return ""
 
         cleaned = CITATION_PATTERN.sub(_replace_cite, text)
-        # Clean up any leftover double spaces
-        cleaned = re.sub(r" +", " ", cleaned).strip()
+        cleaned = _collapse_whitespace(cleaned)
 
         return CitationVerificationResult(
             cleaned_text=cleaned,

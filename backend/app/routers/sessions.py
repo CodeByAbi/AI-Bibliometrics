@@ -43,6 +43,7 @@ from backend.app.models.session import (
     SessionDetailResponse,
     SessionListItem,
     SessionMessageResponse,
+    SessionUpdateRequest,
 )
 from backend.app.services.session_repository import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from backend.app.services.session_service import SessionService
@@ -69,6 +70,9 @@ def _to_list_item(row: dict) -> SessionListItem:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         last_message_at=row["last_message_at"],
+        message_count=row.get("message_count") or 0,
+        source_count=row.get("source_count") or 0,
+        last_route=row.get("last_route"),
     )
 
 
@@ -81,6 +85,8 @@ def _to_message(row: dict) -> SessionMessageResponse:
         created_at=row["created_at"],
         request_id=row.get("request_id"),
         route=row.get("route"),
+        evidence_objects=row.get("evidence_objects") or [],
+        sources=row.get("sources") or [],
     )
 
 
@@ -172,6 +178,43 @@ async def get_session(session_id: uuid.UUID) -> SessionDetailResponse:
         messages=[_to_message(m) for m in row["messages"]],
         summary=row.get("summary"),
     )
+
+
+@router.patch(
+    "/sessions/{session_id}",
+    response_model=SessionCreatedResponse,
+    summary="Rename a research session",
+)
+async def update_session(
+    session_id: uuid.UUID, payload: SessionUpdateRequest
+) -> SessionCreatedResponse:
+    """Rename a session. Touches nothing else.
+
+    The one mutation a user owns: a title. It is NOT a generic update — the
+    request model sets ``extra="forbid"``, so there is no field here that could
+    reach the transcript, the lifecycle, or anything bibliometric.
+
+    A supplied title always wins, including over the placeholder and over a
+    previously auto-derived title. That is the point of an explicit rename: the
+    user is asserting the name, so ``adopt_title_from_first_question`` must not be
+    able to overwrite it afterwards. Its SQL predicate still only fires while the
+    title equals the placeholder, so the two paths cannot fight.
+
+    404 ``session_not_found`` when the session does not exist; 422 for a blank or
+    oversized title; 503 ``session_store_unavailable`` when unconfigured.
+    """
+    service = await SessionService.create()
+    row = await service.rename_session(session_id, payload.title)
+    logger.info(
+        "Session renamed: id=%s",
+        session_id,
+        extra={
+            "endpoint": "/api/v1/sessions",
+            "session_id": str(session_id),
+            "operation": "rename",
+        },
+    )
+    return _to_created(row)
 
 
 @router.delete(

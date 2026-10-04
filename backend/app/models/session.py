@@ -24,9 +24,51 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from backend.app.core.logging import logger
+from backend.app.models.ask import EvidenceObject, SourceItem
+
+#: Generic bound for :func:`_keep_valid`.
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+def _keep_valid(items: Any, model: type[_ModelT], field: str) -> list[Any]:
+    """Keep only the entries of ``items`` that validate against ``model``.
+
+    Used by the migration 006 provenance fields. A stored snapshot is written
+    once and read on every session open, so one malformed entry — from a partial
+    migration, a hand-edited row, or a payload that no longer matches the current
+    EvidenceObject shape — would otherwise make the entire conversation
+    unopenable. Losing one evidence card degrades a view; losing the transcript
+    loses the user's work.
+
+    Dropping is sound precisely because these fields are decorative. The
+    re-verification path is ``request_id`` plus a fresh ``/api/v1/ask``, and
+    neither reads this column — so a dropped entry costs a rendered card, never a
+    fact. That also means this must never be reused for a field whose value is
+    load-bearing.
+    """
+    if not isinstance(items, list):
+        return []
+    kept: list[Any] = []
+    dropped = 0
+    for raw in items:
+        try:
+            kept.append(model.model_validate(raw))
+        except ValidationError:
+            dropped += 1
+    if dropped:
+        logger.warning(
+            "Dropped %d unrenderable %s entr%s from a stored provenance snapshot; "
+            "the rest of the turn is still returned. Re-verify via request_id.",
+            dropped,
+            field,
+            "y" if dropped == 1 else "ies",
+        )
+    return kept
 
 #: FilterParams keys that may be carried in ``applied_filters`` and replayed as
 #: conversation scope. Deliberately an explicit allow-list rather than "whatever
@@ -152,7 +194,7 @@ class SessionStatus(BaseModel):
 #: The two-state lifecycle as a plain literal alias, for use in signatures.
 SessionStatusLiteral = Literal["active", "archived"]
 MessageRoleLiteral = Literal["user", "assistant"]
-MessageStatusLiteral = Literal["complete", "failed"]
+MessageStatusLiteral = Literal["complete", "failed", "not_found"]
 
 
 class SessionCreateRequest(BaseModel):
@@ -200,8 +242,20 @@ class SessionCreatedResponse(BaseModel):
 class SessionListItem(BaseModel):
     """One row of GET /api/v1/sessions.
 
-    Metadata only, by design: the list endpoint must not drag the transcript
-    along, so a user with 200 sessions does not pay for 200 message histories.
+    Metadata plus three per-session counts, by design: the list endpoint must not
+    drag the transcript along, so a user with 200 sessions does not pay for 200
+    message histories.
+
+    The counts are computed in SQL (see ``SessionRepository.list_sessions``) and
+    are the sidebar's only content, so a client never derives them from a
+    transcript it did not fetch. Semantics:
+
+    ``message_count``  every persisted turn, user turns and ``failed`` turns
+                      included, because it answers "how long is this transcript".
+    ``source_count``   distinct publications the session's assistant turns rest
+                      on, so repeating one citation does not inflate the count.
+    ``last_route``     route of the most recent answered turn; ``None`` for a
+                      session with no answer yet, which the UI must tolerate.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -212,6 +266,46 @@ class SessionListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_message_at: datetime | None = None
+    message_count: int = Field(default=0, ge=0)
+    source_count: int = Field(default=0, ge=0)
+    last_route: str | None = None
+
+
+class SessionUpdateRequest(BaseModel):
+    """Body of PATCH /api/v1/sessions/{session_id}.
+
+    Rename only. Deliberately not a general-purpose update: there is no field
+    here that could change a session's lifecycle, its transcript, or anything
+    bibliometric. An explicit rename is the one mutation a user legitimately owns.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Judul sesi baru. Dikapitalkan user; menimpa judul turunan.",
+    )
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, v: str) -> str:
+        """Collapse whitespace, then reject a blank title.
+
+        Order matters: length is checked by Field against the raw value, then
+        trimmed here. Checking emptiness BEFORE trimming would let "   " through
+        min_length=1 and only fail later against the database CHECK constraint —
+        a 500 instead of a 422, and with no field path.
+
+        Normalising rather than rejecting surrounding whitespace means a pasted
+        title with a trailing newline is accepted, which is what a user pasting
+        from a browser actually wants.
+        """
+        t = " ".join(v.split())
+        if not t:
+            raise ValueError("title must not be blank")
+        return t
 
 
 class SessionMessageResponse(BaseModel):
@@ -228,6 +322,27 @@ class SessionMessageResponse(BaseModel):
     #: its AskResponse. Never evidence.
     request_id: str | None = None
     route: str | None = None
+
+    #: Migration 006 rendering provenance. An immutable per-turn snapshot of what
+    #: the verified AskResponse carried, so a reopened workspace redraws its
+    #: evidence rail and source cards without re-running RAG.
+    #:
+    #: SECURITY: these are untrusted-shaped, user-reachable rendering data. They
+    #: are NOT a source of truth and must never be used to answer a bibliometric
+    #: question — retrieval re-queries `public` for that. See migration 006 for
+    #: the full fence.
+    evidence_objects: list[EvidenceObject] = Field(default_factory=list)
+    sources: list[SourceItem] = Field(default_factory=list)
+
+    @field_validator("evidence_objects", mode="before")
+    @classmethod
+    def _drop_bad_evidence(cls, v: Any) -> Any:
+        return _keep_valid(v, EvidenceObject, "evidence_objects")
+
+    @field_validator("sources", mode="before")
+    @classmethod
+    def _drop_bad_sources(cls, v: Any) -> Any:
+        return _keep_valid(v, SourceItem, "sources")
 
 
 class SessionDetailResponse(BaseModel):

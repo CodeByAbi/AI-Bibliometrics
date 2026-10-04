@@ -70,6 +70,34 @@ class EvidenceUnifier:
         # Case A: Single aggregate scalar (e.g., total_publications / count)
         if len(rows) == 1 and ("total_publications" in cols or "count" in cols):
             val = rows[0].get("total_publications", rows[0].get("count", 0))
+
+            # A scalar aggregate of 0 is not evidence (W8).
+            #
+            # The row exists, so `result.is_empty` is False and the request
+            # returned `status="ok"` with a confident, well-formed claim reading
+            # "total publikasi tercatat sebanyak 0". But a COUNT of zero means
+            # the retrieval found nothing — which is precisely the condition the
+            # zero-evidence invariant (<200 ms, `status="not_found"`) exists to
+            # short-circuit. Treating it as a finding gave a not-found answer the
+            # appearance of a measured result.
+            #
+            # This is also what masked a real defect: "between 2021 and 2023"
+            # silently became `p.year = 2021`, reported 21 publications, and the
+            # wrong year predicate was never questioned because 21 is a
+            # perfectly respectable-looking answer. Fixing the year parser
+            # removes the cause; this removes the class of masking.
+            numeric_val = val if isinstance(val, (int, float)) else None
+            if numeric_val is not None and float(numeric_val) == 0.0:
+                return EvidenceSet(
+                    query=question,
+                    evidence_objects=[],
+                    sources=[],
+                    items=[],
+                    filters_ignored=list(result.filters_ignored),
+                    sql_executed=result.sql_executed,
+                    zero_evidence_class="zero_aggregate",
+                )
+
             claim_text = f"Berdasarkan data database, total publikasi tercatat sebanyak {val}."
             if filters and filters.year:
                 claim_text = f"Berdasarkan data database, total publikasi pada tahun {filters.year} adalah {val}."

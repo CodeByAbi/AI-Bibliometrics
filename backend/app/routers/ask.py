@@ -33,6 +33,7 @@ from backend.app.services.retrievers.graph_retriever import GraphRetriever
 from backend.app.services.retrievers.hybrid_retriever import HybridRetriever
 from backend.app.services.retrievers.sql_retriever import SqlRetriever
 from backend.app.services.retrievers.vector_retriever import VectorRetriever
+from backend.app.services.intent_grammar import YearFilter
 from backend.app.services.router import (
     EntityResolutionGate,
     EntityResolutionResult,
@@ -221,6 +222,7 @@ async def _handle_sql_route(
         filters=payload.filters,
         resolved_author_id=resolution.resolved_author_id,
         resolved_institution_id=resolution.resolved_institution_id,
+        year_filter=_year_filter_from(decision),
     )
     latencies["sql_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
     # Split the opaque retrieval number into the three stages an operator
@@ -256,7 +258,7 @@ async def _handle_sql_route(
                 latencies=latencies,
                 sql_executed=sql_result.sql_executed,
                 sql_source=sql_result.sql_source,
-                zero_evidence_class="empty_result_set",
+                zero_evidence_class=ev_set.zero_evidence_class or "empty_result_set",
                 evidence_set=_debug_evidence_set(None, ev_set),
             ),
         )
@@ -569,6 +571,59 @@ async def _handle_hybrid_route(
     )
     latencies["hybrid_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
 
+    # 0. Unresolved topic scope -> ask the user, never answer corpus-wide.
+    #
+    # This check must come BEFORE the zero-evidence short circuit. A topic-scoped
+    # question whose topic matches no `topics.topic_name` previously ran with
+    # topic_id=NULL, which the Gold SQL reads as "no topic filter" — so it
+    # returned every topic's trend rows and the answer read as though the
+    # requested topic had been analysed. The scope was never established, and
+    # the response claimed otherwise.
+    if hybrid_result.unresolved_topic_query:
+        total_elapsed_ms = _stamp_total(latencies, start_time)
+        logger.info(
+            "Ask completed: status='needs_clarification' route='HybridRoute' "
+            "total_ms=%s (topic unresolved: query=%r sim=%s)",
+            total_elapsed_ms,
+            hybrid_result.unresolved_topic_query,
+            hybrid_result.topic_best_similarity,
+            extra={"request_id": req_id, "endpoint": "/api/v1/ask", "route": "HybridRoute"},
+        )
+
+        # No off_topic/not_found split here, deliberately. It was tempting to use
+        # the centroid cosine to decide "is this off-corpus?", but the measured
+        # bands overlap (off-topic 0.3403-0.5047 vs on-topic 0.4698-0.5946), so
+        # any cut misclassifies known cases. See HybridRetriever's
+        # _TOPIC_CENTROID_NOTE. needs_clarification with the real topic list is
+        # truthful in both directions: it never claims a topic was analysed, and
+        # it shows the user what can be.
+        return AskResponse(
+            request_id=req_id,
+            status="needs_clarification",
+            route="HybridRoute",
+            answer=(
+                f"Topik '{hybrid_result.unresolved_topic_query}' tidak cocok dengan "
+                "nama topik pada database. Silakan pilih topik yang dimaksud:"
+            ),
+            evidence_objects=[],
+            sources=[],
+            candidates=hybrid_result.topic_candidates,
+            filters_ignored=hybrid_result.filters_ignored,
+            answered_via_fallback=decision.answered_via_fallback,
+            unverified_citations=[],
+            debug=_make_debug(
+                payload=payload,
+                decision=decision,
+                latencies=latencies,
+                sql_executed=hybrid_result.sql_executed,
+                zero_evidence_class="topic_unresolved",
+                evidence_set=_debug_evidence_set(
+                    None,
+                    EvidenceSet(query=payload.question),
+                ),
+            ),
+        )
+
     # 1. Zero-evidence short circuit at retriever boundary (<200ms invariant)
     if hybrid_result.is_empty:
         total_elapsed_ms = _stamp_total(latencies, start_time)
@@ -859,13 +914,23 @@ async def ask_question(
     # ---- Session post-flight -------------------------------------------
     if session_service is not None and payload.session_id is not None:
         t_assistant = time.perf_counter()
+        evidence_payload, sources_payload = _provenance_payload(response)
         await session_service.record_assistant_message(
             session_id=payload.session_id,
             content=response.answer,
             route=response.route,
             request_id=req_id,
             applied_filters=effective_filters_obj.model_dump(exclude_none=True),
-            status="complete",
+            status=(
+                # Mirror the retrieval outcome onto the stored turn. "complete"
+                # answers "did it finish?", which is true of a not_found turn too
+                # — but a restored workspace needs "did it find anything?", and
+                # recording not_found is the only way a reader can later tell
+                # "checked, found nothing" from "found a result". Migration 009.
+                "not_found" if response.status == "not_found" else "complete"
+            ),
+            evidence_objects=evidence_payload,
+            sources=sources_payload,
         )
         latencies["session_persist_assistant_ms"] = round(
             (time.perf_counter() - t_assistant) * 1000, 2
@@ -894,6 +959,41 @@ async def ask_question(
     return response
 
 
+def _provenance_payload(
+    response: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Serialise a response's evidence and sources for per-turn storage.
+
+    ``mode="json"`` rather than python-mode ``model_dump``: the repository binds
+    these as ``::jsonb`` and hands them to ``json.dumps``, so any non-JSON type
+    that survived python-mode (a Decimal, a UUID) would raise inside the INSERT.
+    That raise is swallowed by ``_persist_turn``, which would drop the assistant
+    turn entirely — losing the answer, not just its provenance. JSON mode makes
+    that impossible by construction.
+
+    Returns empty lists for a response with no evidence, which is the correct
+    value for a ``not_found`` turn: it genuinely cited nothing, and inventing an
+    empty-but-present evidence set would misrepresent that as a finding.
+
+    Deliberately NOT gated on ``developer_mode``. These are the same
+    ``EvidenceObject`` / ``SourceItem`` values the caller already receives in the
+    normal response body — not debug metadata — and withholding them for
+    non-developer callers would make the workspace unrestorable for exactly the
+    users who use it.
+    """
+    evidence = [
+        item.model_dump(mode="json")
+        for item in (response.evidence_objects or [])
+        if hasattr(item, "model_dump")
+    ]
+    sources = [
+        item.model_dump(mode="json")
+        for item in (response.sources or [])
+        if hasattr(item, "model_dump")
+    ]
+    return evidence, sources
+
+
 def _with_session_latencies(
     latencies: dict[str, float], existing: dict[str, float]
 ) -> dict[str, float]:
@@ -907,6 +1007,106 @@ def _with_session_latencies(
     merged = dict(existing)
     merged.update(latencies)
     return merged
+
+
+#: Year operators that ``FilterParams`` can represent. ``gt``/``lt`` (strict
+#: inequality) have no field, so they are reported as dropped rather than being
+#: silently widened to ``>=``/``<=``.
+_PROPAGATABLE_YEAR_OPS = frozenset({"eq", "gte", "lte", "between"})
+
+
+def _year_filter_from(decision: RouteDecision) -> YearFilter | None:
+    """Rehydrate the router's ``year_filter`` entity into a typed YearFilter.
+
+    Returns ``None`` when the question carried no temporal constraint, or when
+    the entity cannot be revalidated. A ``None`` here is safe: the retrievers
+    fall back to deriving the constraint from ``filters``/free text, so this is
+    an optimisation plus a guarantee of one consistent parse, never a dependency.
+    """
+    raw = decision.extracted_entities.get("year_filter")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return YearFilter.model_validate(raw)
+    except ValueError:  # pragma: no cover - defensive
+        logger.warning("router year_filter failed revalidation: %s", raw)
+        return None
+
+
+def _apply_router_year_constraint(
+    payload: AskRequest,
+    decision: RouteDecision,
+) -> tuple[AskRequest, list[str]]:
+    """Fold the router's free-text year parse into ``payload.filters``.
+
+    Why this exists
+    ---------------
+    ``QuestionRouter.classify_route`` already derives a typed ``YearFilter``
+    from the question text and puts it in ``decision.extracted_entities``, but
+    only the SQLRoute template used to consume it. VectorRoute, GraphRoute and
+    HybridRoute received ``payload.filters`` — the *structured* filters — and
+    nothing else, so "tren topik X setelah 2020" silently dropped the year. That
+    is a grounding failure, not a cosmetic one: the answer looks scoped and is
+    not.
+
+    Every route handler reads ``payload.filters``, so rewriting the payload once
+    here propagates the constraint to all four routes with no per-handler change
+    and no way for a new handler to forget it.
+
+    Returns the (possibly copied) payload plus the names of constraints that
+    could not be represented, for ``filters_ignored``. Reporting a dropped
+    constraint is mandatory: the previous silent drop is what made the wrong
+    answer look right.
+    """
+    year_filter = decision.extracted_entities.get("year_filter")
+    if not year_filter:
+        return payload, []
+
+    op = year_filter.get("op")
+    dropped: list[str] = []
+    if op not in _PROPAGATABLE_YEAR_OPS:
+        dropped.append(f"year_{op}")
+
+    base = payload.filters or FilterParams()
+    updates: dict[str, Any] = {}
+    if op == "eq":
+        updates["year"] = year_filter.get("year")
+    elif op == "gte":
+        updates["year_from"] = year_filter.get("year")
+    elif op == "lte":
+        updates["year_to"] = year_filter.get("year")
+    elif op == "between":
+        lo = year_filter.get("year_from")
+        hi = year_filter.get("year_to")
+        if lo is not None and hi is not None:
+            # year_to >= year_from is validated on FilterParams; a reversed range
+            # was already normalised by build_year_filter, but guard anyway so a
+            # 422 is impossible on an internal invariant.
+            updates["year_from"] = min(lo, hi)
+            updates["year_to"] = max(lo, hi)
+        else:  # pragma: no cover - YearFilter forbids this
+            dropped.append("year_between")
+
+    if not updates:
+        return payload, dropped
+
+    merged = base.model_copy(update=updates)
+    logger.info(
+        "Propagated router year constraint to retrieval: op=%s updates=%s dropped=%s",
+        op,
+        updates,
+        dropped,
+    )
+    return payload.model_copy(update={"filters": merged}), dropped
+
+
+def _with_dropped_filters(response: AskResponse, dropped: list[str]) -> AskResponse:
+    """Append constraints a retriever could not apply to ``filters_ignored``."""
+    if not dropped:
+        return response
+    return response.model_copy(
+        update={"filters_ignored": [*response.filters_ignored, *dropped]}
+    )
 
 
 async def _run_ask_pipeline(
@@ -931,6 +1131,11 @@ async def _run_ask_pipeline(
     t0 = time.perf_counter()
     decision = QuestionRouter.classify_route(payload.question, payload.filters)
     latencies["routing_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+
+    # 1b. Fold the router's free-text year parse into payload.filters so all four
+    # routes see the same temporal constraint. Previously only the SQL template
+    # consumed it, so "setelah 2020" was silently dropped on the other three.
+    payload, dropped_constraints = _apply_router_year_constraint(payload, decision)
 
     logger.info(
         "Routed ask request: route='%s' fallback=%s reasoning='%s'",
@@ -1012,14 +1217,17 @@ async def _run_ask_pipeline(
         # 3-5. Route dispatch to per-route handlers (retrieval + Evidence gate + synthesis).
         handler = ROUTE_HANDLERS.get(decision.route)
         if handler is not None:
-            return await handler(
-                conn=conn,
-                payload=payload,
-                decision=decision,
-                resolution=resolution,
-                req_id=req_id,
-                start_time=start_time,
-                latencies=latencies,
+            return _with_dropped_filters(
+                await handler(
+                    conn=conn,
+                    payload=payload,
+                    decision=decision,
+                    resolution=resolution,
+                    req_id=req_id,
+                    start_time=start_time,
+                    latencies=latencies,
+                ),
+                dropped_constraints,
             )
 
         # 6. Fallback for unhandled routes

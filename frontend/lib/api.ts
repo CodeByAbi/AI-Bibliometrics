@@ -50,6 +50,11 @@ export interface AskResponse {
   filters_ignored: string[];
   answered_via_fallback: boolean;
   unverified_citations: string[];
+  /** Echo of the request's session_id when the turn was attached to a session. */
+  session_id?: string | null;
+  /** Filter keys auto-filled from prior session scope. Debug-reports only. */
+  session_filters_applied?: string[] | null;
+  session_context_used?: boolean | null;
   debug?: {
     sql_executed?: string | null;
     route_reasoning?: string | null;
@@ -69,6 +74,7 @@ export async function postAsk(
   developerMode: boolean,
   signal?: AbortSignal,
   filters?: Record<string, string | number | null | undefined>,
+  sessionId?: string | null,
 ): Promise<AskResponse> {
   // One id per user action, minted outside the retry closure: a retry is the
   // same request, so the backend trace stays a single correlated record.
@@ -82,7 +88,16 @@ export async function postAsk(
       res = await fetch(`${API_BASE}/api/v1/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
-        body: JSON.stringify({ question, filters: filters ?? {}, developer_mode: developerMode }),
+        body: JSON.stringify({
+          question,
+          filters: filters ?? {},
+          developer_mode: developerMode,
+          // Omitted entirely when absent rather than sent as null: the backend
+          // treats a missing session_id as "stateless question", which is the
+          // behaviour the pre-session UI relies on. Sending null would be a
+          // different request with the same intent.
+          ...(sessionId ? { session_id: sessionId } : {}),
+        }),
         signal,
       });
     } catch (error) {

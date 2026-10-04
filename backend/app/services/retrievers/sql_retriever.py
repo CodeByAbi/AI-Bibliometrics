@@ -18,6 +18,16 @@ from backend.app.core.errors import DBTimeoutError, LLMTimeoutError
 from backend.app.core.http import get_http_client
 from backend.app.core.logging import current_request_id, logger
 from backend.app.models.ask import FilterParams
+from backend.app.services.intent_grammar import (
+    AGGREGATE_INTENT_RE as _AGGREGATE_INTENT_RE,
+)
+from backend.app.services.intent_grammar import (
+    INTENT_BY_NAME,
+    YearFilter,
+    build_year_filter,
+    match_intent,
+    year_predicate,
+)
 from backend.app.services.retrievers.sql_security import (
     SqlSecurityError,
     escape_like_pattern,
@@ -120,134 +130,40 @@ class SqlRetriever:
     #: Keywords signalling a computed-number question (FR3.5). Pure ranking
     #: phrasing ("top N ... terbanyak") is excluded: ranked lists over stored
     #: columns need no aggregate function.
-    AGGREGATE_INTENT_RE = re.compile(
-        r"\b(berapa|jumlah|total|hitung|count|how\s+many|rata|rerata|average|mean|"
-        r"distribusi|distribution|per\s*tahun|grouped)\b",
-        re.IGNORECASE,
-    )
+    #: Keywords signalling a computed-number question (FR3.5). Pure ranking
+    #: phrasing ("top N ... terbanyak") is excluded: ranked lists over stored
+    #: columns need no aggregate function.
+    #:
+    #: Re-exported from intent_grammar so both grammars stay one source of truth.
+    AGGREGATE_INTENT_RE = _AGGREGATE_INTENT_RE
 
     # --- Deterministic template intent coverage -----------------------------
     #
-    # Each entry pairs the original literal substring list (kept verbatim so no
-    # already-covered phrasing can regress) with a regex that accepts the
-    # natural variants the literal list missed.
-    #
-    # Why this exists: a literal miss does not degrade to a slower answer, it
-    # degrades to the Ollama Text-to-SQL path. Measured on this deployment, a
-    # COUNT(*) phrased "Berapa publikasi …" cost 6,036 ms warm and 21.9-41.4 s
-    # cold (10.1 s of that is loading the 4.7 GB qwen2.5-coder weights) where
-    # the deterministic template answered in 84-90 ms. Every phrasing listed in
-    # docs/05 §5.1 must therefore resolve here, not in the LLM.
-    INTENT_PATTERNS: ClassVar[dict[str, tuple[re.Pattern[str], tuple[str, ...]]]] = {
-        "count_publications": (
-            re.compile(
-                r"\bberapakah?\s+(?:jumlah\s+|total\s+|banyak\s+|seluruh\s+)?"
-                r"(?:publikasi|paper|papers|artikel|artikelnya|jurnal|karya|publication|publications)\b"
-                r"|\b(?:jumlah|total)\s+(?:publikasi|paper|papers|artikel|jurnal|karya)\b"
-                r"|\b(?:total|jumlah)\s+(?:number\s+of\s+)?"
-                r"(?:publikasi|paper|papers|artikel|publication|publications)\b"
-                r"|\b(?:how\s+many|count\s+of|number\s+of)\s+"
-                r"(?:publications?|papers?|articles?|studies)\b"
-                r"|\btotal\s+(?:number\s+of\s+)?(?:publications?|papers?|articles?)\b"
-                r"|\bseberapa\s+banyak\s+(?:publikasi|paper|artikel)\b"
-                r"|\bcount\s+(?:of\s+)?(?:publications?|papers?|articles?)\b",
-                re.IGNORECASE,
-            ),
-            (
-                "berapa jumlah publikasi",
-                "total publikasi",
-                "how many publications",
-                "count of publications",
-                "total paper",
-                "jumlah paper",
-            ),
-        ),
-        "top_authors": (
-            re.compile(
-                r"\b(?:top\s*\d*\s*|\d+\s*)?"
-                r"(?:most\s+pro(?:ductive|lific)\s+authors?|"
-                r"authors?\s+(?:most\s+)?pro(?:ductive|lific)|"
-                r"top\s+authors?|"
-                r"(?:penulis|author)\s+(?:paling\s+produktif|ter(?:atas|produktif))|"
-                r"penulis\s+paling\s+produktif|"
-                r"most\s+active\s+authors?)\b",
-                re.IGNORECASE,
-            ),
-            (
-                "penulis paling produktif",
-                "most productive author",
-                "top author",
-                "penulis teratas",
-                "author paling produktif",
-                "most prolific author",
-            ),
-        ),
-        "most_cited": (
-            re.compile(
-                r"\b(?:most\s+cit(?:ed|ation)|highest\s+cit(?:ed|ation|ations)|"
-                r"paling\s+banyak\s+disitasi|sitasi\s+terbanyak|"
-                r"top\s+cit(?:ed|ation))\b",
-                re.IGNORECASE,
-            ),
-            (
-                "sitasi terbanyak",
-                "most cited",
-                "highest citation",
-                "paling banyak disitasi",
-            ),
-        ),
-        "top_institutions": (
-            re.compile(
-                r"\b(?:top\s*\d*\s*)?(?:institutions?|universit(?:y|ies)|"
-                r"institusi|universitas)\s+(?:teratas|paling\s+produktif|"
-                r"most\s+productive|top)\b"
-                r"|\btop\s+(?:institutions?|universities|institusi|universitas)\b"
-                r"|\b(?:most\s+productive|top)\s+(?:institutions?|universities)\b",
-                re.IGNORECASE,
-            ),
-            (
-                "top institusi",
-                "institusi teratas",
-                "top institutions",
-                "most productive institution",
-                "institusi paling produktif",
-            ),
-        ),
-        "list_publications": (
-            re.compile(
-                r"\b(?:daftar|list|show|tampilkan|sebutkan)\s+"
-                r"(?:semua\s+)?(?:publikasi|paper|papers|artikel|publication|publications)\b"
-                r"|\b(?:publikasi|papers?|articles?)\s+(?:pada\s+tahun|in\s+year|published\s+in)\s*\d{4}\b"
-                r"|\b(?:paper|artikel)\s+(?:in|on)\s+(?:year\s+)?\d{4}\b",
-                re.IGNORECASE,
-            ),
-            (
-                "daftar publikasi",
-                "list publications",
-                "show publications",
-                "tampilkan publikasi",
-                "artikel pada tahun",
-                "paper in year",
-            ),
-        ),
-    }
-
+    # The table now lives in `intent_grammar.INTENT_SPECS`, shared with the
+    # router. It used to be a local `INTENT_PATTERNS` dict that drifted away
+    # from `QuestionRouter.SQL_PATTERNS` in both directions, which is what let
+    # "Top 5 institutions" (template present, route missing -> VectorRoute) and
+    # "Berapa publikasi?" (route present, template missing -> 6-21 s Ollama
+    # Text-to-SQL) coexist. `intent_grammar.parity_violations()` asserts the two
+    # grammars agree, and caught four further silent divergences on introduction.
     @classmethod
     def _intent(cls, intent: str, question: str) -> bool:
-        """True when ``question`` expresses ``intent``.
+        """True when ``question`` expresses ``intent``."""
+        return INTENT_BY_NAME[intent].matches(question)
 
-        Regex covers natural phrasing variants; the literal substring list is
-        retained as a second, independent check so previously-covered wording
-        can never regress when the patterns are extended.
+    @classmethod
+    def detect_intent(cls, question: str) -> str | None:
+        """Canonical name of the deterministic template that will answer this.
+
+        Returns ``None`` when no bounded template covers the question, which is
+        the signal to fall back to AST-guarded Text-to-SQL.
         """
-        pattern, literals = cls.INTENT_PATTERNS[intent]
-        q = question.strip().lower()
-        return bool(pattern.search(q)) or any(term in q for term in literals)
+        return match_intent(question)
 
     @classmethod
     def detect_aggregate_intent(cls, question: str) -> bool:
         """Detect whether the question asks for a computed aggregate number."""
-        return cls.AGGREGATE_INTENT_RE.search(question.strip()) is not None
+        return _AGGREGATE_INTENT_RE.search(question.strip()) is not None
 
     @classmethod
     def generate_deterministic_sql(
@@ -256,12 +172,20 @@ class SqlRetriever:
         filters: FilterParams | None = None,
         resolved_author_id: str | None = None,
         resolved_institution_id: str | None = None,
+        year_filter: YearFilter | None = None,
     ) -> tuple[str | None, list[Any]]:
         """Generate deterministic SQL with bound parameters for canonical questions.
 
         Returns (sql, params): every user-controlled value travels as a
         bound $n parameter, never interpolated, so filter payloads cannot
         break out of string literals (docs/08 section 2.1).
+
+        Args:
+            year_filter: pre-resolved temporal constraint. Callers that already
+                hold the router's parse must pass it, otherwise it is derived
+                here from ``filters`` then free text. Passing it in is what lets
+                the pipeline apply one constraint to all four routes instead of
+                each retriever re-parsing the question on its own.
         """
         q = question.strip().lower()
 
@@ -272,25 +196,22 @@ class SqlRetriever:
             params.append(value)
             return f"${len(params)}"
 
-        # Year scoping honors explicit filters first, free-text year second.
-        # Operator enums (gt/between/...) are deferred to Fase 7 Hybrid.
+        # Year scoping honors explicit filters first, free text second, and the
+        # caller-provided parse first of all.
+        #
+        # FIX: this used to run a *second* regex (`\b(20\d\d|19\d\d)\b`) that
+        # collapsed every operator to equality, so "between 2021 and 2023" —
+        # correctly parsed as between by the router — became `p.year = 2021`.
+        # That is a silently wrong answer, not a slow one: the prototype corpus
+        # holds 21 publications for 2021 and 0 for the whole 2021-2023 window,
+        # and the query reported 21. All six operators are now rendered.
+        if year_filter is None:
+            year_filter = build_year_filter(question, filters)
+
         year_clauses: list[str] = []
-        f_year = filters.year if filters else None
-        f_from = filters.year_from if filters else None
-        f_to = filters.year_to if filters else None
-        if f_year is not None:
-            year_clauses.append(f"p.year = {_ph(f_year)}")
-        else:
-            if f_from is not None and f_to is not None:
-                year_clauses.append(f"p.year BETWEEN {_ph(f_from)} AND {_ph(f_to)}")
-            elif f_from is not None:
-                year_clauses.append(f"p.year >= {_ph(f_from)}")
-            elif f_to is not None:
-                year_clauses.append(f"p.year <= {_ph(f_to)}")
-            else:
-                year_match = re.search(r"\b(20\d\d|19\d\d)\b", q)
-                if year_match:
-                    year_clauses.append(f"p.year = {_ph(int(year_match.group(1)))}")
+        predicate = year_predicate("p", year_filter, _ph)
+        if predicate is not None:
+            year_clauses.append(predicate)
 
         # 1. Top productive authors
         if cls._intent("top_authors", q):
@@ -365,6 +286,48 @@ class SqlRetriever:
             where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             return f"""
             SELECT COUNT(DISTINCT p.publication_id) AS total_publications
+            FROM publications p
+            {joins}
+            {where_str};
+            """, params
+
+        # 3b. Average citations per publication
+        if cls._intent("avg_citation_per_publication", q):
+            where_str = f"WHERE {' AND '.join(year_clauses)}" if year_clauses else ""
+            return f"""
+            SELECT COUNT(DISTINCT p.publication_id) AS publications_count,
+                   COALESCE(ROUND(AVG(p.citation_count)::numeric, 2), 0) AS avg_citation_count
+            FROM publications p
+            {where_str};
+            """, params
+
+        # 3c. Funding aggregation. Previously this phrasing reached SQLRoute with
+        # no template and so fell through to Ollama Text-to-SQL for a question
+        # whose answer is a single COUNT over the funding table. Mirrors
+        # count_publications in using COUNT(DISTINCT) so a publication with
+        # several grant rows is not counted twice.
+        if cls._intent("funding_aggregation", q):
+            where_clauses = list(year_clauses)
+            if filters and filters.institution_name:
+                where_clauses.append(
+                    f"i.institution_name ILIKE "
+                    f"{_ph(escape_like_pattern(filters.institution_name))} ESCAPE '\\'"
+                )
+            elif resolved_institution_id:
+                where_clauses.append(f"pi.institution_id = {_ph(resolved_institution_id)}")
+
+            joins = ""
+            if where_clauses != year_clauses or resolved_institution_id:
+                joins = (
+                    " JOIN funding f ON f.publication_id = p.publication_id"
+                    " JOIN pub_institution pi ON pi.publication_id = p.publication_id"
+                    " JOIN institutions i ON i.institution_id = pi.institution_id"
+                )
+
+            where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            return f"""
+            SELECT COUNT(DISTINCT f.funding_id) AS total_grants,
+                   COUNT(DISTINCT p.publication_id) AS total_publications
             FROM publications p
             {joins}
             {where_str};
@@ -603,8 +566,16 @@ class SqlRetriever:
         filters: FilterParams | None = None,
         resolved_author_id: str | None = None,
         resolved_institution_id: str | None = None,
+        year_filter: YearFilter | None = None,
     ) -> SqlRetrievalResult:
-        """Generate, validate, and execute SQL query against database."""
+        """Generate, validate, and execute SQL query against database.
+
+        Args:
+            year_filter: the router's already-resolved temporal constraint.
+                Passing it keeps one parse per request; when omitted the
+                deterministic generator derives it from ``filters`` then free
+                text, which yields the same value.
+        """
         # 1. Try deterministic template generator first (returns bound params).
         #    Timed separately from the LLM fallback so a template regression
         #    shows up as sql_generation_ms growth instead of being hidden
@@ -615,6 +586,7 @@ class SqlRetriever:
             filters=filters,
             resolved_author_id=resolved_author_id,
             resolved_institution_id=resolved_institution_id,
+            year_filter=year_filter,
         )
         sql_source: Literal["deterministic", "llm"] = "deterministic"
         llm_calls = 0

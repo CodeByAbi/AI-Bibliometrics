@@ -11,9 +11,14 @@ import string
 from typing import Any, Literal
 
 import asyncpg
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.models.ask import CandidateItem, FilterParams
+from backend.app.services.intent_grammar import (
+    SQL_ROUTE_PATTERNS,
+    YearFilter,
+    build_year_filter,
+)
 from backend.app.services.retrievers.sql_security import escape_like_pattern
 
 STATEMENT_TIMEOUT_S = 10.0
@@ -33,6 +38,25 @@ class RouteDecision(BaseModel):
     extracted_entities: dict[str, Any] = Field(default_factory=dict)
 
 
+class EntityNarrowing(BaseModel):
+    """Record of a gate narrowing an ambiguous query to one entity.
+
+    Institution disambiguation auto-selects the highest-publication variant, so
+    this exists to keep that decision *visible*. Without it the gate would
+    silently answer about one department while the user asked about a whole
+    university — a grounding defect that looks like a correct answer.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    query: str
+    entity_type: Literal["institution", "author"]
+    selected_id: str
+    selected_name: str
+    candidate_count: int
+    candidate_names: list[str] = Field(default_factory=list)
+
+
 class EntityResolutionResult(BaseModel):
     """Result of entity disambiguation and normalization gate."""
 
@@ -45,108 +69,36 @@ class EntityResolutionResult(BaseModel):
     resolved_institution_id: str | None = None
     resolved_institution_name: str | None = None
     clarification_message: str | None = None
+    #: Set when the gate resolved an ambiguous query on its own instead of
+    #: asking the user. Surfaced in DebugInfo so the narrowing is auditable.
+    narrowing: EntityNarrowing | None = None
 
 
-YearOp = Literal["eq", "gt", "gte", "lt", "lte", "between"]
-
-
-class YearFilter(BaseModel):
-    """Typed year constraint with allowlisted operator (FR2.3, docs/08 §2.2).
-
-    Operators are enumerated as Literal so raw strings can never be
-    concatenated into SQL — SqlRetriever maps each op to a bound-param
-    predicate (=, >, >=, <, <=, BETWEEN).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    op: YearOp
-    year: int | None = Field(None, ge=1900, le=2026)
-    year_from: int | None = Field(None, ge=1900, le=2026)
-    year_to: int | None = Field(None, ge=1900, le=2026)
-
-    @model_validator(mode="after")
-    def _check_op_fields(self):
-        if self.op == "eq" and self.year is None:
-            raise ValueError("YearFilter op='eq' requires year")
-        if self.op in ("gt", "gte", "lt", "lte") and self.year is None:
-            raise ValueError(f"YearFilter op={self.op!r} requires year")
-        if self.op == "between" and (self.year_from is None or self.year_to is None):
-            raise ValueError("YearFilter op='between' requires year_from and year_to")
-        return self
-
-
-def build_year_filter(
-    question: str,
-    filters: FilterParams | None = None,
-) -> YearFilter | None:
-    """Derive a typed year constraint: explicit filters win, free text second.
-
-    Free-text coverage (ID/EN, deterministic):
-    - between: "antara 2020 dan 2023", "2020-2023", "2020 sampai 2023",
-      "between 2020 and 2023", "dari 2020 hingga 2023"
-    - gte: "setelah 2020", "sejak 2020", "after/since 2020", "> 2020"
-    - lte: "sebelum 2020", "before 2020", "< 2020"
-    - eq: bare year "tahun 2023", "in 2023"
-    """
-    if filters is not None:
-        if filters.year is not None:
-            return YearFilter(op="eq", year=filters.year)
-        if filters.year_from is not None and filters.year_to is not None:
-            return YearFilter(
-                op="between",
-                year_from=filters.year_from,
-                year_to=filters.year_to,
-            )
-        if filters.year_from is not None:
-            return YearFilter(
-                op="gte", year=filters.year_from, year_from=filters.year_from
-            )
-        if filters.year_to is not None:
-            return YearFilter(
-                op="lte", year=filters.year_to, year_to=filters.year_to
-            )
-
-    ql = question.strip().lower()
-
-    between_match = re.search(
-        r"\b(?:antara\s+)?(19\d\d|20\d\d)\s*(?:-|–|—|sampai|hingga|to|dan|s/d)\s*(19\d\d|20\d\d)\b"
-        r"|\b(?:between|dari)\s+(19\d\d|20\d\d)\s+(?:and|dan|hingga|sampai)\s+(19\d\d|20\d\d)\b",
-        ql,
-    )
-    if between_match:
-        years = [int(g) for g in between_match.groups() if g is not None]
-        if len(years) >= 2 and 1900 <= years[0] <= 2026 and 1900 <= years[1] <= 2026:
-            lo, hi = (years[0], years[1]) if years[0] <= years[1] else (years[1], years[0])
-            return YearFilter(op="between", year_from=lo, year_to=hi)
-
-    after_match = re.search(
-        r"\b(?:setelah(?:\s+tahun)?|sejak|setelah\s+tahun|after|since)\s+(?:tahun\s+)?(19\d\d|20\d\d)\b"
-        r"|\b>\s*(19\d\d|20\d\d)\b",
-        ql,
-    )
-    if after_match:
-        year = next(int(g) for g in after_match.groups() if g is not None)
-        if 1900 <= year <= 2026:
-            return YearFilter(op="gte", year=year, year_from=year)
-
-    before_match = re.search(
-        r"\b(?:sebelum(?:\s+tahun)?|before)\s+(?:tahun\s+)?(19\d\d|20\d\d)\b"
-        r"|\b<\s*(19\d\d|20\d\d)\b",
-        ql,
-    )
-    if before_match:
-        year = next(int(g) for g in before_match.groups() if g is not None)
-        if 1900 <= year <= 2026:
-            return YearFilter(op="lte", year=year, year_to=year)
-
-    year_match = re.search(r"\b(19\d\d|20\d\d)\b", ql)
-    if year_match:
-        year = int(year_match.group(1))
-        if 1900 <= year <= 2026:
-            return YearFilter(op="eq", year=year)
-
-    return None
+# YearFilter / build_year_filter now live in intent_grammar so SqlRetriever can
+# share the exact same temporal parser and operator mapping. Re-exported here
+# because `router.YearFilter` is the documented import site (tests, docs, and
+# ask.py all reference it through this module).
+#
+# Why they moved: SqlRetriever used to run its *own* second year regex. Two
+# parsers over the same question is what let "between 2021 and 2023" be parsed
+# correctly by the router and then collapsed to `p.year = 2021` by the retriever.
+__all__ = [
+    "RouteType",
+    "RouteDecision",
+    "EntityResolutionResult",
+    "EntityNarrowing",
+    "YearOp",
+    "YearFilter",
+    "build_year_filter",
+    "build_extracted_entities",
+    "normalize_text",
+    "QuestionRouter",
+    "EntityResolutionGate",
+    "SQL_PATTERNS",
+    "GRAPH_PATTERNS",
+    "HYBRID_PATTERNS",
+    "VECTOR_PATTERNS",
+]
 
 
 def build_extracted_entities(
@@ -181,19 +133,22 @@ def build_extracted_entities(
 
 # --- Regex Pattern Definitions for 4 Routes (ID & EN) ---
 
-# 1. SQLRoute Patterns (Counting, Aggregation, Ranking, Metadata, List, Exact stats)
-SQL_PATTERNS = [
-    re.compile(r"\b(berapa|jumlah|total|hitung)\b.*\b(publikasi|paper|artikel|sitasi|author|penulis|institusi|dana|grant)\b", re.IGNORECASE),
-    re.compile(r"\b(siapa|daftar|tampilkan|sebutkan)\b.*\b(top\s*\d+|\d+\s*teratas|paling\s*(produktif|banyak|sering|banyak disitasi))\b", re.IGNORECASE),
-    re.compile(r"\b(top\s*\d+|\d+\s*teratas|peringkat|ranking)\b", re.IGNORECASE),
-    re.compile(r"\b(sitasi\s*terbanyak|most\s*cited|highest\s*citations?)\b", re.IGNORECASE),
-    re.compile(r"\b(how\s*many|count\s*of|total\s*(number\s*of)?\s*(publications|papers|articles|citations|authors|grants?))\b", re.IGNORECASE),
-    re.compile(r"\b(who\s*is|who\s*are|list|show)\b.*\b(top\s*\d+|\d+\s*most\s*(productive|cited)|most\s*prolific)\b", re.IGNORECASE),
-    re.compile(r"\b(most\s*productive|prolific\s*authors?|most\s*active)\b", re.IGNORECASE),
-    re.compile(r"\b(publikasi|papers?|articles?)\s*(tahun|pada\s*tahun|in\s*year|published\s*in)\s*\d{4}\b", re.IGNORECASE),
-    re.compile(r"\b(funding\s*agency|sumber\s*dana|hibah|grant\s*number)\b", re.IGNORECASE),
-    re.compile(r"\b(open\s*access|document\s*type|tipe\s*dokumen|bahasa\s*dokumen)\b", re.IGNORECASE),
-]
+# 1. SQLRoute Patterns
+#
+# DERIVED, not hand-maintained. This used to be a local table that drifted away
+# from SqlRetriever.INTENT_PATTERNS in both directions, and the divergence was
+# measurable rather than theoretical:
+#   * "Top 5 institutions" had a template but no route pattern here, so it went
+#     to VectorRoute, while "Top institution" (singular) went to SQLRoute.
+#   * "Berapa publikasi?" matched the literal `berapa` pattern here but matched
+#     no template, so a bounded COUNT became a 6-21 s Ollama Text-to-SQL call.
+#   * "top institutions", "institutions teratas", "penulis paling banyak
+#     disitasi", "List publications in 2025", "Which author has the highest
+#     publication count?" all fell through to VectorRoute while their templates
+#     already existed and answered in <100 ms.
+# SQL_ROUTE_PATTERNS carries every intent's router triggers plus the metadata
+# triggers that have no bounded template, so a new intent wires its own routing.
+SQL_PATTERNS = list(SQL_ROUTE_PATTERNS)
 # 2. GraphRoute Patterns (Collaboration, Co-authorship, Networks, Partnerships)
 GRAPH_PATTERNS = [
     re.compile(r"\b(kolaborasi|berkolaborasi|kerjasama|kemitraan)\b", re.IGNORECASE),
@@ -202,11 +157,31 @@ GRAPH_PATTERNS = [
     re.compile(r"\b(collaborat\w*|partner\w*)\b", re.IGNORECASE),
     re.compile(r"\b(who\s*(has\s*)?worked\s*with|joint\s*publications?|who\s*published\s*with)\b", re.IGNORECASE),
     re.compile(r"\b(mitra\s*riset|mitra\s*institusi|institutions?\s*collaborating)\b", re.IGNORECASE),
+    # Indonesian "worked with". Measured: "Siapa yang sudah bekerja dengan
+    # Universitas Indonesia?" matched nothing and fell through to VectorRoute,
+    # which cannot answer a collaboration question at all. The
+    # (bekerja|kerja) + (dengan|bersama|pada) pairing is specific enough that it
+    # does not fire on ordinary publication questions.
+    re.compile(
+        r"\b(?:sudah\s+|telah\s+|pernah\s+|sering\s+)?"
+        r"(?:bekerja|berkolaborasi|kerja)\s+(?:bersama|dengan|pada)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 # 3. HybridRoute Patterns (Trends, Topic Evolution, Emerging Topics, Researcher Expertise Scoring)
 HYBRID_PATTERNS = [
-    re.compile(r"\b(tren|perkembangan|evolusi)\b.*\b(topik|bidang|riset|terapi|teknologi|domain)\b", re.IGNORECASE),
+    # "evolution of <topic> over time" was unreachable: this pattern required an
+    # Indonesian topic noun (topik|bidang|riset|terapi|teknologi|domain) and
+    # never matched the English form, so "How has research on ... evolved over
+    # time?" and "evolution of ... over time" both fell to VectorRoute, which
+    # cannot read the topics / topic_evolution / researcher_expertise tables.
+    re.compile(
+        r"\b(tren|perkembangan|evolusi|evolution|developments?)\b"
+        r".*\b(topik|bidang|riset|terapi|teknologi|domain|topic|field|area|"
+        r"research\s*area|therapy|technolog\w*|dataset|cluster)s?\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(topik\s*(berkembang|baru|populer)|emerging\s*topics?|topic\s*evolution)\b", re.IGNORECASE),
     re.compile(r"\b(skor\s*kepakaran|expertise\s*score|pakar\s*(utama|terbaik|terkemuka)|leading\s*experts?)\b", re.IGNORECASE),
     re.compile(r"\b(sintesis\s*kebijakan|policy\s*synthesis|rekomendasi\s*kebijakan|arah\s*riset)\b", re.IGNORECASE),
@@ -218,6 +193,13 @@ HYBRID_PATTERNS = [
     re.compile(
         r"\b(emerging|emergent|naissant|berkembang|baru|muncul|terbaru)\b"
         r"[^?]{0,80}?\b(topics?|topik|bidang|research\s*areas?|clusters?)\b",
+        re.IGNORECASE,
+    ),
+    # Bare ranked-topic request. Added because routing "top institutions" to
+    # SQLRoute created the opposite failure for the topic analogue: "top topics"
+    # would otherwise reach SQLRoute, which cannot rank topics.
+    re.compile(
+        r"\btop\s*\d*\s*(?:topics?|topik|bidang|research\s*areas?)\b",
         re.IGNORECASE,
     ),
     # "who are the experts" carries expertise intent on its own — Gold
@@ -544,6 +526,9 @@ class EntityResolutionGate:
         resolved_author_name: str | None = None
         resolved_institution_id: str | None = None
         resolved_institution_name: str | None = None
+        # Set only when an ambiguous institution query is auto-narrowed. None
+        # otherwise, so the absence of narrowing is itself the signal.
+        narrowing: EntityNarrowing | None = None
 
         # 1. Author resolution
         if author_query and len(author_query) >= 3:
@@ -676,6 +661,19 @@ class EntityResolutionGate:
                 resolved_institution_id = row["institution_id"]
                 resolved_institution_name = row["institution_name"]
             elif len(exact_insts) > 1:
+                # Scopus stores one `institutions` row per department-level
+                # affiliation string, so a whole-university name is a *family* of
+                # sibling rows rather than a genuine ambiguity for the user to
+                # resolve. Measured on the prototype corpus: "Universitas
+                # Andalas" produced 8 candidates and "Universitas Indonesia" 2,
+                # which turned almost every natural GraphRoute/SQLRoute
+                # institution question into a dead-end clarification.
+                #
+                # Auto-narrow to the highest-publication variant and record the
+                # decision in `narrowing`, so it is surfaced in DebugInfo rather
+                # than applied silently. Authors are deliberately NOT narrowed
+                # this way: person names genuinely collide across institutions
+                # and carry no such decomposition, so an author tie still asks.
                 candidate_items = []
                 # P1 async-*: one GROUP BY over ANY($1) instead of N sequential
                 # COUNT round-trips (institution_id is VARCHAR — text[] comparison is safe).
@@ -699,14 +697,22 @@ class EntityResolutionGate:
                             affiliation=r["country"] or None,
                         )
                     )
-                return EntityResolutionResult(
-                    status="needs_clarification",
-                    candidates=candidate_items,
-                    clarification_message=(
-                        f"Ditemukan {len(exact_insts)} institusi yang cocok dengan '{inst_query}'. "
-                        "Silakan pilih institusi yang dimaksud."
-                    ),
+                # Deterministic winner: most publications, then lowest name so a
+                # count tie always resolves the same way for the same input.
+                best = min(
+                    candidate_items,
+                    key=lambda c: (-c.publication_count, c.name),
                 )
+                narrowing = EntityNarrowing(
+                    query=inst_query,
+                    entity_type="institution",
+                    selected_id=best.id,
+                    selected_name=best.name,
+                    candidate_count=len(candidate_items),
+                    candidate_names=[c.name for c in candidate_items],
+                )
+                resolved_institution_id = best.id
+                resolved_institution_name = best.name
             else:
                 # Partial search
                 partial_insts = await asyncio.wait_for(
@@ -717,7 +723,7 @@ class EntityResolutionGate:
                         LEFT JOIN pub_institution pi ON pi.institution_id = i.institution_id
                         WHERE i.institution_name ILIKE $1 ESCAPE '\'
                         GROUP BY i.institution_id, i.institution_name, i.country
-                        ORDER BY pub_count DESC
+                        ORDER BY pub_count DESC, i.institution_name ASC
                         LIMIT 10;
                         """,
                         escape_like_pattern(inst_query),
@@ -735,14 +741,21 @@ class EntityResolutionGate:
                         )
                         for r in partial_insts[:5]
                     ]
-                    return EntityResolutionResult(
-                        status="needs_clarification",
-                        candidates=candidates,
-                        clarification_message=(
-                            f"Ditemukan {len(partial_insts)} kandidat institusi untuk '{inst_query}'. "
-                            "Mohon pilih institusi yang tepat."
-                        ),
+                    # Auto-narrow instead of dead-ending (see the exact-match
+                    # branch above for the rationale). The SQL already orders by
+                    # pub_count DESC with a name tiebreak, so candidates[0] is
+                    # the deterministic winner.
+                    best = candidates[0]
+                    narrowing = EntityNarrowing(
+                        query=inst_query,
+                        entity_type="institution",
+                        selected_id=best.id,
+                        selected_name=best.name,
+                        candidate_count=len(candidates),
+                        candidate_names=[c.name for c in candidates],
                     )
+                    resolved_institution_id = best.id
+                    resolved_institution_name = best.name
                 elif len(partial_insts) == 1:
                     r = partial_insts[0]
                     resolved_institution_id = r["institution_id"]
@@ -763,4 +776,5 @@ class EntityResolutionGate:
             resolved_author_name=resolved_author_name,
             resolved_institution_id=resolved_institution_id,
             resolved_institution_name=resolved_institution_name,
+            narrowing=narrowing,
         )

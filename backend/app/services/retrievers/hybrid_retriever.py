@@ -17,7 +17,8 @@ import asyncpg
 from pydantic import BaseModel, Field
 
 from backend.app.core.errors import DBTimeoutError
-from backend.app.models.ask import FilterParams
+from backend.app.core.config import get_settings
+from backend.app.models.ask import CandidateItem, FilterParams
 from backend.app.services.embedding import (
     generate_query_embedding,
     validate_embedding_vector,
@@ -87,6 +88,18 @@ class HybridRetrievalResult(BaseModel):
     target_topic_name: str | None = None
     filters_ignored: list[str] = Field(default_factory=list)
     execution_time_ms: float = 0.0
+    #: Set when the question is topic-scoped but the topic could not be resolved
+    #: to exactly one `topics` row. The caller must return
+    #: ``status="needs_clarification"`` with ``topic_candidates`` rather than
+    #: answering with corpus-wide rows — an unanswered scope question must never
+    #: be answered as though the scope had been understood.
+    unresolved_topic_query: str | None = None
+    #: The five canonical topics, offered so the user can pick. Only populated
+    #: alongside ``unresolved_topic_query``.
+    topic_candidates: list[CandidateItem] = Field(default_factory=list)
+    #: Best centroid cosine for an unresolved topic. DIAGNOSTIC ONLY — see
+    #: ``_TOPIC_CENTROID_NOTE``. It does not gate, select, or classify anything.
+    topic_best_similarity: float | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -159,6 +172,50 @@ LIMIT 50;
 
 
 class HybridRetriever:
+    """Gold-analytics retriever: topic trends, topic evolution, researcher expertise.
+
+    _TOPIC_CENTROID_NOTE
+    ---------------------
+    Why centroid cosine is diagnostic-only and never selects a topic.
+
+    The previous code resolved an unmatched topic by taking the nearest
+    ``topics.representation_vector`` at ``>= 0.50``. Measured on this corpus
+    (BAAI/bge-m3, deterministic across repeated calls), that selector picks the
+    WRONG topic:
+
+    ==========================  ==========================
+    probe                        best centroid cosine
+    ==========================  ==========================
+    exact canonical names        0.4698 - 0.5946
+    close paraphrases            0.4698 - 0.5807
+    clearly off-topic phrases    0.3403 - 0.5047
+    ==========================  ==========================
+
+    The bands overlap almost completely. Two consequences:
+
+    * **It cannot select a topic.** The exact canonical name "Phytochemicals &
+      Molecular Docking" scores 0.5807 against *Microbiology & Food
+      Biotechnology* — higher than against its own centroid.
+    * **It cannot even decide corpus membership.** "quantum computing"
+      (0.5047, unambiguously not in a stem-cell/chemistry/AI corpus) scores
+      higher than the exact topic "Nanomaterials & Nanotechnology" (0.4698).
+
+    So there is no threshold that separates these populations, and a
+    similarity-based gate would classify known-wrong cases in both directions.
+    Scope is therefore decided by EXACT/normalized name match only, and anything
+    else is reported as unresolved for the user to resolve. The cosine is still
+    computed — it is useful in logs and in ``developer_mode`` — but it decides
+    nothing.
+
+    A second, independent defect hid this one: the old query used an unqualified
+    ``$1::vector`` and ``<=>`` while pgvector lives in the ``extensions`` schema
+    and the pool pins ``search_path`` to ``public``, so it raised
+    ``UndefinedObjectError: type "vector" does not exist`` on every call. A broad
+    ``except Exception`` logged that at DEBUG — invisible at default log level —
+    so the whole semantic path was dead code and *every* unresolved topic silently
+    fell through to a corpus-wide query. It is now schema-qualified and logs at
+    WARNING.
+    """
     """Deterministic, parameterized hybrid retriever combining Gold analytics, vector, and relational constraints."""
 
     @classmethod
@@ -181,7 +238,15 @@ class HybridRetriever:
         is_expert_query = bool(
             (filters and filters.author_name)
             or re.search(
-                r"\b(pakar|expert|peneliti|ahli|author|siapa\s+yang|who\s+is|leading|terbaik|terkemuka|skor\s*kepakaran|expertise\s*score)\b",
+                # NOTE: every alternative is plural-tolerant. These were not, and
+                # `\bexpert\b` does not match "experts" (the trailing \b needs a
+                # non-word char, and "s" is a word char). The canonical question
+                # "…and who are the experts?" therefore failed this test, was
+                # classified TOPIC_TRENDS instead of COMBINED_ANALYTICS, and the
+                # expert half of the question was silently never queried.
+                r"\b(pakar|pakar\s+utama|experts?|researchers?|peneliti|ahli|"
+                r"authors?|siapa\s+yang|who\s+is|who\s+are|leading|terbaik|"
+                r"terkemuka|skor\s*kepakaran|expertise\s*score)\b",
                 ql,
                 re.IGNORECASE,
             )
@@ -212,22 +277,48 @@ class HybridRetriever:
         question: str,
         filters: FilterParams | None = None,
     ) -> str | None:
-        """Extract explicit topic name or keyword candidate from filters or question text."""
+        """Extract explicit topic name or keyword candidate from filters or question text.
+
+        Two measured defects fixed here:
+
+        1. The capture class was ``[a-zA-Z0-9\\s\\-]``, which has no ``&``. Every
+           canonical topic name contains one ("Mesenchymal Stem Cells &
+           Inflammation"), so "How has research on Mesenchymal Stem Cells &
+           Inflammation evolved over time?" captured nothing and fell through to
+           a corpus-wide query. ``&`` and ``+`` are now in the class.
+        2. The terminator list had no temporal words, so "tren topik Coumarin
+           setelah 2020" captured the literal string ``"Coumarin setelah 2020"``,
+           which matches no topic and then (via the centroid fallback) got
+           mapped onto a neighbouring topic. Indonesian and English temporal
+           markers now terminate the capture.
+        """
         if filters and filters.topic_name:
             return filters.topic_name.strip()
         if filters and filters.keyword:
             return filters.keyword.strip()
 
-        # Regex heuristic in question
+        # Regex heuristic in question. Triggers include the English framing verbs
+        # ("research on", "evolution of", "about") because the canonical evolution
+        # questions use them, and the old trigger set was Indonesian-only.
         match = re.search(
-            r"\b(?:topik|bidang|riset|terapi|teknologi|domain|tentang|mengenai|on|about)\s+([a-zA-Z0-9\s\-]+?)(?:\s+(?:5\s*tahun|dalam|pada|tahun|di|in|who|siapa|dan|and)\b|\?|$)",
+            r"\b(?:topik|bidang|riset|terapi|teknologi|domain|tentang|mengenai|"
+            r"on|about|research\s+on|evolution\s+of|evolusi\s+daripada|"
+            r"perkembangan\s+topik)\s+"
+            r"([a-zA-Z0-9&\+\s\-]+?)"
+            r"(?:\s+(?:5\s*tahun|dalam|pada|tahun|di|in|who|siapa|dan|and|"
+            r"setelah|sejak|sebelum|antara|after|since|before|between|"
+            r"from|over\s+time|evolusi|evolv\w*|berkembang|berkembangan)\b|\?|$)",
             question,
             re.IGNORECASE,
         )
         if match:
             candidate = match.group(1).strip()
+            # Strip trailing/leading connectors that survive the non-greedy match.
+            candidate = re.sub(r"\s+(?:dan|and|with|dengan)$", "", candidate, flags=re.IGNORECASE).strip()
             # Exclude common query words
-            if len(candidate) >= 3 and candidate.lower() not in ("yang", "apa", "terbaru", "indonesia", "tahun"):
+            if len(candidate) >= 3 and candidate.lower() not in (
+                "yang", "apa", "terbaru", "indonesia", "tahun",
+            ):
                 return candidate
         return None
 
@@ -269,10 +360,24 @@ class HybridRetriever:
                 year_from = filters.year_from
                 year_to = filters.year_to
 
-        # Step 1: Resolve topic candidate (by name pattern or semantic centroid vector)
+        # Step 1: Resolve topic scope.
+        #
+        # Scope is decided by EXACT/normalized name match only. When no name
+        # matches, the question is topic-scoped but unresolved, and this
+        # retriever reports that instead of answering with corpus-wide rows.
         topic_kw = cls.extract_topic_keyword(question, filters)
         resolved_topic_id: int | None = None
         resolved_topic_name: str | None = None
+        unresolved_topic_query: str | None = None
+        topic_candidates: list[CandidateItem] = []
+        topic_best_similarity: float | None = None
+
+        # A topic-scoped question is one that names or frames a research topic.
+        # Only these may be held to the clarification contract; an unscoped
+        # "show emerging topics" legitimately wants corpus-wide rows.
+        topic_scoped_question = bool(topic_kw) or bool(
+            filters and (filters.topic_name or filters.keyword)
+        )
 
         if topic_kw:
             # Try exact / ILIKE lookup on topics table first
@@ -299,29 +404,76 @@ class HybridRetriever:
                 resolved_topic_id = int(topic_row["topic_id"])
                 resolved_topic_name = str(topic_row["topic_name"])
             else:
-                # Semantic vector fallback over topics centroid
+                # No exact name match. Record the best centroid similarity for
+                # diagnostics only — see _TOPIC_CENTROID_NOTE for why it must
+                # not decide anything.
+                vec_schema = get_settings().vector_schema
                 try:
                     vec = await generate_query_embedding(topic_kw)
                     validate_embedding_vector(vec, 1024)
                     vec_str = "[" + ",".join(f"{x:.8f}" for x in vec) + "]"
                     sem_row = await asyncio.wait_for(
                         conn.fetchrow(
-                            """
-                            SELECT topic_id, topic_name, 1 - (representation_vector <=> $1::vector) AS sim
-                            FROM topics
-                            WHERE representation_vector IS NOT NULL
-                            ORDER BY representation_vector <=> $1::vector ASC
+                            f"""
+                            SELECT t.topic_name,
+                                   1 - (t.representation_vector
+                                        OPERATOR({vec_schema}.<=>) $1::{vec_schema}.vector) AS sim
+                            FROM topics t
+                            WHERE t.representation_vector IS NOT NULL
+                            ORDER BY t.representation_vector
+                                     OPERATOR({vec_schema}.<=>) $1::{vec_schema}.vector ASC
                             LIMIT 1;
                             """,
                             vec_str,
                         ),
                         timeout=STATEMENT_TIMEOUT_S,
                     )
-                    if sem_row and sem_row["sim"] is not None and sem_row["sim"] >= 0.50:
-                        resolved_topic_id = int(sem_row["topic_id"])
-                        resolved_topic_name = str(sem_row["topic_name"])
+                    if sem_row is not None and sem_row["sim"] is not None:
+                        topic_best_similarity = float(sem_row["sim"])
+                        logger.info(
+                            "Unresolved topic %r: nearest centroid %r at cosine %.4f "
+                            "(diagnostic only — not discriminative, see "
+                            "_TOPIC_CENTROID_NOTE)",
+                            topic_kw,
+                            str(sem_row["topic_name"]),
+                            topic_best_similarity,
+                        )
                 except Exception as exc:
-                    logger.debug("Semantic topic lookup fallback skipped or failed: %s", exc)
+                    # WARNING, not DEBUG: this lookup is the only signal an
+                    # operator has for why a topic failed to resolve. At DEBUG
+                    # the original failure mode was invisible at default level.
+                    logger.warning(
+                        "Topic centroid similarity lookup failed for %r: %s",
+                        topic_kw,
+                        exc,
+                    )
+
+                unresolved_topic_query = topic_kw
+
+        if topic_scoped_question and unresolved_topic_query:
+            # Offer the canonical topics so the user can pick one. This is the
+            # point of the change: an unresolvable scope must surface as a
+            # question, not be answered as though it had been understood.
+            topic_rows = await asyncio.wait_for(
+                conn.fetch(
+                    """
+                    SELECT topic_id, topic_name, total_publications
+                    FROM topics
+                    ORDER BY total_publications DESC, topic_name ASC
+                    LIMIT 10;
+                    """
+                ),
+                timeout=STATEMENT_TIMEOUT_S,
+            )
+            topic_candidates = [
+                CandidateItem(
+                    id=str(r["topic_id"]),
+                    name=str(r["topic_name"]),
+                    type="topic",
+                    publication_count=int(r["total_publications"]),
+                )
+                for r in topic_rows
+            ]
 
         # Check if question specifically asks for "emerging topics" (is_emerging=True)
         is_emerging_filter = True if re.search(r"\b(emerging|berkembang\s*pesat|topik\s*baru)\b", question, re.IGNORECASE) else None
@@ -432,4 +584,7 @@ class HybridRetriever:
             target_topic_name=resolved_topic_name,
             filters_ignored=filters_ignored,
             execution_time_ms=elapsed,
+            unresolved_topic_query=unresolved_topic_query,
+            topic_candidates=topic_candidates,
+            topic_best_similarity=topic_best_similarity,
         )

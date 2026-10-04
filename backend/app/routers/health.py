@@ -9,6 +9,7 @@ import asyncio
 
 from fastapi import APIRouter, status
 
+from backend.app.core.logging import logger
 from backend.app.db.pool import check_db_health
 from backend.app.models.health import HealthResponse, SynthesisHealth
 from backend.app.services.embedding import local_embedding_model_state
@@ -117,8 +118,24 @@ async def get_health() -> HealthResponse:
     else:
         system_status = "degraded"
 
+    # Top-level `degraded` is a SEPARATE axis from `status`, and it is new.
+    #
+    # The rationale for keeping synthesis failure out of `status` still holds —
+    # the renderer serves, so the service works. But that reasoning made a fully
+    # dead narrative path invisible to any dashboard reading the top-level field:
+    # synthesis timed out on every request while health reported "healthy". So
+    # the capability verdict is reported next to the service verdict instead of
+    # being folded into it. A single fallback does not set this; only a path with
+    # attempts and zero successes does.
+    synthesis_path_dead = False
+    try:
+        synthesis_path_dead = get_synthesis_stats().snapshot().synthesis_path_dead
+    except Exception:  # pragma: no cover - defensive, never fail health on a counter
+        logger.debug("Could not read synthesis_path_dead", exc_info=True)
+
     return HealthResponse(
         status=system_status,
+        degraded=synthesis_path_dead,
         version="1.0.0",
         database=db_health,
         llm_service=llm_health,

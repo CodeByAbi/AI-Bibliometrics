@@ -36,7 +36,7 @@ type Filters = Record<string, string | number | null | undefined>;
  * The rule now: a transport failure produces an explicit error or timeout
  * state and NOTHING else. No numbers, no sources, no evidence objects.
  */
-export function useAsk(store: WorkspaceStore) {
+export function useAsk(store: WorkspaceStore, sessionId?: string | null) {
   const {
     view,
     devMode,
@@ -68,7 +68,7 @@ export function useAsk(store: WorkspaceStore) {
         ctrl.abort();
       }, ASK_TIMEOUT_MS);
       try {
-        const r = await postAsk(query, devMode, ctrl.signal, filters);
+        const r = await postAsk(query, devMode, ctrl.signal, filters, sessionId ?? null);
         clearTimeout(timeout);
         setErrorMsg("");
         setErrorKind(null);
@@ -103,6 +103,7 @@ export function useAsk(store: WorkspaceStore) {
     [
       abortRef,
       devMode,
+      sessionId,
       setErrorMsg,
       setErrorKind,
       setResponse,

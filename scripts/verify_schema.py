@@ -176,6 +176,10 @@ EXPECTED_APP_TABLES: dict[str, list[str]] = {
         "route",
         "seq",
         "created_at",
+        # Migration 006. Per-turn rendering provenance, fenced by
+        # audit_provenance_columns() below — see the exception note there.
+        "evidence_objects",
+        "sources",
     ],
     "research_session_summaries": [
         "session_id",
@@ -193,6 +197,77 @@ EXPECTED_APP_INDEXES = (
     "idx_research_sessions_last_message",
     "idx_research_sessions_updated",
 )
+
+#: Per-turn provenance columns added by migration 006. These are the ONLY
+#: columns in schema `app` permitted to carry bibliometric metric values, and
+#: only as an immutable snapshot of one already-verified response.
+#:
+#: They are a documented, owner-signed-off exception to the Session Isolation
+#: Invariant (migration 006 header; docs/03 §0.3 #5). The exception is narrow,
+#: and this table is what keeps it narrow:
+#:
+#:   * they must be JSONB — an opaque snapshot, never a scalar metric column
+#:     that a query could aggregate with plain SQL arithmetic;
+#:   * they must appear on research_messages ONLY. A provenance column on
+#:     research_sessions would be a session-level aggregate, which is exactly
+#:     what migration 005 refused to create and what these columns exist not to
+#:     become.
+#:
+#: They are deliberately NOT in the `banned` metric-column set below. That set
+#: targets session-level *aggregates*; these are per-turn receipts. A snapshot
+#: row cannot answer a question — retrieval re-queries `public` for that — so
+#: treating it as a cached aggregate would be a false positive.
+PROVENANCE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "research_messages": ("evidence_objects", "sources"),
+}
+
+#: Tables that must NOT carry provenance columns. Enforced, not merely intended:
+#: see PROVENANCE_COLUMNS above.
+PROVENANCE_FORBIDDEN_TABLES = ("research_sessions", "research_session_summaries")
+
+
+def audit_provenance_columns(live: dict[str, dict[str, str]]) -> dict:
+    """Audit the migration 006 provenance exception.
+
+    Returns three lists, all of which should be empty on a healthy database:
+
+    ``wrong_type``    a provenance column that is not JSONB. A scalar or array
+                      column would let a snapshot be summed, compared or
+                      filtered with ordinary SQL, which is precisely the
+                      aggregate use the exception forbids.
+    ``misplaced``     a provenance column on a table other than
+                      research_messages — i.e. a session-level aggregate.
+    ``unexpected``    a provenance-named column that this script does not know
+                      about. Catches someone adding ``evidence_count_v2``
+                      without registering (and therefore without fencing) it.
+    """
+    known = {col for cols in PROVENANCE_COLUMNS.values() for col in cols}
+    wrong_type: list[str] = []
+    misplaced: list[str] = []
+    unexpected: list[str] = []
+
+    for table, columns in live.items():
+        for col, dtype in columns.items():
+            # Any column that looks like a provenance snapshot must be
+            # registered above, or this reports it.
+            if col in known:
+                if table not in PROVENANCE_COLUMNS:
+                    misplaced.append(f"{table}.{col}")
+                elif dtype != "jsonb":
+                    wrong_type.append(f"{table}.{col} is {dtype}, expected jsonb")
+            elif col.endswith(("_objects", "_sources", "_evidence")):
+                unexpected.append(f"{table}.{col}")
+
+    for table in PROVENANCE_FORBIDDEN_TABLES:
+        for col in live.get(table, {}):
+            if col in known:
+                misplaced.append(f"{table}.{col}")
+
+    return {
+        "wrong_type": sorted(wrong_type),
+        "misplaced": sorted(misplaced),
+        "unexpected": sorted(unexpected),
+    }
 
 
 def audit_app_schema(cur) -> dict:
@@ -271,6 +346,7 @@ def audit_app_schema(cur) -> dict:
         "missing_indexes": sorted(set(EXPECTED_APP_INDEXES) - set(indexes)),
         "foreign_keys_into_public": fks_into_public,
         "metric_columns": metric_columns,
+        "provenance": audit_provenance_columns(live),
     }
 
 
@@ -452,6 +528,28 @@ def main() -> int:
                 f"Session tables store conversation state only; metrics must be "
                 f"retrieved from `public` on demand."
             )
+        # The migration 006 provenance fence. The exception is legitimate only
+        # while it stays per-turn, opaque and registered; each of these three
+        # failures is a widening of it, so they are errors rather than warnings.
+        prov = app_audit["provenance"]
+        for entry in prov["wrong_type"]:
+            errors.append(
+                f"VIOLATION provenance fence: app.{entry}. A provenance snapshot "
+                f"must be JSONB so it cannot be summed or filtered as a scalar "
+                f"metric (migration 006)."
+            )
+        for entry in prov["misplaced"]:
+            errors.append(
+                f"VIOLATION provenance fence: app.{entry} is a provenance column "
+                f"on a session-level table. Per-turn snapshots may not become a "
+                f"session aggregate (migration 006)."
+            )
+        for entry in prov["unexpected"]:
+            errors.append(
+                f"VIOLATION provenance fence: app.{entry} looks like an "
+                f"unregistered provenance snapshot. Register and fence it in "
+                f"PROVENANCE_COLUMNS, or remove it."
+            )
     else:
         notes.append(
             f"schema `{APP_SCHEMA}` absent — session persistence disabled "
@@ -554,7 +652,16 @@ def main() -> int:
             f.write(
                 "- Bibliometric metric columns: "
                 f"**{len(app_audit['metric_columns'])}** "
-                "(must be 0 — data ownership rule)\n\n"
+                "(must be 0 — data ownership rule)\n"
+            )
+            prov = app_audit["provenance"]
+            f.write(
+                "- Provenance fence (migration 006 exception): "
+                f"wrong_type **{len(prov['wrong_type'])}**, "
+                f"misplaced **{len(prov['misplaced'])}**, "
+                f"unregistered **{len(prov['unexpected'])}** "
+                "(all must be 0 — per-turn snapshots stay JSONB and stay "
+                "on `research_messages`)\n\n"
             )
         else:
             f.write("## Application schema (`app`)\n\n_absent_ — session "
@@ -572,11 +679,16 @@ def main() -> int:
         print(f"  WARN:  {w}")
     print(f"[verify_schema] artifacts: {args.out_dir}/schema_audit.json + schema_audit.md")
     if app_audit["present"]:
+        prov = app_audit["provenance"]
+        prov_violations = (
+            len(prov["wrong_type"]) + len(prov["misplaced"]) + len(prov["unexpected"])
+        )
         print(
             f"[verify_schema] app schema: "
             f"{len(app_audit['tables'])} table(s), "
             f"fk_into_public={len(app_audit['foreign_keys_into_public'])} (must be 0), "
-            f"metric_columns={len(app_audit['metric_columns'])} (must be 0)"
+            f"metric_columns={len(app_audit['metric_columns'])} (must be 0), "
+            f"provenance_violations={prov_violations} (must be 0)"
         )
     else:
         print("[verify_schema] app schema: absent (session persistence disabled)")

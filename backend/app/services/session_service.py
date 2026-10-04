@@ -181,6 +181,26 @@ class SessionService:
         async with self._pool.acquire() as conn:
             return await self._repo(conn).delete_session(session_id)
 
+    async def rename_session(
+        self, session_id: uuid.UUID, title: str
+    ) -> dict[str, Any]:
+        """Rename a session.
+
+        Unlike the other write paths here, a storage failure PROPAGATES rather than
+        being swallowed. Every other method in this class returns None or False on
+        error because it runs inside ``/api/v1/ask``, where losing bookkeeping must
+        never turn a produced answer into a 500. A rename is different: the caller's
+        entire request IS the bookkeeping, so a silent failure would return 200 with
+        the old title still in place and the user would reasonably believe it saved.
+
+        The repository raises :class:`SessionNotFoundError` for an unknown session,
+        which the API layer maps to 404. Title validation is not repeated here — it
+        belongs to ``SessionUpdateRequest``, and doing it in two places would give
+        two answers to "what is a valid title".
+        """
+        async with self._pool.acquire() as conn:
+            return await self._repo(conn).set_title(session_id, title)
+
     # ------------------------------------------------------------------
     # Context assembly
     # ------------------------------------------------------------------
@@ -228,6 +248,8 @@ class SessionService:
         applied_filters: dict[str, Any] | None,
         request_id: str | None,
         route: str | None = None,
+        evidence_objects: list[dict[str, Any]] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """INSERT one turn and bump session metadata, atomically.
 
@@ -250,6 +272,14 @@ class SessionService:
         failure, including the "session deleted while the request was in flight"
         case, where the request still answers — it just cannot record history
         for a conversation that no longer exists.
+
+        ``evidence_objects`` / ``sources`` ride along in the SAME INSERT, not a
+        second statement. Adding a separate write here would put a third
+        statement inside this transaction boundary and give the provenance a
+        separate failure mode from the turn it describes — a stored answer whose
+        evidence silently failed to attach. One row, one statement, one
+        transaction: the snapshot is committed atomically with the turn or not at
+        all. The transaction scope itself is unchanged.
         """
         try:
             async with (
@@ -265,6 +295,8 @@ class SessionService:
                     applied_filters=applied_filters,
                     request_id=request_id,
                     route=route,
+                    evidence_objects=evidence_objects,
+                    sources=sources,
                 )
                 await repo.touch_session(session_id)
             return row
@@ -309,8 +341,15 @@ class SessionService:
         request_id: str | None,
         applied_filters: dict[str, Any] | None = None,
         status: MessageStatusLiteral = "complete",
+        evidence_objects: list[dict[str, Any]] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """Persist the assistant turn. Transaction 3 — committed AFTER synthesis."""
+        """Persist the assistant turn. Transaction 3 — committed AFTER synthesis.
+
+        ``evidence_objects`` / ``sources`` are the migration 006 rendering
+        provenance. They default to empty, which is the correct value both for a
+        ``user``-less path and for a turn that produced no citations.
+        """
         return await self._persist_turn(
             session_id=session_id,
             role="assistant",
@@ -319,6 +358,8 @@ class SessionService:
             applied_filters=applied_filters,
             request_id=request_id,
             route=route,
+            evidence_objects=evidence_objects,
+            sources=sources,
         )
 
     async def adopt_title_from_first_question(

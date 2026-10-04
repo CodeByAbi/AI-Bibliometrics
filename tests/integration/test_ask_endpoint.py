@@ -74,7 +74,73 @@ async def test_ask_endpoint_zero_match_short_circuit():
 
 @pytest.mark.asyncio
 async def test_ask_endpoint_ambiguous_entity_needs_clarification():
-    """Verify ambiguous entity returns status: needs_clarification with candidates."""
+       """Ambiguous AUTHOR returns status: needs_clarification with candidates.
+
+       Author names are still asked about (W4 narrowed institutions only):
+       person names genuinely collide across institutions and carry no
+       department decomposition. Institution ambiguity is covered by
+       ``test_ask_endpoint_ambiguous_institution_auto_narrows``.
+
+       "Dewi" is used because it is genuinely ambiguous in the prototype corpus:
+       ILIKE '%Dewi%' matches Dewi/Laksmi, Dewi/Siska R., and Dewi/Utari.
+       """
+       async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+           resp = await client.post(
+               "/api/v1/ask",
+               json={
+                   "question": "Berapa publikasi dari penulis Dewi?",
+                   "filters": {"author_name": "Dewi"},
+               },
+           )
+           assert resp.status_code == 200
+           data = resp.json()
+           assert data["status"] == "needs_clarification"
+           assert data["candidates"] is not None
+           assert len(data["candidates"]) > 1
+           for cand in data["candidates"]:
+               assert "id" in cand
+               assert "name" in cand
+               assert cand["type"] in ("author", "institution", "topic")
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_unresolved_topic_needs_clarification():
+    """A topic-scoped question with no matching topic must NOT answer corpus-wide (W3).
+
+    Regression for the worst failure mode found in the audit: the Gold SQL treats
+    a NULL topic_id as "no topic filter", so "tren topik <unknown>" previously
+    returned every topic's trend rows and the answer read as though the named
+    topic had been analysed. The scope was never established.
+
+    The named topic "Coumarin" is genuinely absent from `topics`, so this must
+    surface as needs_clarification with the real topic list.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "tren topik Coumarin setelah 2020", "developer_mode": True},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["route"] == "HybridRoute"
+        assert data["status"] == "needs_clarification"
+        # No evidence may be attached to an unresolved scope.
+        assert data["evidence_objects"] == []
+        assert data["sources"] == []
+        assert data["candidates"], "must offer the available topics"
+        assert all(c["type"] == "topic" for c in data["candidates"])
+        assert data["debug"]["zero_evidence_class"] == "topic_unresolved"
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_ambiguous_institution_auto_narrows():
+    """Whole-university names auto-narrow instead of dead-ending (W4).
+
+    "Universitas" matches many department-level Scopus affiliation rows. Asking
+    the user to choose among them produced 2-8 candidates and dead-ended almost
+    every institution question. The gate now resolves to the highest-publication
+    variant and returns a real answer.
+    """
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/v1/ask",
@@ -85,13 +151,9 @@ async def test_ask_endpoint_ambiguous_entity_needs_clarification():
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["status"] == "needs_clarification"
-        assert data["candidates"] is not None
-        assert len(data["candidates"]) > 1
-        for cand in data["candidates"]:
-            assert "id" in cand
-            assert "name" in cand
-            assert cand["type"] in ("author", "institution", "topic")
+        # Either a scoped answer, or an honest not_found - never a
+        # needs_clarification dead-end over department variants.
+        assert data["status"] != "needs_clarification"
 
 
 @pytest.mark.asyncio
@@ -212,12 +274,47 @@ async def test_ask_endpoint_unknown_entity_not_found():
 
 
 @pytest.mark.asyncio
-async def test_ask_endpoint_non_sql_route_not_found():
-    """Semantic query with similarity below threshold (< 0.65) returns honest not_found."""
+async def test_ask_endpoint_vector_semantic_match_returns_evidence():
+    """A semantic query the corpus can answer returns evidence.
+
+    P1 recalibration: this test previously asserted ``not_found`` for the
+    xanthine-oxidase query and documented it as "similarity below threshold
+    (< 0.65) -> honest not_found". That premise was wrong. PUB000014 is titled
+    "Xanthine Oxidase Inhibition And Metabolite Profiling Of Aquilaria
+    Malaccensis Lam Leaves Extract", so the corpus did contain the answer and
+    the old gate was suppressing a true positive. The not_found path is covered
+    by the strict-absence sibling test below.
+    """
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/v1/ask",
             json={"question": "Paper yang membahas mekanisme inhibisi xanthine oxidase"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["route"] == "VectorRoute"
+        assert data["status"] == "ok"
+        assert data["evidence_objects"], "suppressed a true positive for PUB000014"
+        assert any(
+            (src.get("publication_id") == "PUB000014")
+            for src in data["sources"]
+        ), "expected the xanthine-oxidase publication among the sources"
+
+
+@pytest.mark.asyncio
+async def test_ask_endpoint_non_sql_route_not_found():
+    """A semantic query absent from the corpus returns honest not_found.
+
+    Uses a strict-absence topic (quantum computing; benchmark query
+    ``retrieval_072``) rather than a topic the corpus actually covers. The gate
+    at 0.48 sits at the measured negative ceiling, so an absent topic must still
+    short-circuit to not_found instead of returning weak semantic noise. This is
+    the property that makes the lowered gate safe.
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/ask",
+            json={"question": "publications about quantum computing"},
         )
         assert resp.status_code == 200
         data = resp.json()

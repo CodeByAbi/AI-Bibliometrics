@@ -6,7 +6,7 @@
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 > **Status Implementasi (Sinkronisasi Progress 2026-10-03):**  
 > 1. **Database PostgreSQL — DONE:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Cleaning Scopus dan cleaned export (`data/*_cleaned.csv`) juga **DONE**. Kredensial diamankan secara internal.  
-> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.65$ + `CitationVerifier` (DOI + year strict + Jaccard title) + `GraphRetriever` T1-T4 parameterized + `HybridRetriever` (Gold Analytics: `topics`, `topic_evolution`, `researcher_expertise`) + `EvidenceUnifier` (termasuk `from_hybrid`) + `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` + sintesis LLM opt-in Qwen2.5-Coder (fallback deterministik) + wiring penuh 4-route di `POST /api/v1/ask` + 333 tests terkumpul hijau (319 unit+integration satu run; E2E 12 mock hijau + 2 live-only) + 14/14 live E2E queries passed.  
+> 2. **CURRENT (tersedia hari ini):** database relasional + cleaned data + `QuestionRouter` + `EntityResolutionGate` + `SqlRetriever` tervalidasi AST + `VectorRetriever` pgvector HNSW kosinus + deduplikasi `DISTINCT ON` + threshold $\ge 0.48$ (P1 recalibration dari 0.65 via benchmark berlabel) + `CitationVerifier` (DOI + year strict + Jaccard title) + `GraphRetriever` T1-T4 parameterized + `HybridRetriever` (Gold Analytics: `topics`, `topic_evolution`, `researcher_expertise`) + `EvidenceUnifier` (termasuk `from_hybrid`) + `HybridAnswerSynthesizer` + unified `AnswerSynthesizer` + sintesis LLM opt-in Qwen2.5-Coder (fallback deterministik) + wiring penuh 4-route di `POST /api/v1/ask` + 620 test terkumpul hijau (satu run `pytest -q`; 41 skip = suite live-DB/session tanpa kredensial) + 14/14 live E2E queries passed + 12/12 retrieval regression gate.  
 > 3. **Semua 4 rute RAG (SQL, Vector, Graph, Hybrid) kini LIVE dan terverifikasi.**  
 > 4. **Implikasi:** validasi retrieval semantik pada `chunks.embedding`, validasi jalur kolaborasi graf pada tabel edge, serta analisis tren topik dan kepakaran peneliti pada tabel Gold kini beroperasi penuh end-to-end.  
 > 5. **Fase 8 `[IN PROGRESS]` — gate `<200ms` nol-bukti:** target `AC-RAG-4` dikejar lewat tuning encoder CPU pada `VectorRoute` dengan parity test; opsi R2a.2 (re-scope per-route) memerlukan persetujuan owner dan R2a.3 (pre-probe leksikal) ditolak di Fase 8. Rincian di `reports/fase8_execution_plan.md` §5 dan catatan di §8.
@@ -90,7 +90,7 @@ flowchart TD
 | Rute RAG | Klasifikasi Intent & Kasus Penggunaan | Lapisan Data Target | Strategi Eksekusi & Validasi |
 |---|---|---|---|
 | **`SQLRoute`** | Pertanyaan agregasi, ranking, komparasi numerik, penghitungan volume publikasi/sitasi/dana. | 9 Tabel Silver (`publications`, `authors`, `institutions`, `funding`, `keywords`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) | Text-to-SQL (Qwen2.5-Coder) $\rightarrow$ Validasi AST `sqlglot` $\rightarrow$ Enforce Read-only role $\rightarrow$ `LIMIT 50`. |
-| **`VectorRoute`** | Pertanyaan semantik konseptual, eksplorasi abstrak ilmiah, pencarian literatur tanpa filter relasional. | Silver Vector (`chunks.embedding vector(1024)`) | Embedding kueri via `BAAI/bge-m3` $\rightarrow$ HNSW Cosine Search (`<=>`) $\rightarrow$ `DISTINCT ON (publication_id) LIMIT 8`. Cosine gate $\ge 0.65$. |
+| **`VectorRoute`** | Pertanyaan semantik konseptual, eksplorasi abstrak ilmiah, pencarian literatur tanpa filter relasional. | Silver Vector (`chunks.embedding vector(1024)`) | Embedding kueri via `BAAI/bge-m3` $\rightarrow$ HNSW Cosine Search (`<=>`) $\rightarrow$ `DISTINCT ON (publication_id) LIMIT 8`. Cosine gate $\ge 0.48$ (dikalibrasi benchmark; prototype-calibrated). |
 | **`GraphRoute`** | Pertanyaan jaringan kolaborasi, pencarian mitra riset institusi, identifikasi lingkaran co-authorship. | Derived Edge Layer (`institution_collaboration`, `author_collaboration`) | Templat Recursive CTE Terparameterisasi (T1–T4) $\rightarrow$ Whitelist depth `max_hops = 3` $\rightarrow$ Provenance `via_publication_ids`. |
 | **`HybridRoute`** | Analisis tren temporal topik, deteksi topik berkembang (*emerging topics*), pencarian pakar terbobot multi-dimensi. | Gold Layer (`topics`, `topic_evolution`, `researcher_expertise`) + Silver Relational & Vector | Join analitik multi-tabel terparameterisasi $\rightarrow$ Ekstraksi metrik time-series & skor kepakaran ($w_1\text{--}w_4$). |
 
@@ -120,7 +120,7 @@ class EvidenceObject(BaseModel):
     value: Union[float, int, str] = Field(..., description="Nilai eksak metrik yang ditarik langsung dari database")
     period: str = Field(..., description="Rentang waktu observasi metrik, contoh: '2020-2023' atau 'all-time'")
     sources: List[EvidenceSourceRef] = Field(..., description="Daftar publikasi bukti primer yang mendasari nilai metrik")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Tingkat keyakinan bukti (1.0 untuk analitik SQL/Gold eksak, round(similarity,4) untuk similaritas vector, yaitu 0.65-1.0 di atas gate >= 0.65)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Tingkat keyakinan bukti (1.0 untuk analitik SQL/Gold eksak, round(similarity,4) untuk similaritas vector, yaitu 0.48-1.0 di atas gate >= 0.48)")
 ```
 
 ### 4.2 Alur Bukti dari Database ke Konteks LLM & Output
@@ -156,10 +156,10 @@ class EvidenceObject(BaseModel):
   5. Penegakan `LIMIT 50`.
 
 ### 5.2 `VectorRoute` — Semantik & Konseptual (LIVE — Task 6)
-> **Status: LIVE.** Pencarian similaritas semantik kosinus ber-indeks HNSW dengan deduplikasi per naskah dan ambang $\ge 0.65$ aktif melayani kueri konseptual.
+> **Status: LIVE.** Pencarian similaritas semantik kosinus ber-indeks HNSW dengan deduplikasi per naskah dan ambang $\ge 0.48$ aktif melayani kueri konseptual.
 - **Model**: `BAAI/bge-m3` (Dense 1024 dimensi, Float32).
 > **Literature:** [[literature/2024 - BGE M3 Embedding]] · [[literature/2018 - HNSW Index]]
-- **Cosine Similarity Gate**: $\ge 0.65$.
+- **Cosine Similarity Gate**: $\ge 0.48$ (dikalibrasi benchmark; lihat §5.2.1).
 - **Kueri SQL Terparameterisasi** (dua tahap — ANN ber-indeks HNSW lalu deduplikasi per naskah, FR4.4):
   ```sql
   WITH ann_candidates AS (          -- $2 = overfetch ANN (25x limit, minimum 100)
@@ -173,7 +173,7 @@ class EvidenceObject(BaseModel):
       ORDER BY (c.embedding OPERATOR(extensions.<=>) $1::extensions.vector) ASC
       LIMIT $2
   ),
-  scored_chunks AS (               -- $3 = ambang 0.65
+  scored_chunks AS (               -- $3 = ambang 0.48
       SELECT DISTINCT ON (ac.publication_id)
           ac.publication_id, ac.eid, ac.doi, ac.title, ac.year, ac.citation_count,
           ac.chunk_id, ac.chunk_text,
@@ -334,7 +334,7 @@ flowchart LR
 | **Chunking** | Granularitas abstrak per publikasi pada tabel `chunks`, field `chunk_text`, `section = 'title_abstract'` | `03`, `04`, `05`, `12` | ALIGNED |
 | **Embedding** | `BAAI/bge-m3` (1024-dim, Float32) via `sentence-transformers`, batch 32–64, CPU-optimized, input `Title: {title}\nAbstract: {abstract}` (DONE, Task 1) | `01`, `02`, `03`, `04`, `05`, `09`, `10`, `12` | ALIGNED |
 | **Retrieval** | Dynamic 4-Route: `SQLRoute` (Silver), `VectorRoute` (`chunks.embedding`), `GraphRoute` (Derived Edge T1–T4), `HybridRoute` (Gold Analytics + Silver) | `01`, `02`, `03`, `05`, `06`, `10`, `11` | ALIGNED |
-| **Vector Similarity Gate** | Cosine similarity threshold dikunci deterministik $\ge 0.65$ untuk model `BAAI/bge-m3`; kueri di bawah ambang → short-circuit ke `status: not_found` | `02`, `03`, `05`, `06` | ALIGNED |
+| **Vector Similarity Gate** | Cosine similarity threshold $\ge 0.48$ untuk model `BAAI/bge-m3`, dipilih dari benchmark berlabel 94 kueri (P1 recalibration dari 0.65); kueri di bawah ambang → short-circuit ke `status: not_found`. **PROTOTIPE-KALIBRASI**: wajib divalidasi ulang setelah ingestion skala produksi | `02`, `03`, `05`, `06` | ALIGNED |
 | **Format sitasi** | Standar deterministik 3-elemen: `[Judul, Tahun, DOI]` jika ada DOI, dan `[Judul, Tahun, no-doi]` jika naskah tanpa DOI | `01`, `05`, `06`, `07` | ALIGNED |
 | **Graph Engine Strategy** | MVP dikunci menggunakan parameterized PostgreSQL Recursive CTE (T1–T4); evaluasi pasca-MVP menggunakan Apache AGE pada Fase 9 | `03`, `04`, `09`, `11` | ALIGNED |
 | **Konteks RAG** | Pembingkaian `UNTRUSTED DATA`, LLM murni menyintesis narasi & memvalidasi `EvidenceObject`, short-circuit deterministik pada 0 bukti, `CitationVerifier` post-hoc | `02`, `03`, `05`, `06`, `07`, `08` | ALIGNED |
@@ -349,7 +349,7 @@ flowchart LR
 1. **No-DOI Citation Decision:**
    - *Keputusan:* Format sitasi inline menggunakan pola baku `[Judul, Tahun, DOI]` jika DOI tersedia, dan `[Judul, Tahun, no-doi]` jika publikasi tidak memiliki DOI. Pola ini menjamin regex parser `CitationVerifier` dan parser frontend bekerja deterministik tanpa salah tafsir koma.
 2. **Cosine Similarity Threshold Decision (`VectorRoute`):**
-   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.65$ untuk model `BAAI/bge-m3`. Kueri dengan nilai $< 0.65$ langsung diarahkan ke `status: not_found`.
+   - *Keputusan:* Nilai cosine similarity threshold dikunci pada $\ge 0.48$ untuk model `BAAI/bge-m3` (recalibrated P1 dari 0.65 berdasarkan benchmark berlabel; `reports/retrieval_calibration.md`). Kueri dengan nilai $< 0.48$ langsung diarahkan ke `status: not_found`.
 3. **Post-MVP Graph Engine Decision:**
    - *Keputusan:* MVP menggunakan Recursive CTE Terparameterisasi PostgreSQL (Templat T1–T4) pada tabel edge `institution_collaboration` dan `author_collaboration`. Untuk fase pasca-MVP (Fase 9), sistem menetapkan **Apache AGE** sebagai target evaluasi utama karena terintegrasi langsung sebagai ekstensi PostgreSQL tanpa memerlukan infrastruktur instance database graf terpisah.
 
@@ -363,6 +363,7 @@ flowchart LR
 | `docs/05 Retrieval Rag Design.md` v3.7.1 | Close-out Fase 7: sintesis LLM opt-in (`llm_synthesis`, Qwen2.5-Coder + fallback deterministik + `synthesis_backend`); prioritas routing multi-intent didokumentasikan; perilaku TOPIC_TRENDS tanpa sources + centroid-fallback didokumentasikan; angka tests diganti hasil ukur (329 terkumpul: 315 unit+integration hijau, 14/14 live E2E) | Eksekusi review Fase 7 2026-10-03: integrasi LLM (B1-b), verifikasi live B2/B3, benchmark NFR, probe adversarial; laporan `reports/fase7_closeout.md` |
 | `docs/05 Retrieval Rag Design.md` v3.7.0 | Sinkronisasi Fase 7: `HybridRoute` dari BLOCKED ke LIVE (Task 8.5 Gold Analytics materialization, HybridRetriever, EvidenceUnifier.from_hybrid, HybridAnswerSynthesizer, unified AnswerSynthesizer, wiring POST /api/v1/ask); 4 rute RAG kini beroperasi penuh dengan 324 tests hijau | Review Phase 7 2026-10-03: seluruh komponen retrieval, unifikasi bukti, sintesis ter-grounding, dan verifikasi sitasi 4-rute telah diimplementasikan dan diverifikasi |
 | `docs/05 Retrieval Rag Design.md` v3.6.4 | Sinkronisasi Fase 6: `GraphRoute` dari BLOCKED ke LIVE (Task 8-retriever); tambah spesifikasi T2/T3/T4 (T3 wildcard-escape, T4 ego-BFS + guard siklus); `from_graph` fail-closed; `CitationVerifier` Jaccard ≥0.8 + DOI-year strict; HybridRoute masih BLOCKED (Task 8.5) | Review Phase 6 2026-10-02: kode + 261 tests membuktikan graph retrieval + evidence + synthesizer + wiring GraphRoute sudah ada; dokumen lama masih menyatakan BLOCKED |
+| `docs/05 Retrieval Rag Design.md` v3.7.0 | **P1 recalibration:** cosine gate $\ge 0.65 \rightarrow \ge 0.48$ dipilih dari benchmark berlabel 94 kueri (`tests/fixtures/retrieval_benchmark_v1.json`); `VECTOR_TOP_K` jadi konfigurabel; `top_k` masuk diagnostics. Peningkatan terukur: nDCG@8 0.3991 $\rightarrow$ 0.8257, Hit@8 0.4051 $\rightarrow$ 0.8861, negative FP tetap 0/15. PROTOTIPE-KALIBRASI | `reports/retrieval_calibration.md` |
 | `docs/05 Retrieval Rag Design.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Question Router`, `Aggregate-Shape Check`, `Double-Count Prevention`, `whitelist`, `Cosine Similarity Gate`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/05 Retrieval Rag Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
 | `docs/05 Retrieval Rag Design.md` v3.5.0 | Menambah pemisahan CURRENT vs NEXT; menandai VectorRoute/GraphRoute/HybridRoute sebagai BLOCKED (vector/edge/Gold belum ada); mengoreksi kesan retrieval "saat ini divalidasi" | Sinkronisasi progress aktual 2026-09-27 |

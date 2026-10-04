@@ -194,12 +194,16 @@ def gate_result_for_graph(qid: str) -> EntityResolutionResult:
             resolved_institution_id="INST_ITB",
             resolved_institution_name="Institut Teknologi Bandung",
         )
-    # Q07: ambiguous institution name -> needs_clarification short-circuit
-    cands = [
-        CandidateItem(id="INST_A", name="Universitas Andalas A", type="institution", publication_count=12),
-        CandidateItem(id="INST_B", name="Universitas Andalas B", type="institution", publication_count=3),
-    ]
-    return _entity_clarify(cands, "Beberapa institusi cocok dengan 'Universitas Andalas'.")
+    # Q07: the institution resolves. Previously mocked as an ambiguity that
+    # short-circuited with needs_clarification; the gate now auto-narrows a
+    # whole-university name to its highest-publication department variant, which
+    # is what the live route actually does. The mock must match reality or it is
+    # asserting a behaviour the code no longer has.
+    return EntityResolutionResult(
+        status="ok",
+        resolved_institution_id="INST_ANDALAS",
+        resolved_institution_name="Universitas Andalas",
+    )
 
 
 def _sql_result(
@@ -219,7 +223,7 @@ def _sql_result(
 
 def _vec_result(
     matches: List[VectorMatchItem],
-    threshold: float = 0.65,
+    threshold: float = 0.48,
     filters_ignored: List[str] | None = None,
 ) -> VectorRetrievalResult:
     return VectorRetrievalResult(
@@ -230,32 +234,93 @@ def _vec_result(
     )
 
 
+def _vec_matches_ok() -> List[VectorMatchItem]:
+    """Two real VectorRoute matches with benchmark-measured similarity.
+
+    Scores are the values ``scripts/bench_retrieval.py`` recorded at the
+    selected gate (0.48) for the matching benchmark queries, so the E2E mock
+    tracks measured retrieval behaviour rather than an invented fixture.
+    """
+    return [
+        VectorMatchItem(
+            publication_id="PUB000003",
+            title=(
+                "Anti-Inflammatory Properties of Conditioned Medium From "
+                "Human Wharton's Jelly Mesenchymal Stem Cells"
+            ),
+            year=2025,
+            doi="10.22146/ijbiotech.107035",
+            eid="2-s2.0-85123456",
+            citation_count=3,
+            chunk_id="PUB000003_CH001",
+            chunk_text=(
+                "Human Wharton's Jelly Mesenchymal Stem Cells possess "
+                "regenerative and anti-inflammatory activities through "
+                "cytokine, chemokine and growth factor secretion."
+            ),
+            similarity_score=0.6788,
+        ),
+        VectorMatchItem(
+            publication_id="PUB000004",
+            title=(
+                "Ethanol Extract of Cosmos Caudatus Attenuates Oxidative "
+                "Stress and Inflammation in a Testosterone-Induced Benign "
+                "Prostatic Hyperplasia Rat Model"
+            ),
+            year=2025,
+            doi="10.26538/tjnpr/v9i12.35",
+            eid="2-s2.0-85123457",
+            citation_count=1,
+            chunk_id="PUB000004_CH001",
+            chunk_text=(
+                "This study evaluated the in vivo efficacy of ethanolic "
+                "extract of Cosmos caudatus leaves on oxidative stress and "
+                "systemic inflammation."
+            ),
+            similarity_score=0.4841,
+        ),
+    ]
+
+
 async def _post(client: AsyncClient, body: Dict[str, Any]) -> Dict[str, Any]:
     resp = await client.post("/api/v1/ask", json=body)
     assert resp.status_code == 200, f"Unexpected status {resp.status_code}: {resp.text[:200]}"
     return resp.json()
 
 
-def _route_of(question: str, filters: Dict[str, Any] | None = None) -> str:
-    """Compute the expected route via the real QuestionRouter (no DB needed)."""
-    from backend.app.models.ask import FilterParams
-    from backend.app.services.router import QuestionRouter
-
-    fp = FilterParams(**filters) if filters else None
-    return QuestionRouter.classify_route(question, fp).route
-
-
 # ---------------------------------------------------------------------------
 # 12 canonical E2E queries (docs/01 §7 + docs/10 Task 12)
+#
+# EXPECTATIONS ARE LITERALS ON PURPOSE.
+#
+# This table used to expose `_route_of()`, which computed the expected route by
+# calling the real `QuestionRouter`. That function is now deleted: it was dead
+# code, and dead self-referential code is worse than none, because the next
+# maintainer to wire it back in would silently restore a suite that can never
+# fail on a routing regression. The routes below are hand-declared, so a
+# misroute is a test failure rather than a tautology.
+#
+# `expect["live"]` exists because mock mode and live mode genuinely diverge for
+# a couple of queries, and that divergence is a fact about the corpus rather than
+# a defect in the assertion. Where they differ, each mode asserts exactly ONE
+# outcome instead of a permissive tuple that would also pass on a wrong answer:
+#   * Q06 mock returns a canned resolved institution; live has no "ITB" at all
+#     (ILIKE '%ITB%' and '%Institut Teknologi Bandung%' both match 0 rows in the
+#     prototype corpus), so live is honestly not_found.
+#   * Q10 mock used to force needs_clarification for "J. Wang"; live is
+#     not_found because authors are stored "Surname, Given" and ILIKE '%J. Wang%'
+#     matches 0 rows. The old comment claiming 2 matches was simply wrong.
 # ---------------------------------------------------------------------------
 
 E2E_QUERIES: List[Tuple[str, str, str, Dict[str, Any] | None, Dict[str, Any]]] = [
     # (id, question, expected_route, filters, expected_assertions)
     # NOTE: expectations reflect the live prototype dataset (~20 pubs, 40 chunks,
-    # 138 authors, 107 institutions) as of 2026-09-29, NOT a fully populated prod DB.
+    # 138 authors, 107 institutions) as of 2026-10-04, NOT a fully populated prod DB.
     # Q02 total_publications in 2025 = 20 (all prototype pubs are year 2025).
-    # Q04/Q05 VectorRoute: Ollama bge-m3 embeddings differ from the HF-embedded
-    # chunks; max cosine sim ~0.56 < 0.65 gate -> honest not_found.
+    # Q04/Q05 VectorRoute: recalibrated by the P1 retrieval task. Both were
+    # asserted not_found at the old 0.65 gate; both are genuine topical matches
+    # (PUB000003, PUB000004) and now return evidence at the benchmark-selected
+    # gate of 0.48. See reports/retrieval_calibration.md.
     # Q10 "J. Wang": gate resolves to "Liwang, Tony" (1 match, ILIKE '%wang%'),
     # NOT needs_clarification; the SQL template then returns the author's count.
     (
@@ -284,15 +349,24 @@ E2E_QUERIES: List[Tuple[str, str, str, Dict[str, Any] | None, Dict[str, Any]]] =
         "Paper yang membahas stres oksidatif pada Wharton's jelly",
         "VectorRoute",
         None,
-        # Ollama bge-m3 max cosine ~0.56 < 0.65 gate -> not_found (honest)
-        {"status": "not_found", "evidence_objects_min": 0},
+        # P1 recalibration: was asserted not_found at the old 0.65 gate with the
+        # comment "max cosine ~0.56< 0.65 -> honest not_found". That was the
+        # retrieval miss this task fixed, not correct behaviour: PUB000003 is
+        # literally "Anti-Inflammatory Properties of Conditioned Medium From
+        # Human Wharton's Jelly Mesenchymal Stem Cells" and PUB000004 is an
+        # oxidative-stress study. At the benchmark-selected gate (0.48) both are
+        # reachable, so the honest answer is evidence. See
+        # reports/retrieval_calibration.md.
+        {"status": "ok", "evidence_objects_min": 1, "metric": "similarity_score"},
     ),
     (
         "Q05",
         "Studies exploring anti-inflammatory mechanisms of conditioned medium",
         "VectorRoute",
         None,
-        {"status": "not_found", "evidence_objects_min": 0},
+        # P1 recalibration: flipped from not_found for the same reason as Q04.
+        # PUB000003 is an exact topical match for this phrasing.
+        {"status": "ok", "evidence_objects_min": 1, "metric": "similarity_score"},
     ),
     (
         "Q06",
@@ -300,24 +374,34 @@ E2E_QUERIES: List[Tuple[str, str, str, Dict[str, Any] | None, Dict[str, Any]]] =
         "GraphRoute",
         None,
         {
-            "status": ("ok", "not_found"),
-            "evidence_objects_min": 0,
+            "status": "ok",
+            "evidence_objects_min": 1,
             "metric": "publication_count",
             "source_type": "graph",
+            # Live: "ITB" resolves to nothing in the prototype corpus
+            # (ILIKE '%ITB%' -> 0, '%Institut Teknologi Bandung%' -> 0), so the
+            # honest live answer is not_found. Mock mode stands in for the case
+            # where the institution DOES resolve.
+            "live": {"status": "not_found", "evidence_objects_min": 0},
         },
     ),
-    (
+(
         "Q07",
         "Institusi mana yang berkolaborasi dengan Universitas Andalas?",
         "GraphRoute",
         None,
-        # Ambiguous institution name -> needs_clarification with candidates.
-        # Canned graph mock is unused in mock mode because the gate short-circuits.
-        {
-            "status": "needs_clarification",
-            "candidates_min": 2,
-            "evidence_objects_min": 0,
-        },
+        # REWRITTEN after the entity-gate change. This used to assert
+        # needs_clarification with 2+ candidates, because the gate treated the 8
+        # department-level Scopus affiliation rows for "Universitas Andalas" as an
+        # ambiguity and asked the user to choose. That dead-ended nearly every
+        # institution question.
+        #
+        # The gate now auto-narrows to the highest-publication variant, and live
+        # verification confirms this query answers with 5 evidence objects and no
+        # candidates. The Q07 mock was faking the old behaviour, so it was updated
+        # too - a mock that fabricates a behaviour the code no longer has hides the
+        # change rather than testing it.
+        {"status": "ok", "evidence_objects_min": 1, "source_type": "graph"},
     ),
     (
         "Q08",
@@ -338,9 +422,12 @@ E2E_QUERIES: List[Tuple[str, str, str, Dict[str, Any] | None, Dict[str, Any]]] =
         "Berapa publikasi dari penulis J. Wang?",
         "SQLRoute",
         {"author_name": "J. Wang"},
-        # Live DB: "J. Wang" matches 2 authors (J. Wang A + J. Wang B) -> needs_clarification.
-        # Accept ok/not_found/needs_clarification as all three are honest deterministic outcomes.
-        {"status": ("ok", "not_found", "needs_clarification"), "evidence_objects_min": 0},
+        # Live, verified: ILIKE '%J. Wang%' matches 0 authors in this corpus
+        # (names are stored "Surname, Given"), so not_found is the honest result.
+        # The previous entry accepted ("ok", "not_found", "needs_clarification"),
+        # a tuple that also permitted "ok" - i.e. it would have passed while the
+        # gate mis-resolved. One outcome, asserted.
+        {"status": "not_found", "evidence_objects_min": 0},
     ),
     (
         "Q11",
@@ -407,9 +494,14 @@ def _mock_for_query(qid: str, question: str, filters: Dict[str, Any] | None):
         )
         return sql, None, _entity_ok(), None, None
     if qid in ("Q04", "Q05"):
-        # Ollama bge-m3 vs HF bge-m3 chunk embeddings: max cosine ~0.56 < 0.65
-        # gate → 0 distinct matches → not_found.  Mock mirrors live behaviour.
-        vec = _vec_result([])
+        # P1 recalibration: both queries are genuine topical matches for the
+        # prototype corpus (PUB000003 = Wharton's-jelly conditioned medium,
+        # PUB000004 = oxidative stress), so they now clear the benchmark-selected
+        # gate and return evidence. Scores below are the values measured by
+        # scripts/bench_retrieval.py at threshold 0.48, so the mock mirrors live
+        # behaviour instead of asserting an arbitrary fixture.
+        # The VectorRoute not_found path stays covered by Q12.
+        vec = _vec_result(_vec_matches_ok())
         return None, vec, _entity_ok(), None, None
     if qid in ("Q06", "Q07"):
         # GraphRoute: Task 8-retriever landed; happy-path T1 with provenance
@@ -423,11 +515,14 @@ def _mock_for_query(qid: str, question: str, filters: Dict[str, Any] | None):
         hybrid = _hybrid_experts_result_ok()
         return None, None, _entity_ok(), None, hybrid
     if qid == "Q10":
-        cands = [
-            CandidateItem(id="AUTH_A1", name="J. Wang A", type="author", publication_count=4),
-            CandidateItem(id="AUTH_A2", name="J. Wang B", type="author", publication_count=2),
-        ]
-        return None, None, _entity_clarify(cands, "Beberapa penulis cocok dengan 'J. Wang'."), None, None
+        # Live behaviour, verified against the prototype corpus: authors are
+        # stored "Surname, Given", so ILIKE '%J. Wang%' matches 0 rows and the
+        # honest answer is not_found. The previous mock forced
+        # needs_clarification on a comment claiming "J. Wang" matched 2 authors;
+        # that claim was false. The permissive 3-way status tuple existed only to
+        # paper over the disagreement, and would also have passed on a wrong
+        # answer. Mock now matches live.
+        return None, None, _entity_not_found("Tidak ditemukan penulis yang cocok dengan 'J. Wang'."), None, None
     if qid == "Q11":
         return None, None, _entity_not_found("Tidak ditemukan penulis yang cocok dengan 'Xyzzq Qwerty Tidakada'."), None, None
     if qid == "Q12":
@@ -602,16 +697,26 @@ async def test_e2e_12_queries_live_db():
 
             data = await _post(client, body)
             assert data["route"] == route, f"{qid}: route mismatch"
-            if "status" in expect:
-                expected_status = expect["status"]
+            # Live uses its own expectation when the corpus makes it differ from
+            # mock mode (see the E2E_QUERIES header). Each mode asserts exactly
+            # one status, so a wrong answer cannot pass.
+            live_expect = expect.get("live", expect)
+            if "status" in live_expect:
+                expected_status = live_expect["status"]
                 if isinstance(expected_status, tuple):
                     assert data["status"] in expected_status, f"{qid}: status mismatch"
                 else:
-                    assert data["status"] == expected_status, f"{qid}: status mismatch"
-            if "evidence_objects_min" in expect:
-                assert len(data["evidence_objects"]) >= expect["evidence_objects_min"], f"{qid}: evidence count"
-            if "candidates_min" in expect:
-                assert data.get("candidates") is not None and len(data["candidates"]) >= expect["candidates_min"]
+                    assert data["status"] == expected_status, (
+                        f"{qid}: status mismatch: expected {expected_status!r}, "
+                        f"got {data['status']!r}"
+                    )
+            if "evidence_objects_min" in live_expect:
+                assert len(data["evidence_objects"]) >= live_expect["evidence_objects_min"], (
+                    f"{qid}: evidence count: got {len(data['evidence_objects'])}, "
+                    f"need >= {live_expect['evidence_objects_min']}"
+                )
+            if "candidates_min" in live_expect:
+                assert data.get("candidates") is not None and len(data["candidates"]) >= live_expect["candidates_min"]
             assert data.get("unverified_citations", []) == [], f"{qid}: unverified citations leaked"
 
             # Latency budget (NFR1) — exempt the first VectorRoute call from the
