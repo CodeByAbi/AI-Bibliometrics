@@ -69,7 +69,9 @@ Tingkatan data Medallion pada sistem ini:
    - **Batas skema.** Tabel sesi berada di schema `app`, sedangkan pool retrieval mengunci `search_path = public`. Tabel sesi karena itu *tidak dapat dicapai* dari jalur baca retrieval, bahkan oleh SQL hasil Text-to-SQL yang salah nama.
    - **Batas kredensial.** Dua pool, dua peran: `app_readonly` (SELECT pada `public`) dan `app_session` (SELECT/INSERT/UPDATE/DELETE pada `app`). Keduanya diverifikasi dua arah oleh `scripts/grant_session_role.py`.
    - **Batas whitelist.** `ALLOWED_TABLES` pada `sql_security.py` **tidak** memuat tabel sesi, sehingga SQL yang dihasilkan LLM tidak dapat membaca transkrip.
-   - **Batas data ownership.** Tidak ada kolom metrik bibliometrik pada tabel sesi mana pun. `SessionSummaryService.build()` secara struktural tidak menerima `EvidenceSet`/`EvidenceObject` sebagai parameter, sehingga tidak *bisa* memuat angka.
+   - **Batas data ownership.** Tidak ada kolom metrik bibliometrik **tingkat sesi** pada tabel sesi mana pun. `SessionSummaryService.build()` secara struktural tidak menerima `EvidenceSet`/`EvidenceObject` sebagai parameter, sehingga tidak *bisa* memuat angka.
+
+   **Pengecualian terelatasi (migrasi 006) — `evidence_objects` / `sources`.** Dua kolom JSONB pada `research_messages` memang memuat nilai metrik, jadi ini pengecualian yang **disetujui owner** terhadap invarian di atas, dan **dipagar**, bukan dilonggarkan diam-diam. Keterangkannya: snapshot **immutable per-turn** dari apa yang sudah dibawa satu `AskResponse` terverifikasi, agar workspace yang ditutup dapat digambar ulang tanpa menjalankan ulang RAG. Yang tetap dilarang: menjadi penyimpanan metrik kanonik; dibaca sebagai sumber kebenaran oleh retrieval/agregasi/peringkat/analitik/sintesis/verifikasi; menjadi agregat tingkat sesi; dan tetap tidak terjangkau dari jalur baca (`search_path = public`). Kunci re-verifikasi tetap `request_id`. Pagar mekanisnya: `audit_provenance_columns()` di `scripts/verify_schema.py` (harus JSONB, hanya di `research_messages`), pembedaan sengaja antara `list_messages()` (memilih) dan `list_recent_messages()` (tidak memilih, karena itu menyusun prompt), serta `tests/unit/test_session_provenance.py`. Detail lengkap: docs/04 §13.1.
 
    Konsekuensi operasional: session context (summary + N pesan terakhir) hanya membantu **memahami** pertanyaan lanjutan dengan mengisi filter yang tidak disebutkan pengguna. `question` tidak pernah ditulis ulang, sehingga routing, Text-to-SQL, `EvidenceSet.query`, dan verifikasi sitasi tetap sama persis. Setiap angka dalam jawaban tetap berasal dari retrieval ke `public` — angka yang pernah muncul di jawaban assistant sebelumnya harus **di-query ulang**, bukan dipercaya (AC-SESSION-8, AC-SESSION-11).
 
@@ -135,6 +137,50 @@ Tingkatan data Medallion pada sistem ini:
    ```
 
    **Aturan satu kalimat:** *Session mengingat apa yang dibicarakan pengguna dan assistant; basis data bibliometrik menentukan apa yang secara faktual benar tentang data riset.*
+
+### 0.4 Di mana Lapisan Session Berdiri (Session Layer Placement)
+
+```
+Frontend  (Next.js)
+    │  /research/{session_id}  — identitas workspace, lives di URL
+    ↓
+Session Layer / Research Workspace        ← ORKESTRASI + PERSISTENSI
+    │  POST /api/v1/sessions · GET · PATCH · DELETE
+    │  orkestrasi turn: simpan user → jalankan pipeline → simpan assistant
+    ↓
+POST /api/v1/ask
+    ↓
+Pipeline RAG yang ada (TIDAK DIROMBAH)
+    Gateway → QuestionRouter → Retrieval → EvidenceUnifier
+            → EvidenceRanker → Context → AnswerSynthesizer
+            → CitationVerifier → Output
+```
+
+> **Persistensi session adalah urusan orkestrasi/persistensi di sekeliling pipeline
+> RAG — bukan urusan retrieval.** Lapisan session menyimpan dan memulihkan
+> hasil RAG; ia tidak mendefinisikan, menghitung, atau menafsirkan ulangannya.
+> Tidak ada satu pun baris retriev, router, evidence, maupun synthesizer yang
+> diubah oleh lapisan ini.
+
+Alasannya, dan mengapa urutan itu tidak boleh dibalik:
+
+- **Orkestrasi_wraps, bukan mewarisi.** `SessionService` memanggil pipeline
+  melalui satu titik yang sudah ada; ia tidak pernah masuk ke router, retriever,
+  evidence, atau synthesizer. Import boundary itu juga yang membuat
+  `SessionRepository` mustahil mencapai korpus.
+- **Urutan mattered.** Validasi sesi → muat konteks → **simpan turn user** →
+  pipeline → **simpan turn assistant** → `updated_at` → ringkasan. Turn user
+  di-commit **sebelum** retrieval, karena LLM berjalan beberapa detik; kegagalan
+  di hilir tidak boleh ikut merollback pertanyaan pengguna.
+- **Transaksi hanya untuk hal yang perlu atomik.** `_persist_turn` adalah satu-satunya
+  tempat transaksi dibuka, dan **tidak** membungkus eksekusi RAG. Satu INSERT
+  menyimpan turn beserta snapshot provenance-nya, sehingga snapshot mustahil
+  ter-commit tanpa turn-nya.
+- **Biaya ditambahkan ke latency nol.** Pembuatan judul dan ringkasan bersifat
+  deterministik dan tanpa LLM — bukan panggilan LLM tambahan setelah sintesis.
+  Ringkasan dibangun ulang dari ekor transkrip yang **dibatasi**
+  (`session_recent_messages_limit`), bukan dengan mengirim seluruh transkrip ke
+  model pada setiap permintaan.
 
 ---
 

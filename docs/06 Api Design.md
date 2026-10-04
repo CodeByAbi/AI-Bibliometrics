@@ -324,7 +324,7 @@ Query parameter: `limit` (default 50, max 200) dan `status` (`active` | `archive
 default `active`).
 
 ```json
-// 200 OK — metadata saja, TIDAK menyertakan transkrip
+// 200 OK — metadata + hitungan agregat, TIDAK menyertakan transkrip
 [
   {
     "id": "3f2b...-uuid",
@@ -332,14 +332,28 @@ default `active`).
     "status": "active",
     "created_at": "2026-10-04T09:00:00Z",
     "updated_at": "2026-10-04T09:12:00Z",
-    "last_message_at": "2026-10-04T09:12:00Z"
+    "last_message_at": "2026-10-04T09:12:00Z",
+    "message_count": 6,
+    "source_count": 3,
+    "last_route": "HybridRoute"
   }
 ]
 ```
 
 Diurutkan `last_message_at DESC NULLS LAST`, sehingga sesi yang belum pernah
-pertanyaan tidak menyamar sebagai riset terbaru. Endpoint list sengaja tidak
+bertanya tidak menyamar sebagai riset terbaru. Endpoint list sengaja tidak
 menyeret history: pengguna dengan 200 sesi tidak boleh membayar 200 transkrip.
+
+**Makna hitungan — didefinisikan di SQL, bukan ditebak client:**
+
+| Field | Arti |
+|---|---|
+| `message_count` | seluruh turn tersimpan, **termasuk** turn `user` dan turn `failed`. Ia menjawab "sepanjang apa transkrip ini", jadi tidak boleh menyusut diam-diam hanya karena satu turn gagal. |
+| `source_count` | jumlah publikasi **distinct** yang menopang turn `assistant` sesi ini. Menghitung setiap sitasi akaninflationbias pengulangan, sehingga sesi yang mengutip 3 paper yang sama 10 kali melaporkan 3, bukan 30. Identitas memakai `publication_id`, dengan fallback `doi` lalu `title`. |
+| `last_route` | rute dari turn `assistant` terakhir yang punya rute. `null` untuk sesi yang belum terjawab — karena itu sidebar **wajib**.null dan tidak boleh menampilkan rute untuk percakapan kosong. |
+
+Hitungan ini dihitung di database dengan sengaja: sidebar tidak pernah menebak
+dari transkrip yang tidak ia ambil.
 
 > **Catatan operasional:** endpoint ini berbagi budget rate-limit per-IP dengan
 > `/api/v1/ask` (docs/08 §3). Client sebaiknya mengambil daftar saat mount dan
@@ -359,9 +373,11 @@ menyeret history: pengguna dengan 200 sesi tidak boleh membayar 200 transkrip.
   "summary": "Topik saat ini: ...",
   "messages": [
     { "id": "a1...", "role": "user",      "content": "...", "status": "complete",
-      "created_at": "...", "request_id": "...", "route": null },
+      "created_at": "...", "request_id": "...", "route": null,
+      "evidence_objects": [], "sources": [] },
     { "id": "a2...", "role": "assistant", "content": "...", "status": "complete",
-      "created_at": "...", "request_id": "...", "route": "SQLRoute" }
+      "created_at": "...", "request_id": "...", "route": "SQLRoute",
+      "evidence_objects": [], "sources": [] }
   ]
 }
 ```
@@ -371,7 +387,47 @@ conversation memory: topiknya sederhana, cakupannya, dan pertanyaan sebelumnya.
 Field ini berisi teks yang dipengaruhi pengguna, diperlakukan sebagai
 **UNTRUSTED DATA**, dan **tidak pernah** menjadi evidence.
 
-### 6.2.4 `DELETE /api/v1/sessions/{session_id}` — hapus sesi
+**`evidence_objects` / `sources` (migrasi 006) — provenance per-turn.** Endpoint
+ini adalah **pure read**: membuka sesi lama tidak pernah menjalankan ulang
+QuestionRouter, retriever, LLM, maupun verifikasi sitasi. Snapshot tersebut
+memungkinkan workspace digambar ulang persis seperti saat ditampilkan.
+
+> **Snapshot adalah kuitansi, bukan fakta.** Setiap angka di dalamnya benar saat
+> jawaban itu diberikan dan mungkin tidak lagi benar sekarang. `request_id` pada
+> turn yang sama adalah kunci re-verifikasi: satu-satunya cara mengonfirmasi
+> kembali adalah bertanya ulang, yang akan requery `public` dari nol. Kolom ini
+> tidak pernah dibaca sebagai sumber kebenaran oleh retrieval, agregasi,
+> peringkat, analitik, sintesis, atau verifikasi sitasi. Lihat docs/04 §13.1.
+
+`status` pada turn `assistant` mencerminkan hasil retrieval, bukan sekadar
+"selesai": `complete` (jawaban ter-grounding), `not_found` (retrieval berjalan dan
+benar menemukan nol bukti — hasil truthfully, bukan error), `failed` (turn gagal
+sebelum ada jawaban). Ketiganya sengaja tidak digabung; lihat docs/04 §13.2.
+
+### 6.2.4 `PATCH /api/v1/sessions/{session_id}` — ganti judul
+
+```json
+// Request
+{ "title": "Riset MSC saya" }
+// 200 OK — bentuk sama dengan POST /api/v1/sessions
+```
+
+Endpoint **hanya** untuk mengganti judul — **bukan** update generik.
+`SessionUpdateRequest` memakai `extra="forbid"`, jadi tidak ada field yang bisa
+menyentuh transkrip, lifecycle, atau apa pun yang bibliometrik.
+
+Validasi: trim + collapse whitespace, tidak boleh blank, maksimum 200 karakter.
+Kosong diperiksa **setelah** trim, sehingga `"   "` menghasilkan `422` — bukan
+lolos `min_length=1` lalu gagal sebagai `500` di CHECK constraint database dengan
+tanpa field path. Validasi hanya ada di satu lapisan (request model);
+mengulangnya di service akan menghasilkan dua jawaban untuk "apa judul yang valid".
+
+Judul yang dikirim selalu menang, termasuk menimpa judul turunan otomatis maupun
+placeholder. `updated_at` bergerak, dan `last_message_at` **tidak** — mengganti
+judul bukan aktivitas riset. `404` untuk sesi yang tidak ada; `503
+session_store_unavailable` bila persistensi sesi belum dikonfigurasi.
+
+### 6.2.5 `DELETE /api/v1/sessions/{session_id}` — hapus sesi
 
 Mengembalikan `204 No Content` **baikpun** sesinya ada atau tidak: DELETE bersifat
 idempoten, dan `404` akan mendorong client masuk retry loop terhadap sesi yang
@@ -381,7 +437,7 @@ Cascade hanya mencapai `research_messages` dan `research_session_summaries`.
 Tidak ada foreign key dari `app` ke `public`, sehingga operasi ini secara
 struktural tidak dapat menyentuh korpus (AC-SESSION-9).
 
-### 6.2.5 Kontrak session_id pada `POST /api/v1/ask`
+### 6.2.6 Kontrak session_id pada `POST /api/v1/ask`
 
 `AskRequest` mendapatkan tiga field opsional. Ketiganya **backward-compatible**:
 request lama tanpa `session_id` berperilaku persis sama.
@@ -415,7 +471,7 @@ request lama tanpa `session_id` berperilaku persis sama.
 `session_filters_applied` ada karena filter yang diwarisi secara otomatis dan
 tidak terlihat pengguna, dari luar, tidak dapat dibedakan dari jawaban yang salah.
 
-### 6.2.6 Aturan Session Context
+### 6.2.7 Aturan Session Context
 
 | Aspek | Perilaku |
 |---|---|

@@ -43,17 +43,15 @@ rather than mistaking a skipped test for a passing one.
 
 from __future__ import annotations
 
-import time
 import uuid
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.app.core.errors import AppException
-from backend.app.core.logging import logger
 from backend.app.main import app
-from backend.app.models.ask import AskRequest, AskResponse, EvidenceObject, SourceItem
+from backend.app.models.ask import AskResponse, EvidenceObject, SourceItem
 from backend.app.models.session import (
     ConversationContext,
     SessionCreatedResponse,
@@ -81,7 +79,7 @@ class FakeSessionService:
     ``get_session_detail`` returns messages in insertion order.
     """
 
-    instances: list["FakeSessionService"] = []
+    instances: ClassVar[list[FakeSessionService]] = []
 
     def __init__(self) -> None:
         self.sessions: dict[uuid.UUID, dict[str, Any]] = {}
@@ -90,7 +88,7 @@ class FakeSessionService:
         FakeSessionService.instances.append(self)
 
     @classmethod
-    async def create(cls) -> "FakeSessionService":
+    async def create(cls) -> FakeSessionService:
         return cls()
 
     async def create_session(self, *, title: str | None) -> dict[str, Any]:
@@ -131,7 +129,10 @@ class FakeSessionService:
         self, *, limit: int = 50, status: str | None = None
     ) -> list[dict[str, Any]]:
         rows = list(self.sessions.values())
-        rows.sort(key=lambda r: (r["last_message_at"] or "", r["created_at"]), reverse=True)
+        rows.sort(
+            key=lambda r: (r["last_message_at"] or "", r["created_at"]),
+            reverse=True,
+        )
         out = []
         for r in rows[:limit]:
             msgs = self.messages[r["session_id"]]
@@ -185,7 +186,9 @@ class FakeSessionService:
         sess["updated_at"] = row["created_at"]
         return row
 
-    async def adopt_title_from_first_question(self, session_id: uuid.UUID, q: str) -> None:
+    async def adopt_title_from_first_question(
+        self, session_id: uuid.UUID, q: str
+    ) -> None:
         sess = self.sessions.get(session_id)
         if sess and sess["title"] == "New Research":
             sess["title"] = q[:60]
@@ -240,7 +243,7 @@ def stub_rag(monkeypatch: pytest.MonkeyPatch, **response_over: Any) -> list[str]
     calls: list[str] = []
 
     async def _fake(
-        payload: Any, start_time: float, req_id: str, latencies: dict[str, float], conversation_block: str | None = None
+        payload: Any, start_time: float, req_id: str, latencies: dict[str, float], conversation_block: str | None = None,  # noqa: E501
     ) -> AskResponse:
         calls.append(req_id)
         base = {
@@ -368,7 +371,9 @@ async def test_session_lifecycle_end_to_end(
     assert "tidak ditemukan" in last.content
 
     # 14. rename sticks.
-    res = await client.patch(f"/api/v1/sessions/{sid}", json={"title": "  My MSC research  "})
+    res = await client.patch(
+        f"/api/v1/sessions/{sid}", json={"title": "  My MSC research  "}
+    )
     assert res.status_code == 200, res.text
     assert SessionCreatedResponse.model_validate(res.json()).title == "My MSC research"
 
@@ -438,7 +443,9 @@ async def test_ask_without_session_stays_stateless(
 ) -> None:
     """Omitting session_id must not silently create or attach to a session."""
     stub_rag(monkeypatch)
-    res = await client.post("/api/v1/ask", json={"question": "Berapa publikasi UI 2023?"})
+    res = await client.post(
+        "/api/v1/ask", json={"question": "Berapa publikasi UI 2023?"}
+    )
     assert res.status_code == 200
     assert store.sessions == {}
     assert store.messages == {}
@@ -454,13 +461,17 @@ async def test_retrieval_failure_records_a_failed_turn_not_a_fake_answer(
     ).id
 
     async def _boom(
-        payload: Any, start_time: float, req_id: str, latencies: dict[str, float], conversation_block: str | None = None
+        payload: Any, start_time: float, req_id: str, latencies: dict[str, float], conversation_block: str | None = None,  # noqa: E501
     ) -> AskResponse:
         raise RuntimeError("retrieval exploded: postgresql://u:hunter2@host/db")
 
     monkeypatch.setattr("backend.app.routers.ask._run_ask_pipeline", _boom)
 
-    with pytest.raises(Exception):
+    # The pipeline error must propagate to the caller rather than being
+    # swallowed. Asserting a bare `Exception` would also pass if the request
+    # failed for an unrelated reason, so the transport-level failure is asserted
+    # explicitly and the interesting claim is about what got PERSISTED.
+    with pytest.raises(RuntimeError, match="retrieval exploded"):
         await client.post(
             "/api/v1/ask",
             json={"session_id": str(sid), "question": "Berapa publikasi UI 2023?"},
