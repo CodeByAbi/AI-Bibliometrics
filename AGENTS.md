@@ -8,6 +8,9 @@ The system strictly eliminates hallucinations through a deterministic dual-track
 - **Zero-Hallucination Invariant**: If no evidence is found in the database, the query short-circuits to `status: not_found` within 200ms without invoking the LLM.
 - **Strict Grounding**: The LLM synthesizes responses solely from structured `EvidenceSet` context using delimited blocks (`=== BEGIN/END RETRIEVED EVIDENCE ===`) and untrusted data framing.
 - **Post-Hoc Verification**: All output citations (`[Title, Year, DOI]` or `[Title, Year, no-doi]`) are cross-checked via regex against retrieved records; unverified citations are stripped into `unverified_citations`.
+- **Session Isolation Invariant**: Conversation state (`research_sessions`, `research_messages`, `research_session_summaries`) lives in a separate PostgreSQL schema `app` under a separate role `app_session`, and is **never** part of the bibliometric canonical source of truth. No session lifecycle operation may alter or delete canonical bibliometric data. Every bibliometric fact and metric must still come from retrieval against schema `public`.
+
+  Session context (summary + last N messages) may only help *interpret* a follow-up question, by filling filters the current question left unspecified. `question` is never rewritten, so routing, Text-to-SQL, `EvidenceSet.query` and citation verification are unchanged. A number quoted by a previous assistant turn must be re-queried, never trusted.
 
 ---
 
@@ -75,7 +78,9 @@ graph TD
 │   │   ├── components/       # 2-panel dense layout, source cards, SQL debug drawer
 │   │   ├── hooks/            # SWR/React Query data fetching and UI state hooks
 │   │   └── lib/              # API client, citation parsing, formatting utilities
-│   └── package.json          # Frontend dependency specifications
+│   ├── package.json          # Frontend dependency specifications
+│   └── scripts/
+│       └── free-port.mjs     # Kills whatever holds port 3000; backs `npm run dev:reset`
 ├── scripts/                  # Offline Ingestion, Embedding & Graph Builders
 │   ├── verify_schema.py      # Task 0: Validates PostgreSQL schema against specs
 │   ├── embed_chunks.py       # Task 1: Batch chunk embedding via BAAI/bge-m3
@@ -136,19 +141,45 @@ python scripts/build_topics.py && python scripts/score_expertise.py
 ```bash
 cd frontend
 npm install              # or pnpm install / bun install
-npm run dev              # Start development server (http://localhost:3000)
+npm run dev:reset        # Start dev server, freeing port 3000 first (PREFERRED)
+npm run dev              # Start dev server as-is; fails if port 3000 is held
 npm run build            # Build production bundle
-npm run lint             # Run ESLint validation
+npm run start            # Serve the production build (judge perf with this, not dev)
+npm run verify           # lint + typecheck + test (145 tests)
+```
+
+#### Why `dev:reset` and not `dev`
+
+`npm run dev` fails with `EADDRINUSE` whenever a previous `next dev` still holds port 3000. The usual cause is closing the terminal without `Ctrl+C`, which leaves the `next dev` process orphaned and still listening. Because Next compiles the route lazily, the process burns 9–21 s of CPU *before* crashing at bind time, so the failure looks like a broken build rather than a port conflict.
+
+`dev:reset` runs `scripts/free-port.mjs` first, which finds and kills whatever holds the port, then starts the server. Safe to run repeatedly — if a server is already up it is simply replaced.
+
+Manual equivalent when the script is unavailable:
+
+```bash
+netstat -ano | findstr :3000        # note the PID
+taskkill /PID <pid> /T /F
 ```
 
 ### Docker Services
 
 ```bash
 # Start backend and Ollama CPU services
+# backend now waits for `ollama: service_healthy`, so this returns only once the
+# model server actually answers instead of racing it on a cold boot.
 docker compose up -d --build
 
-# Run migrations/schema check inside container
-docker compose exec backend python scripts/verify_schema.py
+# Container health / readiness
+docker compose ps
+curl -s http://localhost:8000/api/v1/health
+curl -s http://localhost:8000/metrics | grep aibiblio_synthesis
+
+# Offline scripts (verify_schema, migrate, build_edges, embed_chunks, ...)
+# do NOT run inside the backend container: the image ships backend/ only, and
+# it deliberately excludes psycopg + the offline-only ML/plotting deps, which
+# live in requirements-dev.txt. Run them from the host venv instead:
+python scripts/verify_schema.py
+python scripts/migrate.py up --dry-run
 ```
 
 ---

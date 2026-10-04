@@ -1,8 +1,8 @@
 # Tech Stack — Rekomendasi & Rasional (Consolidated Hybrid Master Blueprint)
 
-**Versi Dokumen:** 3.6.3 (Consolidated Hybrid Master Blueprint — aturan bahasa: narasi Indonesia, teknis Inggris; tanpa perubahan keputusan teknis)  
-**Tanggal Status:** 2026-09-27  
-**Menggantikan:** `09 Tech Stack.md` v3.6.2 (2026-10-03)
+**Versi Dokumen:** 3.6.4 (TBD-6 DECIDED dari `frontend/package.json`; TBD-5 dan TBD-7 diplot ke Fase 8/9)  
+**Tanggal Status:** 2026-10-03  
+**Menggantikan:** `09 Tech Stack.md` v3.6.3 (2026-09-27)
 **Konteks Otoritatif:** Selaras dengan `README.md` dan `docs/01` hingga `docs/12`  
 > **Status Implementasi & Realitas Stack (Sinkronisasi Progress 2026-09-29):**  
 > 1. **Database PostgreSQL:** Basis data PostgreSQL **sudah dibuat dan siap pakai**, memuat **dataset prototipe kecil** (~20 publikasi, 40 chunk, 138 author, 107 institusi) pada 9 tabel relasional kanonikal (`publications`, `authors`, `institutions`, `keywords`, `funding`, `pub_author`, `pub_institution`, `publication_references`, `chunks`) untuk validasi end-to-end. Kredensial diamankan secara internal.  
@@ -117,9 +117,9 @@ Framework seperti LangChain/LlamaIndex dihindari untuk MVP karena lapisan abstra
 | TBD-2 | Server ASGI (`uvicorn` + versi) | Dibutuhkan `Task 2` tapi belum ada dasar dokumen | Task 2 |
 | TBD-3 | Test tooling (`pytest` / `httpx` + versi) untuk suite router/SQL/vector/graph/evidence/API + E2E 12-kueri | Dibutuhkan `Task 12` (`docs/10`, `docs/11 Fase 8`) | Task 2 / Task 12 |
 | TBD-4 | Versi pin: `pgvector`, `Ollama`, `sqlglot`, `Pydantic v2` minor, `sentence-transformers`, commit `BAAI/bge-m3` + lockfile | `09 §3` menjanjikan pin di lockfile; lockfile belum ada (belum ada `backend/`) | Task 0/2 |
-| TBD-5 | Path online query-embedding: `sentence-transformers` lokal **vs** endpoint embedding Ollama | `docs/11 Fase 4` menulis alternatif; `09` hanya mengunci batch offline | Task 6 — DECIDED: lokal primer + Ollama fallback (dual-path, `backend/app/services/embedding.py:generate_query_embedding_with_backend`); backend pelayan terekspos sebagai `embedding_backend` (`"local"`/`"ollama"`) di debug `VectorRoute`. Sisa: parity check distribusi fallback terhadap gate 0.65 (Task 12) |
-| TBD-6 | Frontend CSS/component lib + versi Node | `docs/07` hanya mengunci token warna/font, bukan lib | Task 11 |
-| TBD-7 | Kriteria evaluasi Apache AGE Fase 9 (versi + benchmark) | `09 §7` hanya menetapkan sebagai target evaluasi | Fase 9 (pasca-MVP) |
+| TBD-5 | Path online query-embedding: `sentence-transformers` lokal **vs** endpoint embedding Ollama | `docs/11 Fase 4` menulis alternatif; `09` hanya mengunci batch offline | Task 6 — DECIDED: lokal primer + Ollama fallback (dual-path, `backend/app/services/embedding.py:generate_query_embedding_with_backend`); backend pelayan terekspos sebagai `embedding_backend` (`"local"`/`"ollama"`) di debug `VectorRoute`. **Sisa:** parity check distribusi fallback terhadap gate 0.65 → workstream B Fase 8 |
+| TBD-6 | Frontend CSS/component lib + versi Node | `docs/07` hanya mengunci token warna/font, bukan lib | Task 11 — **DECIDED (Level 1, berbasis `frontend/package.json` on-disk):** Next.js 14.2.18 + React 18.3.1, TypeScript 5.6.3, **CSS hand-rolled tanpa framework** (tanpa Tailwind; token warna/font tetap mengikuti `docs/07` §3), `motion` ^14.0.0 untuk motion, `lucide-react` ^0.469.0 untuk ikon, test `vitest` ^2.1.9 + `@testing-library/react` + `axe-core`, lint `eslint-config-next`. Skrip: `lint`, `typecheck`, `test`, `test:coverage`, `a11y`, `verify` |
+| TBD-7 | Kriteria evaluasi Apache AGE Fase 9 (versi + benchmark) | `09 §7` hanya menetapkan sebagai target evaluasi | Fase 9 (pasca-MVP) — di luar scope Fase 8 |
 
 ---
 
@@ -160,6 +160,7 @@ Framework seperti LangChain/LlamaIndex dihindari untuk MVP karena lapisan abstra
 
 | Dokumen | Perubahan | Alasan |
 |---|---|---|
+| `docs/09 Tech Stack.md` v3.6.4 | TBD-6 **DECIDED** (Level 1) dari `frontend/package.json` on-disk: Next.js 14.2.18 + React 18.3.1, TypeScript 5.6.3, CSS hand-rolled tanpa Tailwind, `motion` ^14.0.0, `lucide-react` ^0.469.0, `vitest` ^2.1.9 + Testing Library + `axe-core`, `eslint-config-next`, skrip `verify`; TBD-5 sisa parity check dipindah ke workstream B Fase 8; TBD-7 ditegaskan di luar scope Fase 8 | `docs/07` hanya mengunci token warna/font sehingga lib dan versi belum tercatat; Task 11 sudah mengimplementasikan dan memilih stack sehingga TBD-6 dapat ditutup berdasarkan bukti Level 1 (kode) |
 | `docs/09 Tech Stack.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`Tech Stack`, `Vector Storage`, `Dynamic 4-Route`, `Vector Similarity Gate`, `No-DOI Citation Decision`, dll); sync status Phase 0–2 DONE, Phase 3 NEXT | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/09 Tech Stack.md` v3.6.2 | Update status: ekstensi pgvector `vector` DONE (terpasang di PostgreSQL DB + Supabase, tanpa verifikasi ulang); kolom + data + HNSW tetap PENDING Task 1; `VectorRoute` tetap BLOCKED | Update status ekstensi per info user; tanpa perubahan keputusan teknis |
 | `docs/09 Tech Stack.md` v3.6.1 | Sync-only tanpa perubahan keputusan teknis: (1) baris Database §1 dipecah DONE vs PLANNED + tegaskan VectorRoute BLOCKED; (2) tambah §3.1 vector storage (metadata, input Title+Abstract, HNSW, gate + DISTINCT ON, topics.representation_vector); (3) klarifikasi Compose §6 (Postgres eksternal); (4) tambah §8 dependency + §9 TBD-1–TBD-7; (5) tegaskan penolakan LangChain/LlamaIndex + penundaan AGE/SSE/Redis/GPU dipertahankan; (6) renumber §8–§10 menjadi §10–§12 | Sinkronisasi redaksi C1–C4 + TBD C5 sesuai review lintas-dokumen 2026-09-27; cegah asumsi vector ready |

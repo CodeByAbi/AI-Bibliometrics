@@ -62,6 +62,79 @@ Tingkatan data Medallion pada sistem ini:
 2. **Strict Grounding & Evidence Object Enforcement**: LLM berfungsi murni sebagai **mesin sintesis analitik naratif, BUKAN sumber angka mentah atau statistik**. Setiap fakta numerik wajib dibungkus dalam `EvidenceObject` terstruktur (`claim`, `metric`, `value`, `period`, `sources`, `confidence`) yang ditarik langsung dari database.
 3. **Security Invariant**: Akses database aplikasi runtime FastAPI wajib menggunakan role `app_readonly` dengan izin `SELECT` saja, `SET search_path = public`, dan `statement_timeout = '10s'`. Seluruh teks publikasi yang ditarik diperlakukan sebagai **DATA TIDAK TERPERCAYA (UNTRUSTED DATA)**.
 4. **Zero-Hallucination Invariant**: Jika retrieval menghasilkan 0 item bukti, sistem wajib mengembalikan `status: not_found` secara deterministik dalam waktu < 200ms tanpa memanggil LLM.
+5. **Session Isolation Invariant**: Persistensi aplikasi/sesi (`research_sessions`, `research_messages`, `research_session_summaries` pada schema `app`) menyimpan **conversation state saja** dan **bukan** bagian dari canonical bibliometric source of truth. **Tidak ada operasi lifecycle pada sesi yang boleh mengubah atau menghapus data bibliometrik kanonikal.** Seluruh fakta dan metrik bibliometrik tetap harus diperoleh melalui retrieval terhadap data bibliometrik PostgreSQL di schema `public`.
+
+   Relaksinya bersifat struktural, bukan konvensi:
+
+   - **Batas skema.** Tabel sesi berada di schema `app`, sedangkan pool retrieval mengunci `search_path = public`. Tabel sesi karena itu *tidak dapat dicapai* dari jalur baca retrieval, bahkan oleh SQL hasil Text-to-SQL yang salah nama.
+   - **Batas kredensial.** Dua pool, dua peran: `app_readonly` (SELECT pada `public`) dan `app_session` (SELECT/INSERT/UPDATE/DELETE pada `app`). Keduanya diverifikasi dua arah oleh `scripts/grant_session_role.py`.
+   - **Batas whitelist.** `ALLOWED_TABLES` pada `sql_security.py` **tidak** memuat tabel sesi, sehingga SQL yang dihasilkan LLM tidak dapat membaca transkrip.
+   - **Batas data ownership.** Tidak ada kolom metrik bibliometrik pada tabel sesi mana pun. `SessionSummaryService.build()` secara struktural tidak menerima `EvidenceSet`/`EvidenceObject` sebagai parameter, sehingga tidak *bisa* memuat angka.
+
+   Konsekuensi operasional: session context (summary + N pesan terakhir) hanya membantu **memahami** pertanyaan lanjutan dengan mengisi filter yang tidak disebutkan pengguna. `question` tidak pernah ditulis ulang, sehingga routing, Text-to-SQL, `EvidenceSet.query`, dan verifikasi sitasi tetap sama persis. Setiap angka dalam jawaban tetap berasal dari retrieval ke `public` — angka yang pernah muncul di jawaban assistant sebelumnya harus **di-query ulang**, bukan dipercaya (AC-SESSION-8, AC-SESSION-11).
+
+   **Opt-out (`use_session_context=false`).** Mematikan session context punya **dua** efek, bukan satu:
+
+   1. **Scope** dihitung dari nol — filter sesi tidak diwariskan ke `FilterParams`.
+   2. **Transkrip ditahan dari prompt LLM.** `ConversationContext` tidak dirender menjadi blok `[Percakapan sebelumnya]`, sehingga langkah narasi optional tidak pernah melihat jawaban sebelumnya.
+
+   Efek (2) ada karena flag tersebut berarti "anggap pertanyaan ini berdiri sendiri". Kalau transkrip tetap masuk prompt, flag itu hanya bekerja setengah: scope global, tapi narasi lokal — jawaban masih bisa merujuk percakapan lama yang seharusnya diabaikan. Persistensi turn **tetap** berjalan; opting out dari prompt bukan opting out dari riwayat.
+
+   ```
+   if payload.use_session_context:            # satu cabang untuk KEDUA efek
+       merged_filters, applied = effective_filters(explicit, context.scope)
+       effective_payload = payload.model_copy(update={"filters": merged_filters})
+       conversation_block = render_conversation_block(context) or None
+   ```
+
+   Keduanya berada di dalam satu `if` dengan sengaja. Membaginya menjadi dua kondisi terpisah akan memungkinkan kombinasi yang tidak masuk akal — scope global tapi transkrip lokal — dan kombinasi itulah yang membuat flag menyesatkan.
+
+   ```
+                    APPLICATION STATE (schema `app`)
+                              │
+                  ┌───────────┴───────────┐
+                  │                       │
+               Session               Messages
+                  │                       │
+                  └───────────┬───────────┘
+                              │
+                            Summary
+                              │
+                              ▼
+                     Conversation Context
+                              │
+                              ▼
+                         User Question
+                              │
+                              ▼
+                         /api/v1/ask
+                              │
+                              ▼
+                       QuestionRouter
+                              │
+                              ▼
+               ┌──────────────────────────┐
+               │  Bibliometric Retrieval  │
+               └────────────┬─────────────┘
+                            │
+                            ▼
+                 BIBLIOMETRIC SOURCE OF TRUTH
+                       (schema `public`)
+                            │
+                            ▼
+                          Evidence
+                            │
+                            ▼
+                             LLM
+                            │
+                            ▼
+                     Grounded Answer
+                            │
+                            ▼
+                    Persist Message
+   ```
+
+   **Aturan satu kalimat:** *Session mengingat apa yang dibicarakan pengguna dan assistant; basis data bibliometrik menentukan apa yang secara faktual benar tentang data riset.*
 
 ---
 

@@ -287,6 +287,148 @@ Endpoint ini dikecualikan dari rate limiting (agar scraper tidak mengunci diriny
 
 ---
 
+## 6.2 Spesifikasi Endpoint Sesi: `/api/v1/sessions`
+
+Endpoint sesi mengelola **conversation state** pada schema `app` (docs/04 §13).
+Endpoint ini **bukan** endpoint retrieval bibliometrik: tidak ada metrik, jumlah,
+atau agregat yang dikembalikan, dan router sesi mengimpor hanya `SessionService`
+— tidak pernah retriever atau synthesizer. UI yang membutuhkan angka harus
+bertanya ke `POST /api/v1/ask`.
+
+### 6.2.1 `POST /api/v1/sessions` — buat sesi
+
+```json
+// request
+{ "title": "AI Research Indonesia" }
+```
+
+`title` opsional. Sesi tanpa judul akan diberi nama dari pertanyaan pertamanya
+oleh `POST /api/v1/ask` (dipotong dari teks pertanyaan, bukan diringkas — lihat
+§6.2.6). Judul yang diberikan pengguna tidak pernah ditimpa.
+
+```json
+// 201 Created
+{
+  "id": "3f2b...-uuid",
+  "title": "AI Research Indonesia",
+  "status": "active",
+  "created_at": "2026-10-04T09:00:00Z",
+  "updated_at": "2026-10-04T09:00:00Z",
+  "last_message_at": null
+}
+```
+
+### 6.2.2 `GET /api/v1/sessions` — sesi terbaru
+
+Query parameter: `limit` (default 50, max 200) dan `status` (`active` | `archived`,
+default `active`).
+
+```json
+// 200 OK — metadata saja, TIDAK menyertakan transkrip
+[
+  {
+    "id": "3f2b...-uuid",
+    "title": "AI Research Indonesia",
+    "status": "active",
+    "created_at": "2026-10-04T09:00:00Z",
+    "updated_at": "2026-10-04T09:12:00Z",
+    "last_message_at": "2026-10-04T09:12:00Z"
+  }
+]
+```
+
+Diurutkan `last_message_at DESC NULLS LAST`, sehingga sesi yang belum pernah
+pertanyaan tidak menyamar sebagai riset terbaru. Endpoint list sengaja tidak
+menyeret history: pengguna dengan 200 sesi tidak boleh membayar 200 transkrip.
+
+> **Catatan operasional:** endpoint ini berbagi budget rate-limit per-IP dengan
+> `/api/v1/ask` (docs/08 §3). Client sebaiknya mengambil daftar saat mount dan
+> setelah setiap mutasi, **bukan** polling.
+
+### 6.2.3 `GET /api/v1/sessions/{session_id}` — detail + transkrip
+
+```json
+// 200 OK
+{
+  "id": "3f2b...-uuid",
+  "title": "AI Research Indonesia",
+  "status": "active",
+  "created_at": "2026-10-04T09:00:00Z",
+  "updated_at": "2026-10-04T09:12:00Z",
+  "last_message_at": "2026-10-04T09:12:00Z",
+  "summary": "Topik saat ini: ...",
+  "messages": [
+    { "id": "a1...", "role": "user",      "content": "...", "status": "complete",
+      "created_at": "...", "request_id": "...", "route": null },
+    { "id": "a2...", "role": "assistant", "content": "...", "status": "complete",
+      "created_at": "...", "request_id": "...", "route": "SQLRoute" }
+  ]
+}
+```
+
+Transkrip diurutkan kronologis (`created_at, seq`). Field `summary` adalah
+conversation memory: topiknya sederhana, cakupannya, dan pertanyaan sebelumnya.
+Field ini berisi teks yang dipengaruhi pengguna, diperlakukan sebagai
+**UNTRUSTED DATA**, dan **tidak pernah** menjadi evidence.
+
+### 6.2.4 `DELETE /api/v1/sessions/{session_id}` — hapus sesi
+
+Mengembalikan `204 No Content` **baikpun** sesinya ada atau tidak: DELETE bersifat
+idempoten, dan `404` akan mendorong client masuk retry loop terhadap sesi yang
+memang sudah dihapus.
+
+Cascade hanya mencapai `research_messages` dan `research_session_summaries`.
+Tidak ada foreign key dari `app` ke `public`, sehingga operasi ini secara
+struktural tidak dapat menyentuh korpus (AC-SESSION-9).
+
+### 6.2.5 Kontrak session_id pada `POST /api/v1/ask`
+
+`AskRequest` mendapatkan tiga field opsional. Ketiganya **backward-compatible**:
+request lama tanpa `session_id` berperilaku persis sama.
+
+```jsonc
+{
+  "question": "...",         // tidak pernah ditulis ulang oleh sesi
+  "filters": { ... },
+  "session_id": "uuid",     // opsional
+"use_session_context": true  // opsional, default true. false = scope dihitung
+                                // dari nol DAN transkrip tidak masuk prompt LLM.
+                                // Turn tetap dipersistensi ke riwayat sesi.
+  }
+  ```
+
+`AskResponse` mendapatkan satu field echo:
+
+```jsonc
+{ "session_id": "uuid", ... }   // null bila request tidak menyertakan sesi
+```
+
+`DebugInfo` (hanya saat `developer_mode=true`) gaining dua field audit:
+
+```jsonc
+{
+  "session_filters_applied": ["institution_name"],  // filter yang diisi dari sesi
+  "session_context_used": true
+}
+```
+
+`session_filters_applied` ada karena filter yang diwarisi secara otomatis dan
+tidak terlihat pengguna, dari luar, tidak dapat dibedakan dari jawaban yang salah.
+
+### 6.2.6 Aturan Session Context
+
+| Aspek | Perilaku |
+|---|---|
+| Pemahaman | Context mengisi filter yang **tidak** disebutkan pertanyaan saat ini |
+| `question` | **Tidak pernah** ditulis ulang → routing, Text-to-SQL, `EvidenceSet.query`, sitasi tidak berubah |
+| Precedence | Filter eksplisit pada request saat ini selalu menang atas scope sesi |
+| Opt-out | `use_session_context=false` membuat pertanyaan bersifat global lagi **dan** menahan transkrip dari prompt LLM — kedua efeknya, bukan hanya filter |
+| Batas prompt | `summary` + N pesan terakhir (`SESSION_RECENT_MESSAGES_LIMIT`, default 10) + pertanyaan sekarang |
+| Kegagalan summary | **Best effort.** Kegagalan summary tidak boleh menggagalkan `/api/v1/ask` |
+| Nilai dari context | Tidak pernah. Setiap angka tetap berasal dari retrieval ke `public` |
+
+---
+
 ## 7. Penanganan Error & Envelope Error Terstandarisasi
 
 Semua pengecualian (*exception*) internal ditangkap di gerbang batas (boundary) dan dipetakan ke format error terstandarisasi:
@@ -300,6 +442,52 @@ Semua pengecualian (*exception*) internal ditangkap di gerbang batas (boundary) 
     "status_code": 503
   }
 }
+```
+
+### 7.1 Taksonomi Status yang Harus Tetap Terdistinguishable (P0-B)
+
+Status berikut **tidak boleh** digabung. Menggabungkannya sama dengan mengarang jawaban, dan menyita waktu operator di tempat yang salah:
+
+| `status` HTTP | `error_type` | Arti | Tindakan pengguna |
+|---|---|---|---|
+| `200` | — (`status: "ok"`) | Jawaban ter-grounding dengan bukti | Baca jawaban |
+| `200` | — (`status: "not_found"`) | **Zero evidence.** Backend menjawab dengan benar; corpus tidak punya data | Persempit/ruasakan filter |
+| `200` | — (`status: "needs_clarification"`) | Entitas ambigu; `candidates` diisi | Pilih kandidat |
+| `422` | `sql_generation_failed` | Pertanyaan dipahami tetapi **tidak bisa** diekspresikan sebagai SQL yang aman | Rumuskan ulang sebagai hitungan/peringkatan/daftar |
+| `422` | `validation_error` | Payload tidak valid | Perbaiki input |
+| `503` | `db_timeout` | `statement_timeout` PostgreSQL yang menyala | Persempit filter |
+| `503` | `session_store_unavailable` | `DB_URL_SESSION` belum dikonfigurasi | Konfigurasi server |
+| `503` | `rate_limit_exceeded` | Kuota per-IP habis | Tunggu |
+| **`504`** | **`llm_timeout`** | **Generator Ollama melewati `TEXT2SQL_TIMEOUT_S`** | Rumuskan ulang lebih spesifik, atau tanya agregat yang didukung |
+| `500` | `internal_error` | Kesalahan tak terduga (disanitasi) | Coba lagi nanti |
+
+`llm_timeout` sengaja **tidak** memakai 422 `sql_generation_failed` walaupun keduanya berasal dari jalur Text-to-SQL: 422 berarti "kalimat Anda tidak bisa jadi SQL yang aman" (masalah prompt), sedangkan 504 berarti "modelnya terlalu lambat" (masalah kapasitas). Menggabungkannya membuat operator mengejar prompt saat penyebabnya sebenarnya box CPU yang lambat.
+
+### 7.2 Anggaran Batas Panggilan LLM (P0-B)
+
+```text
+POST /api/v1/ask
+  └─ SqlRetriever
+       ├─ template deterministik  → 0 panggilan LLM
+       └─ Text-to-SQL             → attempts = 1 + OLLAMA_MAX_RETRIES
+                                     timeout per attempt = TEXT2SQL_TIMEOUT_S (default 6s)
+                                     TIMEOUT TIDAK PERNAH DI-RETRY
+```
+
+Aturan yang ditegakkan `backend/app/core/retry.py`:
+
+- **Timeout bersifat terminal.** `retry_on_timeout=False` (default) membuat `httpx.TimeoutException` dan `asyncio.TimeoutError` tidak di-retry. Retry hanya untuk `ConnectError` transien (soket keep-alive yang basi), karena di sana percobaan kedua benar-benar dapat pulih. Timeout pada model yang sama di box yang sama membutuhkan waktu yang sama — percobaan kedua hanya membayar batas yang sama dua kali.
+- **Langit-langit percobaan dikonfigurasi.** `OLLAMA_MAX_RETRIES` (default 1) › jumlah percobaan total = `1 + OLLAMA_MAX_RETRIES`, dengan ceiling 3.
+- **Round-trip perbaikan AST hanya untuk penolakan validator.** Satu percobaan ulang dengan konteks error `sqlglot` (FR3.3) tetap ada, tapi hanya di entered ketika pemanggilan pertama **mengembalikan SQL yang ditolak gate**. Timeout atau kegagalan transport keluar lebih awal: tidak ada SQL untuk diperbaiki, jadi membayarnya dua kali hanya menambah latency.
+
+Sebelum P0-B, jalur ini boros: `timeout (8s) + backoff + timeout (8s)` ≈ **17 detik** per pertanyaan SQL yang tidak didukung, dengan percobaan kedua yang tidak mungkin berhasil.
+
+**Batasan yang diketahui:** Ollama tidak menyediakan API pembatalan untuk `/api/generate` non-streaming. Ketika API berhenti menunggu pada `TEXT2SQL_TIMEOUT_S`, **generasi di sisi server Ollama tetap berjalan** sampai selesai. API tidak lagi menunggunya, dan tidak ada proses yang menggantung, tetapi CPU Ollama tetap sibuk. Selain itu, disconnect klien **tidak** membatalkan handler di bawah `BaseHTTPMiddleware`.
+
+Log yang dapat dicari untuk satu peristiwa:
+
+```text
+request_id=... route=SQLRoute llm_fallback=true llm_timeout=true retry_count=0 status=llm_timeout latency_ms=...
 ```
 
 ---
@@ -349,7 +537,9 @@ Semua pengecualian (*exception*) internal ditangkap di gerbang batas (boundary) 
 ## 11. Riwayat Perubahan
 
 | Dokumen | Perubahan | Alasan |
-|---|---|---|
+|---|---|
+| `docs/06 Api Design.md` v3.7.0 | Tambah §6.2: empat endpoint `/api/v1/sessions`, `session_id` pada `/api/v1/ask`, dan aturan session context | Mendokumentasikan kontrak conversation state tanpa mengubah kontrak `/api/v1/ask` yang ada |
+---|
 | `docs/06 Api Design.md` v3.8.0 | Tambah blok `synthesis` pada respons `/api/v1/health` (`llm_calls`, `fallback_calls`, `fallback_rate`, `fallback_by_reason`, `last_llm_ms`, `degraded`, `scope`) agar kegagalan LLM yang senyap menjadi terlihat; tambah §6.1 `GET /metrics` (Prometheus text exposition, di luar kontrak RAG utama) | 2026-10-03 |
 | `docs/06 Api Design.md` v3.6.2 | Aturan bahasa: narasi Indonesia, teknis Inggris (`system boundary layer`, `EvidenceObject`, `Question Router`, `Rate Limit Check`, dll) | Tanpa duplikasi bilingual; perbaiki terjemahan literal yang aneh |
 | `docs/06 Api Design.md` v3.6.0 | Sinkronisasi Bahasa Indonesia; tanpa perubahan keputusan teknis | Penyelarasan bahasa 2026-09-27 |
