@@ -228,6 +228,8 @@ class SessionService:
         applied_filters: dict[str, Any] | None,
         request_id: str | None,
         route: str | None = None,
+        evidence_objects: list[dict[str, Any]] | None = None,
+        sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """INSERT one turn and bump session metadata, atomically.
 
@@ -250,6 +252,14 @@ class SessionService:
         failure, including the "session deleted while the request was in flight"
         case, where the request still answers — it just cannot record history
         for a conversation that no longer exists.
+
+        ``evidence_objects`` / ``sources`` ride along in the SAME INSERT, not a
+        second statement. Adding a separate write here would put a third
+        statement inside this transaction boundary and give the provenance a
+        separate failure mode from the turn it describes — a stored answer whose
+        evidence silently failed to attach. One row, one statement, one
+        transaction: the snapshot is committed atomically with the turn or not at
+        all. The transaction scope itself is unchanged.
         """
         try:
             async with (
@@ -265,6 +275,8 @@ class SessionService:
                     applied_filters=applied_filters,
                     request_id=request_id,
                     route=route,
+                    evidence_objects=evidence_objects,
+                    sources=sources,
                 )
                 await repo.touch_session(session_id)
             return row
