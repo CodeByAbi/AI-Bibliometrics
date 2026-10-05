@@ -267,6 +267,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # `env_file: .env` in docker-compose.yml is REQUIRED on purpose, and that
+      # requirement is what this job was tripping over. Compose treats the short
+      # `env_file: [.env]` form as mandatory, so a clean CI checkout (which has
+      # no .env, because .env is gitignored and must never be committed) failed
+      # `docker compose config --quiet` with exit 14 before validating a single
+      # key.
+      #
+      # The fix is deliberately here and NOT in docker-compose.yml. Marking
+      # env_file optional with `required: false` would also make this job pass,
+      # but it would trade a loud startup failure for a silent one: a developer
+      # who forgets to copy .env.example would get a container that boots with
+      # no DB_URL and reports `degraded` health instead of an obvious error.
+      # Failing fast on the developer's machine is worth more than a tidier CI
+      # step.
+      #
+      # So give CI the same file *shape* with placeholder values.
+      # `.env.example` is committed, contains no secrets, and `config --quiet`
+      # validates structure without printing any value — so nothing sensitive is
+      # written, logged, or committed here.
+      - name: Create a placeholder env file for validation
+        run: cp .env.example .env
+
       - name: Validate
         # NOTE: never `docker compose config` (no args) in a workflow that could
         # log its output — it expands env_file and prints every secret in .env

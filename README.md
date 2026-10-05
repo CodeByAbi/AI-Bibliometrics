@@ -361,13 +361,28 @@ cd AI-Bibliometrics
 copy .env.example .env        # Windows
 # cp .env.example .env        # Linux/macOS
 
-# Backend
+# Backend — run from the REPOSITORY ROOT
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+`backend.app.main:app` is the only correct import path, and it has to be run
+from the repository root. There is no top-level `app/` package, so
+`uvicorn app.main:app` fails with `ModuleNotFoundError: No module named 'app'`
+and that error says nothing about why. The same module path is what
+`docker/backend.Dockerfile`, `docker-compose.yml` and CI's
+`from backend.app.main import app` assertion all use, so if one of them disagrees
+with the others it is wrong.
+
+`backend/app/core/config.py` auto-loads the project-root `.env`, so a missing
+`DB_URL` does not stop startup: the server boots and `/api/v1/health` reports
+`unhealthy`/`degraded` with `database.status = "unreachable"`. That is deliberate
+(the Compose healthcheck depends on the endpoint answering while a dependency is
+down), but it means a fresh clone without `.env` looks alive rather than broken —
+check `database.status` before trusting any answer.
 
 ```bash
 # Frontend (http://localhost:3000)
@@ -425,6 +440,47 @@ pytest tests/unit/test_sql_security.py   # AST validator + injection attempts
 pytest tests/unit/test_router.py         # 4-route classification + entity gate
 pytest tests/e2e/test_e2e_12_queries.py  # 12-query benchmark (mock; E2E_LIVE=1 for live)
 ```
+
+### Tests that need a database, and how they behave without one
+
+The suite distinguishes three outcomes and never conflates them: **passed**
+(verified against a real database), **skipped** (unverified, with a reason), and
+**failed** (verified and wrong). Treating "skipped" as "passing" is what makes an
+unconfigured environment look like a tested one.
+
+Integration tests that open the read-only pool take the `requires_live_biblio`
+fixture, which skips when `DB_URL` is unset. The assertions are left intact — a
+zero-evidence aggregate, a collaboration partner, a cosine distance all mean
+nothing against a mock, so the tests skip rather than pretend. Tests that reject
+a request before any retriever runs (the `validation_*` group) carry no guard and
+therefore execute on every CI run.
+
+```bash
+pytest -rs                     # show every skip reason
+E2E_LIVE=1 pytest tests/e2e/test_e2e_retrieval_contract.py   # real-corpus grounding
+```
+
+`tests/e2e/test_e2e_retrieval_contract.py` is the retrieval contract:
+
+```text
+supported corpus representation -> status ok + DB-backed evidence
+unsupported representation     -> deterministic not_found, zero evidence
+backend/retrieval failure      -> explicit error, never a success shape
+```
+
+Every expectation is read back from `public` rather than hardcoded — the year,
+the count, the institution spelling and its partners all come from the corpus, so
+the suite follows a replaced or extended dataset instead of asserting a number
+someone remembered. Route-selection checks need no database and run everywhere.
+This suite is what caught the two PR #15 defects: a pipeline trail reporting four
+completed stages during a backend outage, and `status: ok` with
+`evidence_objects[0].value == 0` for a year holding no rows.
+
+Entity alias/fuzzy resolution is **not** implemented. An entity string that
+matches no `institutions` row therefore fails closed with `not_found` rather than
+being guessed at, because the corpus stores Scopus affiliation strings verbatim
+and no synonym table exists. `TestKnownLimitation` locks that in so adding it
+becomes a deliberate decision instead of a silent behaviour change.
 
 Verified results (`reports/fase7_closeout.md`, 2026-10-03):
 

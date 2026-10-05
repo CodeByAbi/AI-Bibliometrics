@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.app.models.ask import CandidateItem, FilterParams
 from backend.app.services.intent_grammar import (
     SQL_ROUTE_PATTERNS,
+    YearOp,
     YearFilter,
     build_year_filter,
 )
