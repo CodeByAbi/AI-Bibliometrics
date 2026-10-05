@@ -1,4 +1,4 @@
-import { NetworkError, isAbortError, parseBackendError, withRetry } from "./errors";
+import { AppError, NetworkError, isAbortError, parseBackendError, withRetry } from "./errors";
 
 export type RouteKind = "SQLRoute" | "VectorRoute" | "GraphRoute" | "HybridRoute";
 export type StatusKind = "ok" | "not_found" | "needs_clarification" | "error";
@@ -50,6 +50,11 @@ export interface AskResponse {
   filters_ignored: string[];
   answered_via_fallback: boolean;
   unverified_citations: string[];
+  /** Echo of the request's session_id when the turn was attached to a session. */
+  session_id?: string | null;
+  /** Filter keys auto-filled from prior session scope. Debug-reports only. */
+  session_filters_applied?: string[] | null;
+  session_context_used?: boolean | null;
   debug?: {
     sql_executed?: string | null;
     route_reasoning?: string | null;
@@ -69,6 +74,7 @@ export async function postAsk(
   developerMode: boolean,
   signal?: AbortSignal,
   filters?: Record<string, string | number | null | undefined>,
+  sessionId?: string | null,
 ): Promise<AskResponse> {
   // One id per user action, minted outside the retry closure: a retry is the
   // same request, so the backend trace stays a single correlated record.
@@ -82,7 +88,16 @@ export async function postAsk(
       res = await fetch(`${API_BASE}/api/v1/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Request-ID": requestId },
-        body: JSON.stringify({ question, filters: filters ?? {}, developer_mode: developerMode }),
+        body: JSON.stringify({
+          question,
+          filters: filters ?? {},
+          developer_mode: developerMode,
+          // Omitted entirely when absent rather than sent as null: the backend
+          // treats a missing session_id as "stateless question", which is the
+          // behaviour the pre-session UI relies on. Sending null would be a
+          // different request with the same intent.
+          ...(sessionId ? { session_id: sessionId } : {}),
+        }),
         signal,
       });
     } catch (error) {
@@ -93,10 +108,61 @@ export async function postAsk(
       const text = await res.text().catch(() => "");
       throw await parseBackendError(res, text);
     }
-    return (await res.json()) as AskResponse;
+    // P0-A: a 200 whose body is not a usable AskResponse must be an explicit
+    // error, never a partially-populated object the views then read counts
+    // off. Previously any parseable JSON was cast and trusted, so a truncated
+    // or wrong-shaped payload rendered as a successful answer with no evidence.
+    let parsed: unknown;
+    try {
+      parsed = await res.json();
+    } catch {
+      throw new AppError(
+        "The backend returned a response that could not be read.",
+        "MALFORMED_RESPONSE",
+        502,
+      );
+    }
+    if (!isAskResponse(parsed)) {
+      throw new AppError(
+        "The backend returned an unexpected response shape.",
+        "MALFORMED_RESPONSE",
+        502,
+      );
+    }
+    return parsed;
   };
-  // One transient retry (5xx/429/network only — never 4xx, never aborts).
-  return withRetry(doFetch, { maxAttempts: 2 });
+  // P0-B: exactly ONE attempt.
+  //
+  // The backend already returns structured 4xx/5xx envelopes, so a client-side
+  // retry adds nothing except wall clock: it doubled an 8 s abort into ~16.5 s.
+  // Worse, POST /api/v1/ask commits the user's question to
+  // `app.research_messages` BEFORE retrieval runs, so a retry silently
+  // duplicated the question in the conversation transcript.
+  return withRetry(doFetch, { maxAttempts: 1, signal });
+}
+
+/**
+ * Structural guard for the response envelope.
+ *
+ * Only the fields the UI dereferences unconditionally are checked. `sources`,
+ * `evidence_objects` and `unverified_citations` are defaulted to empty arrays
+ * below so a partially-shaped but recognisable payload degrades to an empty
+ * state rather than a crash — an empty answer set is a valid outcome, a
+ * fabricated one is not.
+ */
+function isAskResponse(v: unknown): v is AskResponse {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  if (typeof o.request_id !== "string") return false;
+  if (typeof o.status !== "string") return false;
+  if (typeof o.answer !== "string") return false;
+  if (typeof o.route !== "string") return false;
+  if (!Array.isArray(o.sources)) return false;
+  if (!Array.isArray(o.evidence_objects)) return false;
+  if (o.sources.length > 0 && typeof (o.sources[0] as Record<string, unknown>)?.title !== "string") {
+    return false;
+  }
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -424,22 +490,17 @@ export const fixtureNotFound: AskResponse = {
   },
 };
 
-export function pickFixture(question: string): AskResponse {
-  const q = question.toLowerCase();
-  if (q.includes("wharton") || q.includes("oxidative") || q.includes("jelly")) return fixtureVector;
-  if (q.includes("top") || q.includes("productive") || q.includes("most cited") || q.includes("berapa") || q.includes("total"))
-    return fixtureSQL;
-  if (q.includes("rahman") && q.length < 60) return fixtureClarify;
-  if (q.includes("quantum") && q.includes("fisher")) return fixtureNotFound;
-  return fixtureHybrid;
-}
-
 /* ------------------------------------------------------------------ */
 /* Adversarial fixtures — break-ui worst-case set (dev-only, ?data=).  */
 /* Every value is either plausible production text or a schema-backed  */
 /* limit (TEXT unbounded, doi VARCHAR(255), year SMALLINT). `as unknown */
 /* as` casts simulate runtime nulls that the TS contract forbids but   */
 /* the database can actually deliver.                                  */
+/*                                                                     */
+/* P0-A: these are DEVELOPMENT fixtures. They must never be reachable  */
+/* from a live request path. `use-ask` used to pass                   */
+/* `pickFixture(question)` as the error fallback, so any backend        */
+/* failure rendered one of these as if it were a real answer.           */
 /* ------------------------------------------------------------------ */
 
 export type DataKind = "demo" | "worst" | "empty" | "one" | "huge";

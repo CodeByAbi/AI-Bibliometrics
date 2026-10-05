@@ -63,6 +63,18 @@ class EvidenceSet(BaseModel):
         None,
         description="Kueri SQL yang dieksekusi jika bersumber dari SQL/Vector/Graph",
     )
+    zero_evidence_class: Optional[str] = Field(
+        None,
+        description="Why this set is empty, when emptiness is not simply 'no "
+        "rows returned'. Set by EvidenceUnifier when a retrieval DID execute and "
+        "produced a well-formed result that nonetheless carries no information "
+        "- currently only `zero_aggregate`, a scalar COUNT that evaluated to 0. "
+        "That case used to be emitted as a confident evidence object reading "
+        "'total publikasi tercatat sebanyak 0', which gave a not-found answer "
+        "the appearance of a measurement. `None` on a non-empty set, and `None` "
+        "when the retriever returned no rows at all (the caller's own "
+        "zero-evidence classification covers that).",
+    )
 
     @property
     def is_empty(self) -> bool:

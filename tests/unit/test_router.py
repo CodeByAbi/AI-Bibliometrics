@@ -205,9 +205,14 @@ class TestEntityResolutionNotFound:
 class _ScriptedConnStub:
     """asyncpg stub routing canned rows by query content."""
 
-    def __init__(self, author_exact=None, inst_exact=None):
+    def __init__(self, author_exact=None, inst_exact=None, inst_counts=None, author_counts=None):
         self.author_exact = author_exact or []
         self.inst_exact = inst_exact or []
+        # Optional per-id publication counts so tests can drive which
+        # institution variant wins an auto-narrowing decision. Defaults to the
+        # previous uniform 3-per-row behaviour.
+        self.inst_counts = inst_counts
+        self.author_counts = author_counts
 
     async def fetch(self, sql, *args, **kwargs):
         if "FROM authors" in sql and "author_name_normalized" in sql:
@@ -216,8 +221,18 @@ class _ScriptedConnStub:
             return self.inst_exact
         # Batched GROUP BY count queries (ANY($1)) mirror fetchval → 3.
         if "FROM pub_author" in sql:
+            if self.author_counts is not None:
+                return [
+                    {"author_id": r["author_id"], "cnt": self.author_counts.get(r["author_id"], 0)}
+                    for r in self.author_exact
+                ]
             return [{"author_id": r["author_id"], "cnt": 3} for r in self.author_exact]
         if "FROM pub_institution" in sql:
+            if self.inst_counts is not None:
+                return [
+                    {"institution_id": r["institution_id"], "cnt": self.inst_counts.get(r["institution_id"], 0)}
+                    for r in self.inst_exact
+                ]
             return [{"institution_id": r["institution_id"], "cnt": 3} for r in self.inst_exact]
         return []
 
@@ -243,23 +258,74 @@ class TestEntityJointResolution:
         assert result.resolved_institution_name == "Universitas Andalas"
 
     @pytest.mark.asyncio
-    async def test_author_ok_institution_ambiguous_surfaces_clarification(self):
+    async def test_author_ok_institution_ambiguous_auto_narrows_with_disclosure(self):
+        """Ambiguitas institusi di-narrow otomatis, tapi tercatat (W4).
+
+        Scopus stores one `institutions` row per department-level affiliation,
+        so "Universitas" matching several rows is a family of siblings, not a
+        question the user can meaningfully answer. Measured on the prototype
+        corpus this produced 8 candidates for "Universitas Andalas" and 2 for
+        "Universitas Indonesia", dead-ending nearly every institution question.
+
+        The gate therefore resolves to the highest-publication variant. The
+        decision must be auditable, so `narrowing` records the query, the
+        winner, and the full candidate set it beat.
+        """
         conn = _ScriptedConnStub(
             author_exact=[{"author_id": "A1", "author_name": "Septi Gumiandari"}],
             inst_exact=[
                 {"institution_id": "I1", "institution_name": "Universitas X", "country": "indonesia"},
                 {"institution_id": "I2", "institution_name": "Universitas Y", "country": "indonesia"},
             ],
+            inst_counts={"I1": 1, "I2": 7},
         )
         filters = FilterParams(author_name="Septi Gumiandari", institution_name="Universitas")
         result = await EntityResolutionGate.resolve_entities(conn, "Berapa total publikasi?", filters)
-        assert result.status == "needs_clarification"
-        assert result.candidates is not None
-        assert len(result.candidates) == 2
-        assert all(c.type == "institution" for c in result.candidates)
+
+        assert result.status == "ok"
+        # Highest publication count wins.
+        assert result.resolved_institution_id == "I2"
+        assert result.resolved_institution_name == "Universitas Y"
+        # A resolved author is never masked by the institution narrowing.
+        assert result.resolved_author_id == "A1"
+        # The narrowing is disclosed, not silent.
+        assert result.narrowing is not None
+        narrowing = result.narrowing
+        assert narrowing.entity_type == "institution"
+        assert narrowing.selected_id == "I2"
+        assert narrowing.candidate_count == 2
+        assert set(narrowing.candidate_names) == {
+            "Universitas X",
+            "Universitas Y",
+        }
 
     @pytest.mark.asyncio
-    async def test_author_ambiguous_takes_priority(self):
+    async def test_institution_narrowing_is_deterministic_on_count_tie(self):
+        """A publication-count tie must resolve the same way every time."""
+        rows = [
+            {"institution_id": "I2", "institution_name": "Universitas Zeta", "country": "indonesia"},
+            {"institution_id": "I1", "institution_name": "Universitas Alpha", "country": "indonesia"},
+        ]
+        picks = set()
+        for _ in range(5):
+            conn = _ScriptedConnStub(
+                inst_exact=rows,
+                inst_counts={"I1": 4, "I2": 4},
+            )
+            result = await EntityResolutionGate.resolve_entities(
+                conn, "Berapa publikasi?", FilterParams(institution_name="Universitas")
+            )
+            picks.add(result.resolved_institution_id)
+        assert picks == {"I1"}, "tie must break to the lowest name every time"
+
+    @pytest.mark.asyncio
+    async def test_author_ambiguous_still_surfaces_clarification(self):
+        """Author names are NOT auto-narrowed.
+
+        Person names genuinely collide across institutions and carry no
+        department decomposition, so the user is still asked. Only institutions
+        auto-narrow.
+        """
         conn = _ScriptedConnStub(
             author_exact=[
                 {"author_id": "A1", "author_name": "Ahmad S"},
@@ -271,6 +337,18 @@ class TestEntityJointResolution:
         result = await EntityResolutionGate.resolve_entities(conn, "Berapa total publikasi?", filters)
         assert result.status == "needs_clarification"
         assert all(c.type == "author" for c in result.candidates)
+
+    @pytest.mark.asyncio
+    async def test_single_institution_match_has_no_narrowing(self):
+        """No narrowing record when the query was already unambiguous."""
+        conn = _ScriptedConnStub(
+            inst_exact=[{"institution_id": "I1", "institution_name": "Universitas Andalas"}],
+        )
+        result = await EntityResolutionGate.resolve_entities(
+            conn, "Berapa publikasi?", FilterParams(institution_name="Universitas Andalas")
+        )
+        assert result.status == "ok"
+        assert result.narrowing is None
 
 
 class TestYearFilterContract:
@@ -359,5 +437,53 @@ class TestInstitutionIndonesiaFix:
     async def test_bare_di_still_ignored(self):
         _, inst = EntityResolutionGate.extract_candidate_names(
             "Paper di Indonesia?"
+        )
+        assert inst is None
+
+    @pytest.mark.asyncio
+    async def test_institution_type_word_is_not_stripped_from_a_proper_noun(self):
+        """"Universitas Indonesia" must keep its type word.
+
+        Regression: the extractor consumed "Universitas" as a type keyword and
+        captured only the remainder, so "Berapa publikasi Universitas Indonesia
+        tahun 2023" resolved the candidate "Indonesia" — a country. The gate
+        then partial-matched '%Indonesia%' and returned 10 unrelated candidates
+        (needs_clarification) instead of the two that actually contain the
+        phrase.
+        """
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "Berapa publikasi Universitas Indonesia tahun 2023"
+        )
+        assert inst == "Universitas Indonesia"
+
+    @pytest.mark.asyncio
+    async def test_lowercase_type_label_is_stripped(self):
+        """A lowercase generic label is a query word, not part of the name."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "Berapa publikasi institusi Universitas Andalas tahun 2023"
+        )
+        assert inst == "Universitas Andalas"
+
+    @pytest.mark.asyncio
+    async def test_english_verb_terminates_institution_capture(self):
+        """Query grammar must not leak into the institution candidate."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "How many publications did Universitas Gadjah Mada publish in 2025?"
+        )
+        assert inst == "Universitas Gadjah Mada"
+
+    @pytest.mark.asyncio
+    async def test_english_verb_terminator_does_not_truncate_of_names(self):
+        """"of" is never a terminator: it occurs inside real institution names."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "institutions University of Papua in 2025"
+        )
+        assert inst is None or "of" in inst
+
+    @pytest.mark.asyncio
+    async def test_country_word_alone_is_never_an_institution(self):
+        """"Paper di Indonesia" must not send a country into the gate."""
+        _, inst = EntityResolutionGate.extract_candidate_names(
+            "Paper di Indonesia tahun 2023"
         )
         assert inst is None

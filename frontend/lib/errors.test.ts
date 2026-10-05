@@ -4,12 +4,14 @@ import {
   NetworkError,
   NotFoundError,
   RateLimitError,
+  RequestTimeoutError,
   ServiceUnavailableError,
   UnauthorizedError,
   ValidationError,
   defaultRetryIf,
   getUserMessage,
   isAbortError,
+  isTimeoutError,
   parseBackendError,
   withRetry,
 } from "./errors";
@@ -57,10 +59,50 @@ describe("parseBackendError", () => {
     expect(await parse(429, {})).toBeInstanceOf(RateLimitError);
   });
 
-  it("maps 502/503/504 to ServiceUnavailableError", async () => {
-    for (const status of [502, 503, 504]) {
+  it("maps 502/503 to ServiceUnavailableError", async () => {
+    for (const status of [502, 503]) {
       expect(await parse(status, {})).toBeInstanceOf(ServiceUnavailableError);
     }
+  });
+
+  it("maps a bare 504 to a timeout-class error, not ServiceUnavailable (P0-B)", async () => {
+    // 504 Gateway Timeout means an upstream did not answer in time. The UI
+    // has to be able to say so, so it must not arrive as a generic
+    // "service unavailable".
+    const err = await parse(504, {});
+    expect(isTimeoutError(err)).toBe(true);
+  });
+
+  it("maps backend 504 llm_timeout to RequestTimeoutError (P0-B contract)", async () => {
+    const err = await parse(504, {
+      error: { error_type: "llm_timeout", message: "generator too slow", status_code: 504 },
+    });
+    expect(err).toBeInstanceOf(RequestTimeoutError);
+    expect(err.code).toBe("REQUEST_TIMEOUT");
+    expect(err.statusCode).toBe(504);
+  });
+
+  it("maps backend 503 db_timeout to a timeout-class error", async () => {
+    const err = await parse(503, {
+      error: { error_type: "db_timeout", message: "statement timeout", status_code: 503 },
+    });
+    expect(isTimeoutError(err)).toBe(true);
+  });
+
+  it("keeps 503 session_store_unavailable as ServiceUnavailable, not a timeout", async () => {
+    const err = await parse(503, {
+      error: { error_type: "session_store_unavailable", message: "not configured", status_code: 503 },
+    });
+    expect(err).toBeInstanceOf(ServiceUnavailableError);
+    expect(isTimeoutError(err)).toBe(false);
+  });
+
+  it("keeps 422 sql_generation_failed distinct from a timeout", async () => {
+    const err = await parse(422, {
+      error: { error_type: "sql_generation_failed", message: "unsafe query", status_code: 422 },
+    });
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(isTimeoutError(err)).toBe(false);
   });
 
   it("falls back to an HTTP_<status> code when the body carries none", async () => {
@@ -112,6 +154,50 @@ describe("defaultRetryIf", () => {
 
   it("never retries an abort", () => {
     expect(defaultRetryIf(new DOMException("x", "AbortError"))).toBe(false);
+    // Node/undici and several test environments reject with a plain Error
+    // carrying name="AbortError" rather than a DOMException.
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    expect(defaultRetryIf(err)).toBe(false);
+  });
+
+  it("never retries a timeout (P0-B)", () => {
+    // A 504 means the upstream already spent its budget. Retrying doubles the
+    // wall clock the user waits without changing the outcome.
+    expect(defaultRetryIf(new RequestTimeoutError())).toBe(false);
+  });
+});
+
+describe("isAbortError", () => {
+  it("matches a DOMException AbortError", () => {
+    expect(isAbortError(new DOMException("x", "AbortError"))).toBe(true);
+  });
+
+  it("matches a plain Error named AbortError", () => {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    expect(isAbortError(err)).toBe(true);
+  });
+
+  it("does not match unrelated errors or non-errors", () => {
+    expect(isAbortError(new Error("network down"))).toBe(false);
+    expect(isAbortError(null)).toBe(false);
+    expect(isAbortError(undefined)).toBe(false);
+    expect(isAbortError("AbortError")).toBe(false);
+  });
+});
+
+describe("isTimeoutError", () => {
+  it("recognises the timeout taxonomy on both sides of the wire", () => {
+    expect(isTimeoutError(new RequestTimeoutError())).toBe(true);
+    expect(isTimeoutError(new AppError("m", "llm_timeout", 504))).toBe(true);
+    expect(isTimeoutError(new AppError("m", "db_timeout", 503))).toBe(true);
+  });
+
+  it("does not classify ordinary failures as timeouts", () => {
+    expect(isTimeoutError(new NetworkError())).toBe(false);
+    expect(isTimeoutError(new ServiceUnavailableError())).toBe(false);
+    expect(isTimeoutError(new ValidationError("bad"))).toBe(false);
   });
 });
 
@@ -140,6 +226,27 @@ describe("withRetry", () => {
   it("does not retry a non-retriable error", async () => {
     const fn = vi.fn().mockRejectedValue(new ValidationError("bad"));
     await expect(withRetry(fn, { baseDelayMs: 1 })).rejects.toBeInstanceOf(ValidationError);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops retrying once the caller's signal is aborted (P0-B)", async () => {
+    // The supersede case: the user typed a new question, which aborts the
+    // in-flight POST. Without the signal check the loop fires a SECOND POST
+    // for a question the user already replaced — and because the backend
+    // commits the user turn before retrieval, that duplicates the question in
+    // the conversation transcript.
+    const ctrl = new AbortController();
+    const fn = vi.fn().mockImplementation(async () => {
+      ctrl.abort();
+      throw new ServiceUnavailableError();
+    });
+    await expect(withRetry(fn, { maxAttempts: 3, baseDelayMs: 1, signal: ctrl.signal })).rejects.toBeTruthy();
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a timeout (P0-B)", async () => {
+    const fn = vi.fn().mockRejectedValue(new RequestTimeoutError());
+    await expect(withRetry(fn, { maxAttempts: 3, baseDelayMs: 1 })).rejects.toBeInstanceOf(RequestTimeoutError);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 });

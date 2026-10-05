@@ -4,7 +4,7 @@ import { Check } from "lucide-react";
 import type { WorkspaceView } from "../../lib/views";
 
 const PIPE_LABELS = ["Question", "Retrieval", "Evidence", "Answer"] as const;
-type PipeState = "done" | "active" | "idle";
+type PipeState = "done" | "active" | "idle" | "failed";
 
 /** Where the pipeline stands for a given view — the visible state also drives
  *  the text an assistive technology reads for each stage. */
@@ -13,6 +13,12 @@ export function pipeStates(view: WorkspaceView): PipeState[] {
   if (view === "loading") return ["done", "active", "idle", "idle"];
   if (view === "clarify") return ["done", "done", "active", "idle"];
   if (view === "notfound") return ["done", "done", "done", "idle"];
+  // A failed request never produced retrieval, evidence or an answer, so those
+  // stages must NOT read as complete. Falling through to all-"done" here is
+  // what made a backend outage render a fully green pipeline: the UI claimed
+  // four stages succeeded while the panel beside it showed an error. Only
+  // Question — which did get sent — is done, and Retrieval is marked failed.
+  if (view === "error") return ["done", "failed", "idle", "idle"];
   return ["done", "done", "done", "done"];
 }
 
@@ -20,6 +26,7 @@ const STATE_TEXT: Record<PipeState, string> = {
   done: "complete",
   active: "in progress",
   idle: "pending",
+  failed: "failed",
 };
 
 export interface PipelineTrailProps {

@@ -1,6 +1,12 @@
 """Integration tests for async database pool and security invariants.
 
 Docs Reference: docs/08 Security.md §1, docs/11 Roadmap.md §4 (Fase 2).
+
+Every test here needs a live PostgreSQL: they read back ``search_path``,
+``statement_timeout`` and ``current_user`` from a real server, so there is
+nothing meaningful to assert against a mock. ``requires_live_biblio`` skips them
+when no DSN is configured (CI), which keeps the assertions honest instead of
+asserting against a stubbed pool that proves nothing.
 """
 
 from __future__ import annotations
@@ -12,7 +18,7 @@ from backend.app.db.pool import check_db_health, create_pool
 
 
 @pytest.mark.asyncio
-async def test_db_pool_lifecycle_and_invariants():
+async def test_db_pool_lifecycle_and_invariants(requires_live_biblio: None):
     """Verify pool creation, search_path enforcement, and statement_timeout."""
     pool = await create_pool(min_size=1, max_size=2)
     try:
@@ -34,7 +40,7 @@ async def test_db_pool_lifecycle_and_invariants():
 
 
 @pytest.mark.asyncio
-async def test_db_health_check():
+async def test_db_health_check(requires_live_biblio: None):
     """Verify check_db_health returns fully populated DatabaseHealth object."""
     health = await check_db_health()
     assert health.status == "connected"
@@ -45,7 +51,7 @@ async def test_db_health_check():
 
 
 @pytest.mark.asyncio
-async def test_db_statement_timeout_enforcement():
+async def test_db_statement_timeout_enforcement(requires_live_biblio: None):
     """Verify statement_timeout aborts runaway queries (isolated, non-pooled conn)."""
     settings = get_settings()
     conn = await asyncpg.connect(settings.db_url, command_timeout=5)

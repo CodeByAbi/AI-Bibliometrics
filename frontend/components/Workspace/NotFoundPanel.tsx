@@ -8,7 +8,11 @@ export interface NotFoundPanelProps {
   response: AskResponse | null;
   activeQuestion: string;
   onTrySeed: (question: string) => void;
-  onLoadExample: () => void;
+  /**
+   * P0-A: injects a hardcoded answer. Optional — the default UI omits it, so
+   * the zero-state offers only questions that go to the backend.
+   */
+  onLoadExample?: () => void;
   titleRef: TitleRef;
 }
 
@@ -17,6 +21,10 @@ export interface NotFoundPanelProps {
  * evidence gate admitted zero records and synthesis was skipped, so the panel
  * states what was searched, why it stopped, and offers grounded retries
  * instead of an invented answer.
+ *
+ * P0-A: a genuine `not_found` renders exactly this, with no sources and no
+ * numbers anywhere on the page. The Paper Detail and Trends views also stay
+ * empty for it rather than borrowing fixture data.
  */
 export function NotFoundPanel({
   response,
@@ -35,11 +43,13 @@ export function NotFoundPanel({
           The current result is grounded. To inspect the deterministic zero-state, load the corpus example that matches
           nothing.
         </p>
-        <div className="nf-actions">
-          <button type="button" className="seed" onClick={onLoadExample}>
-            Load corpus example
-          </button>
-        </div>
+        {onLoadExample && (
+          <div className="nf-actions">
+            <button type="button" className="seed" onClick={onLoadExample}>
+              Load corpus example
+            </button>
+          </div>
+        )}
       </section>
     );
   }

@@ -1,6 +1,13 @@
 """Integration tests for GET /api/v1/health endpoint.
 
 Docs Reference: docs/06 Api Design.md §6, docs/11 Roadmap.md §4 (Fase 2).
+
+Only ``test_health_endpoint_success`` needs a live database: it asserts
+``database.status == "connected"`` and reads back ``public_tables_count``. The
+endpoint still answers 200 with ``unhealthy``/``degraded`` when a dependency is
+down — that contract is verified by the Docker smoke job, which deliberately
+runs with no DB and no Ollama. The remaining tests here are pure and must keep
+running without a DSN.
 """
 
 from __future__ import annotations
@@ -11,7 +18,7 @@ from backend.app.main import app
 
 
 @pytest.mark.asyncio
-async def test_health_endpoint_success():
+async def test_health_endpoint_success(requires_live_biblio: None):
     """Verify /api/v1/health returns HTTP 200 with full dependency readiness."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/v1/health")
@@ -43,6 +50,15 @@ async def test_health_endpoint_success():
         assert embed["status"] == "ready"
         assert embed["model"] == "BAAI/bge-m3"
         assert embed["dimension"] == 1024
+        # `status` comes from the Ollama probe and stays "ready" while the
+        # PREFERRED local model is still cold, so the local path is reported
+        # separately (see local_embedding_model_state).
+        assert embed["local_model_state"] in {
+            "loaded",
+            "loading",
+            "unavailable",
+            "not_started",
+        }
 
         # Phase 5 Evidence layer assertions
         assert data["evidence_layer_ready"] is True
@@ -81,3 +97,28 @@ async def test_root_endpoint():
         data = resp.json()
         assert data["status"] == "operational"
         assert data["version"] == "1.0.0"
+
+
+def test_local_embedding_model_state_probe_never_loads():
+    """The status probe must report state without triggering the expensive load."""
+    from backend.app.services import embedding as embedding_mod
+
+    embedding_mod.clear_embedding_model_cache()
+    try:
+        assert embedding_mod.local_embedding_model_state() == "not_started"
+
+        # Simulate a finished pre-warm.
+        embedding_mod._st_model = object()
+        embedding_mod._st_state = "loaded"
+        assert embedding_mod.local_embedding_model_state() == "loaded"
+
+        # A failed load must be visible, not silently reported as fine.
+        embedding_mod._st_model = None
+        embedding_mod._st_state = "unavailable"
+        assert embedding_mod.local_embedding_model_state() == "unavailable"
+
+        # Mid-load (pre-warm still materialising weights).
+        embedding_mod._st_state = "loading"
+        assert embedding_mod.local_embedding_model_state() == "loading"
+    finally:
+        embedding_mod.clear_embedding_model_cache()

@@ -15,10 +15,20 @@ const scrollBehavior = (): ScrollBehavior =>
  * Workspace controller: composes state, retrieval, and dev tooling, then adds
  * the cross-cutting behaviour that needs all three — provenance highlighting,
  * scroll navigation, top-bar view switching, and the ⌘N / ⌘K shortcuts.
+ *
+ * `sessionId` attaches the workspace to a persisted research session: every ask
+ * then carries it so the turn is stored, and `onNewResearch` replaces the
+ * default local reset with a real `POST /api/v1/sessions` + navigation. Both are
+ * optional, so the stateless `/` route keeps its original behaviour.
  */
-export function useWorkspace() {
+export function useWorkspace(options?: {
+  sessionId?: string | null;
+  onNewResearch?: () => void;
+  onAskComplete?: () => void;
+}) {
   const store = useWorkspaceStore();
-  const { runAsk, resolveCandidate } = useAsk(store);
+  const sessionId = options?.sessionId ?? null;
+  const { runAsk, resolveCandidate } = useAsk(store, sessionId);
   const { loadLab, applyDataKind } = useLab(store, runAsk);
 
   const {
@@ -92,7 +102,7 @@ export function useWorkspace() {
     [setSelectedPubId, setHighlightId, setView],
   );
 
-  const newResearch = useCallback(() => {
+  const resetLocalState = useCallback(() => {
     abortRef.current?.abort();
     setQuestion("");
     setActiveQuestion("");
@@ -115,6 +125,17 @@ export function useWorkspace() {
     setEntityFilterLabel,
     setSideOpen,
   ]);
+
+  const newResearch = useCallback(() => {
+    // The local reset runs FIRST, unconditionally, so the canvas clears even if
+    // the session call fails. Otherwise a 503 would leave the previous answer on
+    // screen while the button appeared to do nothing.
+    resetLocalState();
+    // Only then does the session-aware path mint and navigate. On the stateless
+    // route there is nothing to navigate to, so the reset above is the whole
+    // action — preserving the pre-session behaviour exactly.
+    options?.onNewResearch?.();
+  }, [resetLocalState, options]);
 
   /** Top-bar view navigation — detail views read the current answer set. */
   const switchView = useCallback(

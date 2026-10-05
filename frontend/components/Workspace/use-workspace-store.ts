@@ -3,13 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AskResponse, DataKind } from "../../lib/api";
 import type { WorkspaceView } from "../../lib/views";
-import {
-  evidenceForPublication,
-  publicationsForAuthor,
-  selectAuthor,
-  selectPublication,
-} from "../../lib/views";
+import { evidenceForPublication, selectPublication } from "../../lib/views";
 import type { TitleRef } from "./types";
+
+/**
+ * P0-A: the failure taxonomy the UI must be able to distinguish.
+ *
+ * `timeout` and `error` are separate states on purpose — the task brief for a
+ * timeout and the task brief for a rejected request are different problems
+ * with different fixes, and a user who is told "something went wrong" after
+ * waiting 8 seconds learns nothing about whether to retry or rephrase.
+ */
+export type ErrorKind = "timeout" | "error" | null;
 
 /**
  * Pure workspace state: view machine, retrieval result, and the selection
@@ -26,6 +31,19 @@ export function useWorkspaceStore() {
   const [devMode, setDevMode] = useState(false);
   const [dataKind, setDataKind] = useState<DataKind>("demo");
   const [errorMsg, setErrorMsg] = useState("");
+  /**
+   * P0-A: why the last request failed, so the UI can distinguish a timeout
+   * from a generic error instead of collapsing both into one sentence.
+   *
+   * - `null`     — no failure; the current view is authoritative.
+   * - `"timeout"` — the request exceeded a deadline (client abort, backend
+   *                504 `llm_timeout`, or 503 `db_timeout`).
+   * - `"error"`   — transport, 4xx/5xx, or a malformed response body.
+   *
+   * This is deliberately separate from `errorMsg`: the message is prose that
+   * may be reworded, the kind is the contract the tests and the copy depend on.
+   */
+  const [errorKind, setErrorKind] = useState<ErrorKind>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [selectedCand, setSelectedCand] = useState<string | null>(null);
   const [sideOpen, setSideOpen] = useState(false);
@@ -44,7 +62,7 @@ export function useWorkspaceStore() {
   const dataKindRef = useRef<DataKind>("demo");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Single funnel for every retrieval result — live or fixture-sourced. */
+  /** Single funnel for every retrieval result — live or lab-sourced. */
   const showResponse = useCallback((r: AskResponse, isLive: boolean) => {
     setResponse(r);
     setLive(isLive);
@@ -104,8 +122,6 @@ export function useWorkspaceStore() {
     () => (selectedPub ? evidenceForPublication(response, selectedPub.publication_id) : []),
     [response, selectedPub],
   );
-  const selectedAuthor = useMemo(() => selectAuthor(response, selectedCand), [response, selectedCand]);
-  const authorPubs = useMemo(() => publicationsForAuthor(response, selectedAuthor), [response, selectedAuthor]);
 
   return {
     // state
@@ -116,6 +132,7 @@ export function useWorkspaceStore() {
     devMode,
     dataKind,
     errorMsg,
+    errorKind,
     highlightId,
     selectedCand,
     sideOpen,
@@ -139,6 +156,7 @@ export function useWorkspaceStore() {
     setDevMode,
     setDataKind,
     setErrorMsg,
+    setErrorKind,
     setHighlightId,
     setSelectedCand,
     setSideOpen,
@@ -157,8 +175,6 @@ export function useWorkspaceStore() {
     latencyRows,
     selectedPub,
     selectedPubEvidence,
-    selectedAuthor,
-    authorPubs,
   };
 }
 

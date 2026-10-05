@@ -840,6 +840,15 @@ li.active .step-ic { border-color: var(--accent); color: var(--accent); }
 }
 .error-card h2 { margin: 0 0 8px; font-size: 16px; font-weight: 650; text-wrap: balance; }
 .error-card p { margin: 0 0 14px; }
+/* P0-A: the "no data is shown" disclaimer. Deliberately lower contrast than
+   the actionable copy so it reads as provenance, not as the next thing to do. */
+.error-card .error-note {
+  margin: 0 0 16px;
+  font-size: 11.5px;
+  opacity: 0.78;
+  border-left: 2px solid var(--warn-border);
+  padding-left: 10px;
+}
 .btn-retry {
   display: inline-flex; align-items: center; gap: 8px;
   background: #171717; color: #fff; border: 1px solid #171717;
@@ -1009,6 +1018,12 @@ li.active .step-ic { border-color: var(--accent); color: var(--accent); }
 .pipeline li[data-state="done"] .pipe-dot { background: #171717; border-color: #171717; color: #fff; }
 .pipeline li[data-state="active"] { color: var(--text-primary); font-weight: 600; }
 .pipeline li[data-state="active"] .pipe-dot { border-color: var(--accent); color: var(--accent-ink); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+/* A failed stage reads as a hollow ring, deliberately NOT the filled "done"
+   dot. Colour is supplementary only — the sr-only text on the stage already
+   says "failed", so this stays legible without colour perception. Reuses the
+   existing --warn-text token rather than introducing a new colour. */
+.pipeline li[data-state="failed"] { color: var(--text-primary); font-weight: 600; }
+.pipeline li[data-state="failed"] .pipe-dot { border-color: var(--warn-text); color: var(--warn-text); }
 .pipe-bar { width: 26px; height: 1px; background: var(--border-strong); margin: 0 8px; flex: none; }
 .pipeline li[data-state="done"] + li .pipe-bar,
 .pipeline li:has(+ li[data-state="done"]) .pipe-bar { background: #171717; }
@@ -1248,7 +1263,6 @@ li.active .step-ic { border-color: var(--accent); color: var(--accent); }
   .liquid-interactive:hover { transform: none; }
   .topbar-brand:active,
   .topbar-prov:active,
-  .topbar-avatar:active,
   .src-act:active,
   .ev-link:active,
   .ev-toggle:active,
@@ -1348,22 +1362,6 @@ li.active .step-ic { border-color: var(--accent); color: var(--accent); }
 .topbar-prov:hover { color: var(--text-primary); border-color: var(--border-strong); }
 .topbar-prov:active { transform: scale(0.97); }
 .topbar-prov[aria-pressed="true"] { background: #171717; border-color: #171717; color: #fff; }
-.topbar-avatar {
-  display: inline-flex; align-items: center; gap: 8px;
-  border: none; background: transparent; cursor: pointer;
-  border-radius: 999px; padding: 3px 8px 3px 3px;
-  transition: background var(--dur-fast) ease, transform var(--dur-press) var(--ease-out-expo);
-}
-.topbar-avatar:hover { background: var(--bg-hover); }
-.topbar-avatar:active { transform: scale(0.97); }
-.topbar-avatar-mark {
-  width: 26px; height: 26px; border-radius: 50%;
-  display: grid; place-items: center;
-  background: #171717; color: #fff;
-  font-family: var(--font-mono); font-size: 10px; font-weight: 600;
-  border: 1px solid var(--border-default); flex: none;
-}
-.topbar-avatar-name { font-size: 12.5px; font-weight: 500; color: var(--text-primary); white-space: nowrap; }
 
 /* Sidebar + statebar + rail offsets under the full-width top bar */
 .sidebar { top: var(--topbar-h); height: calc(100vh - var(--topbar-h)); }
@@ -1576,50 +1574,6 @@ button.cite-anchor:disabled { cursor: default; }
 .explore-cluster-src:hover { text-decoration: underline; }
 .explore-cluster-src:active { opacity: 0.65; }
 
-/* ---------- Author view ---------- */
-.author-head-card { margin-top: 0; }
-.author-head {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  border-bottom: 1px solid var(--border-default); padding-bottom: 18px; margin-bottom: 18px;
-}
-.author-id-block { display: flex; gap: 14px; align-items: flex-start; min-width: 0; }
-.author-avatar {
-  width: 56px; height: 56px; border-radius: 12px; flex: none;
-  display: grid; place-items: center;
-  background: #171717; color: #fff;
-  font-family: var(--font-mono); font-size: 16px; font-weight: 600;
-  border: 1px solid #171717;
-}
-.author-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.author-name { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
-.author-aff { margin: 2px 0; font-size: 13px; color: var(--text-secondary); text-wrap: pretty; }
-.author-ids { font-size: 11px; color: var(--text-muted); }
-.author-ids strong { color: var(--text-primary); }
-.author-actions { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.author-follow { padding: 8px 14px; }
-.author-pubs { margin-top: 18px; }
-.author-pubs-head {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 11.5px; color: var(--text-muted); padding-bottom: 8px;
-}
-.author-pubs-list { border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; }
-.author-pub {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
-  padding: 12px 14px; background: #fff;
-  transition: background var(--dur-fast) ease;
-}
-.author-pub + .author-pub { border-top: 1px solid var(--border-default); }
-.author-pub:hover { background: var(--bg-subtle); }
-.author-pub-title {
-  background: none; border: none; padding: 0; cursor: pointer; text-align: left;
-  font-size: 13px; font-weight: 600; line-height: 1.5; color: var(--text-primary); text-wrap: balance;
-}
-.author-pub-title:hover { color: var(--accent-ink); }
-.author-pub-title:active { opacity: 0.65; }
-.author-pub-meta { margin: 2px 0 0; font-size: 12px; color: var(--text-secondary); }
-.author-pub-doi { color: var(--accent-ink); }
-.author-pub-score { text-align: right; flex: none; }
-
 /* ---------- Publication view ---------- */
 .pub-card { margin-top: 0; }
 .pub-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -1694,7 +1648,6 @@ button.cite-anchor:disabled { cursor: default; }
     margin-top: var(--space-1);
     background: rgba(255, 255, 255, 0.72);
   }
-  .topbar-avatar-name { display: none; }
   .topbar-prov span { display: none; }
   .topbar-prov { padding: 6px 8px; }
   .sidebar { top: 0; height: 100vh; }

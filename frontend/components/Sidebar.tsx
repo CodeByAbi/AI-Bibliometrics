@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { animate, motion, useReducedMotion, useMotionValue } from "motion/react";
-import { Bookmark, Compass, History, Plus, Settings, User, X } from "lucide-react";
+import { Bookmark, Compass, History, Plus, Settings, X } from "lucide-react";
 import { SEEDS } from "../lib/api";
 import { motionTokens } from "../lib/motion-tokens";
 import { useMediaQuery } from "../hooks/use-media-query";
 import type { WorkspaceView } from "../lib/views";
+import type { SessionListItem } from "../lib/sessions";
 
 interface SidebarProps {
   activeView: WorkspaceView;
@@ -19,13 +20,20 @@ interface SidebarProps {
   onAsk: (q: string) => void;
   onDevToggle: () => void;
   onClose: () => void;
+  /** Recent sessions from the backend. Undefined hides the section. */
+  sessions?: SessionListItem[];
+  /** Currently open session id, highlighted with aria-current. */
+  activeSessionId?: string | null;
+  /** Backend has session persistence off (503) — say so, do not fake a list. */
+  sessionsUnavailable?: boolean;
+  /** Open an existing session rather than re-running its question. */
+  onOpenSession?: (id: string) => void;
 }
 
 const NAV: Array<{ view: WorkspaceView; icon: typeof Compass; label: string; id: string }> = [
   { view: "explore", icon: Compass, label: "Explore", id: "nav-explore" },
   { view: "answer", icon: History, label: "Research History", id: "nav-history" },
   { view: "answer", icon: Bookmark, label: "Saved Research", id: "nav-saved" },
-  { view: "author", icon: User, label: "Author Index", id: "nav-author" },
 ];
 
 const DISMISS_OFFSET_X = -100;
@@ -51,6 +59,10 @@ export function Sidebar({
   onAsk,
   onDevToggle,
   onClose,
+  sessions,
+  activeSessionId,
+  sessionsUnavailable,
+  onOpenSession,
 }: SidebarProps) {
   const isMobile = useMediaQuery("(max-width: 899px)");
   const reduceMotion = useReducedMotion();
@@ -121,24 +133,48 @@ export function Sidebar({
     [asModal, onClose],
   );
 
-  const sessions: Array<{ label: string; meta: string; warn?: boolean; run: () => void }> = [
-    {
-      label: "MSC therapy trend — Indonesian institutions",
-      meta: "4 sources · HybridRoute",
-      run: () => onAsk(SEEDS[0].question),
-    },
-    {
-      label: 'Author: "Rahman" collaboration query',
-      meta: "Disambig · GraphRoute",
-      warn: true,
-      run: () => onAsk("Which Rahman collaborates with Bandung labs?"),
-    },
-    {
-      label: "Quantum-dot yields in deep-sea fisheries",
-      meta: "0 records · not_found",
-      run: () => onAsk("Quantum-dot yields in deep-sea fisheries after 2020?"),
-    },
-  ];
+  /**
+   * Recent Sessions, backed by `GET /api/v1/sessions`.
+   *
+   * Previously three hardcoded entries whose `run` re-issued a canned question.
+   * That was worse than a placeholder: it looked like restored history while
+   * actually spending a fresh retrieval, and the advertised outcomes
+   * ("4 sources · HybridRoute") were hardcoded text that no query had produced.
+   * A sidebar entry must now be a real session the backend already holds.
+   *
+   * Rendering rules that follow from the backend being authoritative:
+   *   - the count is the list length, never a literal;
+   *   - an empty session shows "no questions yet", not a fake route;
+   *   - the meta line is source count + route, and a session with no answer yet
+   *     says so rather than implying one;
+   *   - `not_found` is surfaced as its own state, because a conversation that
+   *     found nothing is a real outcome and not an error.
+   *
+   * When `sessions` is undefined the section is omitted entirely, so the
+   * stateless route shows no misleading history at all.
+   */
+  const sessionRows = (sessions ?? []).map((s) => {
+    const unanswered = s.message_count === 0;
+    const noSources = s.source_count === 0;
+    let meta: string;
+    if (unanswered) {
+      meta = "no questions yet";
+    } else if (noSources) {
+      meta = s.last_route ? `no sources · ${s.last_route}` : "no sources";
+    } else {
+      meta = `${s.source_count} source${s.source_count === 1 ? "" : "s"}`;
+      if (s.last_route) meta += ` · ${s.last_route}`;
+    }
+    return {
+      id: s.id,
+      label: s.title,
+      meta,
+      active: s.id === activeSessionId,
+      open: () => onOpenSession?.(s.id),
+    };
+  });
+
+  const showSessions = sessions !== undefined;
 
   return (
     <motion.aside
@@ -213,29 +249,51 @@ export function Sidebar({
         </button>
       </nav>
 
-      <p className="side-label" id="side-sessions-label">
-        Recent Sessions <span className="mono">3</span>
-      </p>
-      <ul className="side-list side-sessions" aria-labelledby="side-sessions-label">
-        {sessions.map((s) => (
-          <li key={s.label}>
-            <button
-              type="button"
-              className="side-item side-session"
-              onClick={() => {
-                s.run();
-                onClose();
-              }}
-              title={s.label}
-            >
-              <span className="side-text">
-                <span className="truncate">{s.label}</span>
-                <small className={s.warn ? "side-warn" : "mono"}>{s.meta}</small>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      {showSessions && (
+        <>
+          <p className="side-label" id="side-sessions-label">
+            Recent Sessions <span className="mono">{sessionRows.length}</span>
+          </p>
+          <ul className="side-list side-sessions" aria-labelledby="side-sessions-label">
+            {sessionsUnavailable && (
+              <li>
+                <p className="side-sessions-note">
+                  Session persistence is off on the server.
+                </p>
+              </li>
+            )}
+            {!sessionsUnavailable && sessionRows.length === 0 && (
+              <li>
+                <p className="side-sessions-note">
+                  No saved sessions yet. Start one with New Research.
+                </p>
+              </li>
+            )}
+            {sessionRows.map((s) => (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  className="side-item side-session"
+                  data-active={s.active || undefined}
+                  // aria-current is what tells a screen reader which session is
+                  // open; the visual highlight alone does not.
+                  aria-current={s.active ? "page" : undefined}
+                  onClick={() => {
+                    s.open();
+                    onClose();
+                  }}
+                  title={s.label}
+                >
+                  <span className="side-text">
+                    <span className="truncate">{s.label}</span>
+                    <small className="mono">{s.meta}</small>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
       <div className="side-foot">
         <span className="side-label side-foot-label">Corpus Connection</span>
@@ -243,7 +301,18 @@ export function Sidebar({
         <span className="side-db-sub">Silver &amp; Gold Provenance Layer</span>
         <span className="db-pill" data-live={live}>
           <span className="pulse" aria-hidden />
-          {live ? "Live · prototype DB" : "Prototype snapshot · fixtures ready"}
+          {/*
+            P0-A: this read "Prototype snapshot · fixtures ready" whenever
+            `live` was false, which is the idle state AND the error state AND
+            the timeout state. It told the user fixtures were standing in for
+            the backend when no fixture is served on any live path any more.
+            Now it names the actual condition.
+          */}
+          {live
+            ? "Live · prototype DB"
+            : devMode
+              ? "Lab dataset · not live"
+              : "Not connected · no live data"}
         </span>
       </div>
     </motion.aside>

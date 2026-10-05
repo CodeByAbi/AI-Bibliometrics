@@ -7,14 +7,35 @@ import { ProvenanceRail } from "./ProvenanceRail";
 import { StateBar } from "./StateBar";
 import { WorkspaceCanvas } from "./WorkspaceCanvas";
 import { useWorkspace } from "./use-workspace";
+import type { SessionListItem } from "@/lib/sessions";
 
 /**
  * Workspace shell — chrome, status, and the two-column grid. All behaviour
  * lives in use-workspace; the narrative column and the provenance rail are
  * separate presentational trees that each own their internals.
+ *
+ * `sessionId` / `onNewResearch` / `onAskComplete` are the session-aware seams.
+ * All three are optional, so the stateless `/` route renders exactly as before.
  */
-export default function Workspace() {
-  const ws = useWorkspace();
+export interface WorkspaceProps {
+  /** When set, every ask carries this id so the turn is persisted. */
+  sessionId?: string | null;
+  /** Replaces the local-only New Research reset with a real session creation. */
+  onNewResearch?: () => void;
+  /** Fired after a completed ask, so Recent Sessions can refresh. */
+  onAskComplete?: () => void;
+  /** Recent sessions for the sidebar. Undefined hides the list entirely. */
+  sessions?: SessionListItem[];
+  /** Currently open session, highlighted in the sidebar. */
+  activeSessionId?: string | null;
+  /** True when the backend has session persistence switched off (503). */
+  sessionsUnavailable?: boolean;
+  /** Opens a session: the sidebar calls this instead of re-running a question. */
+  onOpenSession?: (id: string) => void;
+}
+
+export default function Workspace(props: WorkspaceProps = {}) {
+  const ws = useWorkspace(props);
   const {
     store,
     loadLab,
@@ -46,7 +67,7 @@ export default function Workspace() {
     copyDoi,
   } = store;
 
-  const railHidden = view === "author" || view === "publication";
+  const railHidden = view === "publication";
 
   return (
     <div className="app-top page-enter">
@@ -55,7 +76,6 @@ export default function Workspace() {
         onSwitch={switchView}
         provenanceOpen={provenanceOpen}
         onToggleProvenance={() => store.setProvenanceOpen((o) => !o)}
-        onOpenAuthor={() => switchView("author")}
         sideOpen={sideOpen}
         onToggleSidebar={toggleSidebar}
       />
@@ -71,6 +91,10 @@ export default function Workspace() {
           onNavigate={switchView}
           onNewResearch={newResearch}
           onAsk={(q) => void runAsk(q)}
+          sessions={props.sessions}
+          activeSessionId={props.activeSessionId ?? null}
+          sessionsUnavailable={props.sessionsUnavailable ?? false}
+          onOpenSession={props.onOpenSession}
           onDevToggle={() => setDevMode((d) => !d)}
           onClose={() => store.setSideOpen(false)}
         />

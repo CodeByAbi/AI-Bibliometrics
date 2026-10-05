@@ -68,7 +68,11 @@ export function doiHref(doi?: string | null): string | null {
 
 export function statusLabel(r: AskResponse, live: boolean): string {
   if (r.status !== "ok") return r.status.replace("_", " ");
-  return live ? "Verified against live database" : "Verified against prototype snapshot";
+  // P0-A: the non-live branch is now reachable only through the developer
+  // state lab, which loads a hardcoded answer on purpose. Labelling that
+  // "prototype snapshot" implied the same fallback existed on the live path;
+  // it does not, so say which of the two the reader is actually looking at.
+  return live ? "Verified against live database" : "Lab dataset — not live data";
 }
 
 /**

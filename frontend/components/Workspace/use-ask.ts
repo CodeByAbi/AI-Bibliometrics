@@ -1,23 +1,42 @@
 "use client";
 
 import { useCallback } from "react";
-import { fixtureHybrid, postAsk, pickFixture, type AskResponse } from "../../lib/api";
-import { getUserMessage } from "../../lib/errors";
+import { postAsk } from "../../lib/api";
+import { getUserMessage, isAbortError, isTimeoutError } from "../../lib/errors";
 import { HERO_PERIODS } from "../ResearchHero";
 import type { WorkspaceStore } from "./use-workspace-store";
 
-/** Backend guard: 8s client abort mirrors the backend's 10s statement_timeout. */
+/**
+ * Client abort budget.
+ *
+ * Sits just under the backend's 10 s DB statement_timeout so a genuinely slow
+ * database surfaces the structured 503 `db_timeout` from the server rather
+ * than an opaque client-side abort. It is NOT a budget for the LLM: the
+ * backend now bounds Text-to-SQL at TEXT2SQL_TIMEOUT_S (6 s) and returns a
+ * structured 504 `llm_timeout`, so the generator never runs long enough to
+ * hit this.
+ */
 const ASK_TIMEOUT_MS = 8000;
 
 type Filters = Record<string, string | number | null | undefined>;
 
 /**
  * Retrieval transport: one POST /api/v1/ask per ask, one abort controller so a
- * newer question supersedes the in-flight one, and an honest offline
- * fallback — the fixture keeps the workspace readable while the banner tells
- * the user the answer is a snapshot rather than a live read.
+ * newer question supersedes the in-flight one, and — critically — NO data
+ * fallback.
+ *
+ * P0-A: this hook used to accept a `fallback: AskResponse` argument
+ * (`pickFixture(question)`) and call `showResponse(fallback, false)` from the
+ * catch block. Every backend error, 500, or timeout therefore rendered a
+ * fabricated brief containing invented publication counts, citation numbers
+ * and expertise scores, behind a small "Showing a prototype snapshot instead"
+ * note. A user could not tell a real answer from a hardcoded one, and neither
+ * could a reader of a screenshot.
+ *
+ * The rule now: a transport failure produces an explicit error or timeout
+ * state and NOTHING else. No numbers, no sources, no evidence objects.
  */
-export function useAsk(store: WorkspaceStore) {
+export function useAsk(store: WorkspaceStore, sessionId?: string | null) {
   const {
     view,
     devMode,
@@ -33,34 +52,64 @@ export function useAsk(store: WorkspaceStore) {
     setHighlightId,
     setEntityFilterLabel,
     setErrorMsg,
+    setErrorKind,
+    setResponse,
     showResponse,
   } = store;
 
   const post = useCallback(
-    async (query: string, filters: Filters, fallback: AskResponse) => {
+    async (query: string, filters: Filters) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
-      const timeout = setTimeout(() => ctrl.abort(), ASK_TIMEOUT_MS);
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        ctrl.abort();
+      }, ASK_TIMEOUT_MS);
       try {
-        const r = await postAsk(query, devMode, ctrl.signal, filters);
+        const r = await postAsk(query, devMode, ctrl.signal, filters, sessionId ?? null);
+        clearTimeout(timeout);
         setErrorMsg("");
+        setErrorKind(null);
         showResponse(r, true);
       } catch (error) {
-        // Aborted by timeout or by a newer ask — never surface as a failure.
-        if (ctrl.signal.aborted) return;
+        clearTimeout(timeout);
+        // Superseded by a newer ask, or the view unmounted. Nothing to report:
+        // the newer request owns the view now. This is NOT a failure and must
+        // not be rendered as one.
+        if (isAbortError(error) && !timedOut) return;
+
+        // P0-A: drop every trace of the previous answer before surfacing the
+        // failure. Leaving a stale response mounted would let the rail, the
+        // Trends chart and Paper Detail keep rendering the PREVIOUS question's
+        // numbers under the new question — a silent, and much harder to spot,
+        // form of the same bug.
+        setResponse(null);
+
+        const timedOutRequest = timedOut || isTimeoutError(error);
         const code =
           error instanceof Error && "code" in error
             ? String((error as { code: string }).code)
             : "INTERNAL_ERROR";
         console.error("Ask request failed:", error);
+        setErrorKind(timedOutRequest ? "timeout" : "error");
         setErrorMsg(getUserMessage(code));
-        showResponse(fallback, false);
+        setView("error");
       } finally {
         clearTimeout(timeout);
       }
     },
-    [abortRef, devMode, setErrorMsg, showResponse],
+    [
+      abortRef,
+      devMode,
+      sessionId,
+      setErrorMsg,
+      setErrorKind,
+      setResponse,
+      setView,
+      showResponse,
+    ],
   );
 
   const runAsk = useCallback(
@@ -75,7 +124,18 @@ export function useAsk(store: WorkspaceStore) {
       setSelectedCand(null);
       setHighlightId(null);
       setEntityFilterLabel(null);
-      await post(query, { ...periodFilters, ...(extraFilters ?? {}) }, pickFixture(query));
+      // Clear the previous error so a retry never renders the stale banner
+      // next to a fresh loading state.
+      setErrorMsg("");
+      setErrorKind(null);
+      // P0-A: drop the PREVIOUS answer the moment a new question begins, not
+      // only when it fails. Otherwise the old brief stays mounted behind the
+      // loading and error states, so a reader who asks a second question still
+      // sees question one's numbers and cannot tell which question they belong
+      // to. The numbers were real, but attributing them to the wrong question
+      // is its own kind of wrong answer.
+      setResponse(null);
+      await post(query, { ...periodFilters, ...(extraFilters ?? {}) });
     },
     [
       view,
@@ -87,6 +147,9 @@ export function useAsk(store: WorkspaceStore) {
       setSelectedCand,
       setHighlightId,
       setEntityFilterLabel,
+      setErrorMsg,
+      setErrorKind,
+      setResponse,
     ],
   );
 
@@ -104,7 +167,9 @@ export function useAsk(store: WorkspaceStore) {
           : { topic_name: cand.name };
     setEntityFilterLabel(`${cand.type}: ${cand.name}`);
     setView("loading");
-    await post(activeQuestion, filters, fixtureHybrid);
+    // No fallback argument: a failed disambiguation retry is an explicit error,
+    // never the previous hybrid fixture.
+    await post(activeQuestion, filters);
   }, [
     selectedCand,
     response,

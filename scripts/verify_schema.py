@@ -146,6 +146,210 @@ def norm_type(data_type: str) -> str:
     return TYPE_ALIASES.get(t, t)
 
 
+# ===========================================================================
+# Application (conversation) schema — docs/04 §13
+# ===========================================================================
+# Audited SEPARATELY from the Silver/Gold checks above, and deliberately
+# optional: session persistence is off until an operator supplies
+# DB_URL_SESSION, so an absent `app` schema is a note, not an error. Once the
+# schema exists, drift in it IS an error, because the runtime reads and writes
+# those tables on every session-aware request.
+APP_SCHEMA = "app"
+
+EXPECTED_APP_TABLES: dict[str, list[str]] = {
+    "research_sessions": [
+        "session_id",
+        "title",
+        "status",
+        "created_at",
+        "updated_at",
+        "last_message_at",
+    ],
+    "research_messages": [
+        "message_id",
+        "session_id",
+        "role",
+        "content",
+        "status",
+        "applied_filters",
+        "request_id",
+        "route",
+        "seq",
+        "created_at",
+        # Migration 006. Per-turn rendering provenance, fenced by
+        # audit_provenance_columns() below — see the exception note there.
+        "evidence_objects",
+        "sources",
+    ],
+    "research_session_summaries": [
+        "session_id",
+        "summary",
+        "messages_covered",
+        "created_at",
+        "updated_at",
+    ],
+}
+
+#: Indexes migration 005 creates. Reported when missing, but as a warning: the
+#: tables still function without them, they just degrade to sequential scans.
+EXPECTED_APP_INDEXES = (
+    "idx_research_messages_session_created",
+    "idx_research_sessions_last_message",
+    "idx_research_sessions_updated",
+)
+
+#: Per-turn provenance columns added by migration 006. These are the ONLY
+#: columns in schema `app` permitted to carry bibliometric metric values, and
+#: only as an immutable snapshot of one already-verified response.
+#:
+#: They are a documented, owner-signed-off exception to the Session Isolation
+#: Invariant (migration 006 header; docs/03 §0.3 #5). The exception is narrow,
+#: and this table is what keeps it narrow:
+#:
+#:   * they must be JSONB — an opaque snapshot, never a scalar metric column
+#:     that a query could aggregate with plain SQL arithmetic;
+#:   * they must appear on research_messages ONLY. A provenance column on
+#:     research_sessions would be a session-level aggregate, which is exactly
+#:     what migration 005 refused to create and what these columns exist not to
+#:     become.
+#:
+#: They are deliberately NOT in the `banned` metric-column set below. That set
+#: targets session-level *aggregates*; these are per-turn receipts. A snapshot
+#: row cannot answer a question — retrieval re-queries `public` for that — so
+#: treating it as a cached aggregate would be a false positive.
+PROVENANCE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "research_messages": ("evidence_objects", "sources"),
+}
+
+#: Tables that must NOT carry provenance columns. Enforced, not merely intended:
+#: see PROVENANCE_COLUMNS above.
+PROVENANCE_FORBIDDEN_TABLES = ("research_sessions", "research_session_summaries")
+
+
+def audit_provenance_columns(live: dict[str, dict[str, str]]) -> dict:
+    """Audit the migration 006 provenance exception.
+
+    Returns three lists, all of which should be empty on a healthy database:
+
+    ``wrong_type``    a provenance column that is not JSONB. A scalar or array
+                      column would let a snapshot be summed, compared or
+                      filtered with ordinary SQL, which is precisely the
+                      aggregate use the exception forbids.
+    ``misplaced``     a provenance column on a table other than
+                      research_messages — i.e. a session-level aggregate.
+    ``unexpected``    a provenance-named column that this script does not know
+                      about. Catches someone adding ``evidence_count_v2``
+                      without registering (and therefore without fencing) it.
+    """
+    known = {col for cols in PROVENANCE_COLUMNS.values() for col in cols}
+    wrong_type: list[str] = []
+    misplaced: list[str] = []
+    unexpected: list[str] = []
+
+    for table, columns in live.items():
+        for col, dtype in columns.items():
+            # Any column that looks like a provenance snapshot must be
+            # registered above, or this reports it.
+            if col in known:
+                if table not in PROVENANCE_COLUMNS:
+                    misplaced.append(f"{table}.{col}")
+                elif dtype != "jsonb":
+                    wrong_type.append(f"{table}.{col} is {dtype}, expected jsonb")
+            elif col.endswith(("_objects", "_sources", "_evidence")):
+                unexpected.append(f"{table}.{col}")
+
+    for table in PROVENANCE_FORBIDDEN_TABLES:
+        for col in live.get(table, {}):
+            if col in known:
+                misplaced.append(f"{table}.{col}")
+
+    return {
+        "wrong_type": sorted(wrong_type),
+        "misplaced": sorted(misplaced),
+        "unexpected": sorted(unexpected),
+    }
+
+
+def audit_app_schema(cur) -> dict:
+    """Audit the `app` schema and, critically, its isolation from `public`.
+
+    The important output is not the column list — it is
+    ``foreign_keys_into_public``, which must always be empty. A foreign key from
+    `app` into `public` would make the bibliometric corpus depend on the session
+    lifecycle, inverting the Session Isolation Invariant (docs/03 §0.3 #5) and
+    letting a session delete cascade into the corpus.
+    """
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = %s);",
+        (APP_SCHEMA,),
+    )
+    if not cur.fetchone()[0]:
+        return {"present": False}
+
+    cur.execute(
+        """
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = %s
+        ORDER BY table_name, ordinal_position;
+        """,
+        (APP_SCHEMA,),
+    )
+    live: dict[str, dict[str, str]] = {}
+    for tname, cname, dtype in cur.fetchall():
+        live.setdefault(tname, {})[cname] = norm_type(dtype)
+
+    cur.execute(
+        """
+        SELECT src.relname, tgt.relname, con.confdeltype
+        FROM pg_constraint con
+        JOIN pg_class src ON src.oid = con.conrelid
+        JOIN pg_namespace srcn ON srcn.oid = src.relnamespace
+        JOIN pg_class tgt ON tgt.oid = con.confrelid
+        JOIN pg_namespace tgtn ON tgtn.oid = tgt.relnamespace
+        WHERE con.contype = 'f'
+          AND srcn.nspname = %s
+          AND tgtn.nspname <> %s;
+        """,
+        (APP_SCHEMA, APP_SCHEMA),
+    )
+    fks_into_public = [
+        {"from": s, "to": t, "on_delete": d} for s, t, d in cur.fetchall()
+    ]
+
+    cur.execute(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = %s;", (APP_SCHEMA,)
+    )
+    indexes = sorted({r[0] for r in cur.fetchall()})
+
+    # Columns that would indicate a cached bibliometric aggregate.
+    banned = {
+        "publication_count",
+        "citation_count",
+        "author_count",
+        "institution_count",
+        "expertise_score",
+        "growth_score",
+        "evidence_count",
+    }
+    metric_columns = sorted(
+        f"{t}.{c}"
+        for t, cols in live.items()
+        for c in cols
+        if c in banned
+    )
+
+    return {
+        "present": True,
+        "tables": live,
+        "indexes": indexes,
+        "missing_indexes": sorted(set(EXPECTED_APP_INDEXES) - set(indexes)),
+        "foreign_keys_into_public": fks_into_public,
+        "metric_columns": metric_columns,
+        "provenance": audit_provenance_columns(live),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Task 0 prototype schema audit (read-only).")
     ap.add_argument("--dsn-env", default="DB_URL", help="Env var holding the connection string.")
@@ -287,6 +491,70 @@ def main() -> int:
                 """
             )
             fk_index_gaps = [(r[0], r[1]) for r in cur.fetchall()]
+
+            # Application schema (conversation state). Independent of the Silver
+            # gates above: an absent `app` schema is a note, not a failure,
+            # because session persistence is opt-in via DB_URL_SESSION.
+            app_audit = audit_app_schema(cur)
+
+    if app_audit["present"]:
+        # NOTE: loop var deliberately NOT named `expected_cols` — the Silver Gate 1
+        # loop below binds that name to a dict[str, str] in the same function
+        # scope, and reusing it for a list[str] makes mypy infer the wrong type
+        # for the pre-existing loop.
+        for table, app_cols in EXPECTED_APP_TABLES.items():
+            if table not in app_audit["tables"]:
+                errors.append(f"missing app table: {table}")
+                continue
+            live_cols = app_audit["tables"][table]
+            for col in app_cols:
+                if col not in live_cols:
+                    errors.append(f"missing app column: {table}.{col}")
+        for idx in app_audit["missing_indexes"]:
+            warnings.append(
+                f"missing app index: {idx} (session reads degrade to seq scans)"
+            )
+        # The two hard invariants. Both are structural, so they are errors, not
+        # warnings: either one means the Session Isolation Invariant is broken.
+        for fk in app_audit["foreign_keys_into_public"]:
+            errors.append(
+                f"VIOLATION Session Isolation Invariant: app.{fk['from']} has a "
+                f"foreign key to {fk['to']} — session lifecycle must never reach "
+                f"the bibliometric corpus"
+            )
+        for col in app_audit["metric_columns"]:
+            errors.append(
+                f"VIOLATION data ownership: app.{col} is a bibliometric metric. "
+                f"Session tables store conversation state only; metrics must be "
+                f"retrieved from `public` on demand."
+            )
+        # The migration 006 provenance fence. The exception is legitimate only
+        # while it stays per-turn, opaque and registered; each of these three
+        # failures is a widening of it, so they are errors rather than warnings.
+        prov = app_audit["provenance"]
+        for entry in prov["wrong_type"]:
+            errors.append(
+                f"VIOLATION provenance fence: app.{entry}. A provenance snapshot "
+                f"must be JSONB so it cannot be summed or filtered as a scalar "
+                f"metric (migration 006)."
+            )
+        for entry in prov["misplaced"]:
+            errors.append(
+                f"VIOLATION provenance fence: app.{entry} is a provenance column "
+                f"on a session-level table. Per-turn snapshots may not become a "
+                f"session aggregate (migration 006)."
+            )
+        for entry in prov["unexpected"]:
+            errors.append(
+                f"VIOLATION provenance fence: app.{entry} looks like an "
+                f"unregistered provenance snapshot. Register and fence it in "
+                f"PROVENANCE_COLUMNS, or remove it."
+            )
+    else:
+        notes.append(
+            f"schema `{APP_SCHEMA}` absent — session persistence disabled "
+            f"(expected until DB_URL_SESSION is configured)."
+        )
     # Gate 1: table + column presence (hard), type drift (warning).
     for table, expected_cols in EXPECTED.items():
         rep = {"missing_columns": [], "type_drift": {}, "extra_columns": []}
@@ -356,6 +624,7 @@ def main() -> int:
         "notes": notes,
         "fk_index_gaps": [{"table": t, "column": c} for t, c in fk_index_gaps],
         "tables": table_reports,
+        "app_schema": app_audit,
         "chunk_stats": {"chunks": chunk_stats[0], "distinct_publications": chunk_stats[1]}
         if chunk_stats
         else None,
@@ -371,6 +640,32 @@ def main() -> int:
         f.write(f"- Auditor is superuser: **{auditor_is_superuser}**\n")
         f.write(f"- Runtime role `{args.role}` exists: **{runtime_role_exists}**\n")
         f.write(f"- FK columns lacking a leading-column index: **{len(fk_index_gaps)}**\n\n")
+        if app_audit["present"]:
+            f.write("## Application schema (`app`) — conversation state\n\n")
+            f.write(f"- Tables: **{len(app_audit['tables'])}**\n")
+            f.write(f"- Indexes: **{len(app_audit['indexes'])}**\n")
+            f.write(
+                "- Foreign keys into `public`: "
+                f"**{len(app_audit['foreign_keys_into_public'])}** "
+                "(must be 0 — Session Isolation Invariant)\n"
+            )
+            f.write(
+                "- Bibliometric metric columns: "
+                f"**{len(app_audit['metric_columns'])}** "
+                "(must be 0 — data ownership rule)\n"
+            )
+            prov = app_audit["provenance"]
+            f.write(
+                "- Provenance fence (migration 006 exception): "
+                f"wrong_type **{len(prov['wrong_type'])}**, "
+                f"misplaced **{len(prov['misplaced'])}**, "
+                f"unregistered **{len(prov['unexpected'])}** "
+                "(all must be 0 — per-turn snapshots stay JSONB and stay "
+                "on `research_messages`)\n\n"
+            )
+        else:
+            f.write("## Application schema (`app`)\n\n_absent_ — session "
+                    "persistence disabled (no DB_URL_SESSION)\n\n")
         for section in ("errors", "warnings", "notes"):
             items = result[section]
             f.write(f"## {section} ({len(items)})\n")
@@ -383,6 +678,20 @@ def main() -> int:
     for w in warnings:
         print(f"  WARN:  {w}")
     print(f"[verify_schema] artifacts: {args.out_dir}/schema_audit.json + schema_audit.md")
+    if app_audit["present"]:
+        prov = app_audit["provenance"]
+        prov_violations = (
+            len(prov["wrong_type"]) + len(prov["misplaced"]) + len(prov["unexpected"])
+        )
+        print(
+            f"[verify_schema] app schema: "
+            f"{len(app_audit['tables'])} table(s), "
+            f"fk_into_public={len(app_audit['foreign_keys_into_public'])} (must be 0), "
+            f"metric_columns={len(app_audit['metric_columns'])} (must be 0), "
+            f"provenance_violations={prov_violations} (must be 0)"
+        )
+    else:
+        print("[verify_schema] app schema: absent (session persistence disabled)")
     return 0 if not errors else 2
 
 
