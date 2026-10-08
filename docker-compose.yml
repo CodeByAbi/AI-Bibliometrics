@@ -21,6 +21,11 @@ services:
       # Must stay writable by the non-root `app` user in the image, or the first
       # SentenceTransformer load fails and silently degrades to Ollama embedding.
       HF_HOME: /home/app/.cache/huggingface
+      # Thread budget for torch encode (bge-m3 query embedding). The image
+      # defaults to 1; on this 4-CPU host single-thread encode measured
+      # 617 ms warm (up to 19.8 s under contention), dominating VectorRoute.
+      # 4 matches the host; lower to 2 if Ollama synthesis contends on CPU.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
     # Persist the HuggingFace cache across `up --build` / recreate.
     #
     # Measured on this deployment: bge-m3 is ~2.2 GB, and because HF_HOME lived
