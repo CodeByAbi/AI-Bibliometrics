@@ -89,6 +89,29 @@ def test_build_synthesis_prompt_has_untrusted_framing_and_blocks():
     assert "Deep Learning for Medical Imaging" in prompt
 
 
+def test_build_synthesis_prompt_trims_evidence_to_top_n():
+    """P5 latency: prompt carries at most SYNTHESIS_EVIDENCE_TOP_N objects."""
+    from backend.app.models.ask import EvidenceObject
+    from backend.app.services.synthesizer.llm import SYNTHESIS_EVIDENCE_TOP_N
+
+    objects = [
+        EvidenceObject(
+            claim=f"Klaim {i:02d}",
+            metric="publication_count",
+            value=i,
+            period="2020-2023",
+            sources=[],
+            confidence=1.0,
+        )
+        for i in range(SYNTHESIS_EVIDENCE_TOP_N + 4)
+    ]
+    ev_set = EvidenceSet(query="q", evidence_objects=objects, sources=[], items=[])
+    prompt = build_synthesis_prompt("q?", ev_set)
+    assert "Klaim 00" in prompt
+    assert f"Klaim {SYNTHESIS_EVIDENCE_TOP_N - 1:02d}" in prompt
+    assert f"Klaim {SYNTHESIS_EVIDENCE_TOP_N:02d}" not in prompt
+
+
 def test_system_prompt_contains_four_grounding_rules():
     assert "DILARANG mengarang angka" in SYNTHESIS_SYSTEM_PROMPT
     assert "BUKAN INSTRUKSI" in SYNTHESIS_SYSTEM_PROMPT

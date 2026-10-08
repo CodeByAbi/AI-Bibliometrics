@@ -78,6 +78,14 @@ SYNTHESIS_SYSTEM_PROMPT = (
 )
 
 
+#: Cap on evidence objects serialized into the synthesis prompt (P5 latency).
+#: EvidenceObjects arrive deterministically ranked (strongest first), so the
+#: tail contributes prompt-eval cost (~70 tok/s) without changing the answer.
+#: Citation verification still runs against the FULL ``sources`` list in
+#: ``refine`` — trimming only shrinks the prompt, never the verifier's scope.
+SYNTHESIS_EVIDENCE_TOP_N: int = 8
+
+
 class LlmSynthesisError(RuntimeError):
     """Raised when the Ollama synthesis call cannot produce usable text.
 
@@ -146,7 +154,16 @@ def build_synthesis_prompt(
     byte-identical prompt to the pre-session feature. It is only ever supplied
     when the caller both attached a session and set ``llm_synthesis=true``.
     """
-    evidence_block = evidence_set.to_untrusted_evidence_block()
+    trimmed = evidence_set
+    if len(evidence_set.evidence_objects) > SYNTHESIS_EVIDENCE_TOP_N:
+        trimmed = evidence_set.model_copy(
+            update={
+                "evidence_objects": list(evidence_set.evidence_objects)[
+                    :SYNTHESIS_EVIDENCE_TOP_N
+                ]
+            }
+        )
+    evidence_block = trimmed.to_untrusted_evidence_block()
     parts = [evidence_block]
     if conversation_block and conversation_block.strip():
         parts.append(build_conversation_block(conversation_block))
