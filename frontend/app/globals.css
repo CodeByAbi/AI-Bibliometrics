@@ -303,8 +303,9 @@ body {
   height: 28px;
   border-radius: 8px;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid var(--border-default);
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .btn-new {
