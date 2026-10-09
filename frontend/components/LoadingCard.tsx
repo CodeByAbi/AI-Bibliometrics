@@ -13,7 +13,7 @@ import { Check } from "lucide-react";
 const STAGES = [
   { t: "Understanding question", meta: "router · entity gate" },
   { t: "Searching structured data", meta: "SQL · Gold analytics" },
-  { t: "Retrieving relevant literature", meta: "pgvector HNSW · gate ≥ 0.65" },
+  { t: "Retrieving relevant literature", meta: "pgvector HNSW · gate ≥ 0.48" },
   { t: "Combining evidence", meta: "EvidenceUnifier" },
   { t: "Preparing grounded answer", meta: "synthesis · citation verify" },
 ];

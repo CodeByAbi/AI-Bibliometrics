@@ -194,6 +194,116 @@ class TestHybridRetrieverExecution:
                 filters=FilterParams(topic_name="Stem Cell"),
             )
 
+    @pytest.mark.asyncio
+    async def test_retrieve_combined_runs_trends_and_experts_concurrently(self):
+        """P3 latency: COMBINED with a pool overlaps the two Gold queries.
+
+        Each fetch waits for proof the OTHER query has started; sequential
+        execution would deadlock into the 5 s guard and fail. Passing proves
+        the two queries actually overlap on two connections.
+        """
+
+        class _AcquireCtx:
+            def __init__(self, conn):
+                self._conn = conn
+
+            async def __aenter__(self):
+                return self._conn
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _StubPool:
+            def __init__(self, conn):
+                self._conn = conn
+                self.acquires = 0
+
+            def acquire(self):
+                self.acquires += 1
+                return _AcquireCtx(self._conn)
+
+        trend_started = asyncio.Event()
+        expert_started = asyncio.Event()
+
+        async def _trends_fetch(*args, **kwargs):
+            trend_started.set()
+            await asyncio.wait_for(expert_started.wait(), timeout=5)
+            return [
+                {
+                    "topic_id": 3,
+                    "topic_name": "Topik Gabungan",
+                    "year": 2024,
+                    "publication_count": 7,
+                    "citation_count": 11,
+                    "growth_score": 0.5,
+                    "citation_acceleration": 0.2,
+                    "recency_weight": 0.8,
+                    "is_emerging": False,
+                }
+            ]
+
+        async def _experts_fetch(*args, **kwargs):
+            expert_started.set()
+            await asyncio.wait_for(trend_started.wait(), timeout=5)
+            return [
+                {
+                    "author_id": "AUTH_9",
+                    "author_name": "Dr. Paralel",
+                    "topic_id": 3,
+                    "topic_name": "Topik Gabungan",
+                    "expertise_score": 90.0,
+                    "relevance_score": 90.0,
+                    "productivity_score": 90.0,
+                    "impact_score": 90.0,
+                    "recency_score": 90.0,
+                    "h_index_topic": 6,
+                    "publication_count_topic": 9,
+                    "citation_count_topic": 50,
+                    "coauthor_network_size": 10,
+                }
+            ]
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.return_value = {"topic_id": 3, "topic_name": "Topik Gabungan"}
+        fetch_calls = {"n": 0}
+
+        async def _conn_fetch(*args, **kwargs):
+            # Call 1 (gather): trends rows. Call 2 (step 4): supporting pubs.
+            # A single dispatcher (not a side_effect list) so the async
+            # overlap functions are actually invoked and awaited.
+            fetch_calls["n"] += 1
+            if fetch_calls["n"] == 1:
+                return await _trends_fetch(*args, **kwargs)
+            return [
+                {
+                    "publication_id": "PUB_PAR_1",
+                    "title": "Riset Paralel",
+                    "year": 2024,
+                    "doi": None,
+                    "eid": "2-s2.0-par1",
+                }
+            ]
+
+        mock_conn.fetch.side_effect = _conn_fetch
+        mock_conn2 = AsyncMock()
+        mock_conn2.fetch.side_effect = _experts_fetch
+        pool = _StubPool(mock_conn2)
+
+        result = await HybridRetriever.retrieve(
+            conn=mock_conn,
+            question="Siapa pakar dan bagaimana tren perkembangan topik riset ini?",
+            pool=pool,
+        )
+
+        assert result.intent_type == "COMBINED_ANALYTICS"
+        assert len(result.topics) == 1
+        assert len(result.experts) == 1
+        assert result.experts[0].author_name == "Dr. Paralel"
+        assert "PUB_PAR_1" in result.publications
+        assert pool.acquires == 1
+        assert mock_conn.fetch.await_count == 2
+        assert mock_conn2.fetch.await_count == 1
+
 
 class TestEvidenceUnifierFromHybrid:
     """Test EvidenceUnifier.from_hybrid normalization and ranking."""

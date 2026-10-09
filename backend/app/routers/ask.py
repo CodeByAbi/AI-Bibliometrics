@@ -568,6 +568,9 @@ async def _handle_hybrid_route(
         resolved_author_name=resolution.resolved_author_name,
         resolved_institution_id=resolution.resolved_institution_id,
         resolved_institution_name=resolution.resolved_institution_name,
+        # Second pooled connection for the trends+expertise fast path:
+        # asyncpg forbids concurrent ops on one connection (P3 latency).
+        pool=await get_pool(),
     )
     latencies["hybrid_retrieval_ms"] = round((time.perf_counter() - t2) * 1000, 2)
 

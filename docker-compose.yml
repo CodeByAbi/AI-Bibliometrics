@@ -21,6 +21,10 @@ services:
       # Must stay writable by the non-root `app` user in the image, or the first
       # SentenceTransformer load fails and silently degrades to Ollama embedding.
       HF_HOME: /home/app/.cache/huggingface
+      # OMP_NUM_THREADS intentionally NOT raised: measured 2026-10-08,
+      # OMP=4 regressed warm encode (617 ms -> 2.2-28 s, MKL oversubscription
+      # on this 4-CPU host). Image default (1) stands; see P4 in
+      # reports/llm-latency-research.md.
     # Persist the HuggingFace cache across `up --build` / recreate.
     #
     # Measured on this deployment: bge-m3 is ~2.2 GB, and because HF_HOME lived

@@ -333,8 +333,16 @@ class HybridRetriever:
         resolved_institution_id: str | None = None,
         resolved_institution_name: str | None = None,
         limit: int | None = None,
+        pool: asyncpg.Pool | None = None,
     ) -> HybridRetrievalResult:
-        """Execute parameterized Gold analytics retrieval across topics, trends, and researcher expertise."""
+        """Execute parameterized Gold analytics retrieval across topics, trends, and researcher expertise.
+
+        ``pool`` enables the Step 2 + Step 3 fast path: trends and expertise
+        run concurrently on two pooled connections instead of sequentially.
+        asyncpg forbids concurrent operations on ONE connection, so the pool
+        (not a second cursor on ``conn``) is what makes this safe. Callers
+        without a pool get the original sequential behaviour unchanged.
+        """
         start_time = time.perf_counter()
         clamped_limit = cls.clamp_limit(limit)
         intent = cls.detect_intent(question, filters)
@@ -478,12 +486,19 @@ class HybridRetriever:
         # Check if question specifically asks for "emerging topics" (is_emerging=True)
         is_emerging_filter = True if re.search(r"\b(emerging|berkembang\s*pesat|topik\s*baru)\b", question, re.IGNORECASE) else None
 
-        # Step 2: Query Topic Trends if intent is TOPIC_TRENDS or COMBINED_ANALYTICS
-        topics_list: list[HybridTopicEvolutionItem] = []
-        if intent in ("TOPIC_TRENDS", "COMBINED_ANALYTICS"):
+        # Step 2 & 3: Topic Trends + Researcher Expertise.
+        #
+        # Each loader below is a pure function of (connection, resolved scope):
+        # neither result feeds the other's query, so when BOTH are needed they
+        # run concurrently on two pooled connections (one RTT instead of two).
+        # Single-intent requests and pool-less callers keep the sequential path.
+        async def _load_trends(
+            read_conn: asyncpg.Connection,
+        ) -> list[HybridTopicEvolutionItem]:
+            items: list[HybridTopicEvolutionItem] = []
             try:
                 rows_trends = await asyncio.wait_for(
-                    conn.fetch(
+                    read_conn.fetch(
                         SQL_TOPIC_TRENDS,
                         resolved_topic_id,
                         None,  # topic_name pattern already resolved to ID
@@ -498,7 +513,7 @@ class HybridRetriever:
                 raise DBTimeoutError("HybridRetriever statement timed out (10s)") from exc
 
             for r in rows_trends:
-                topics_list.append(
+                items.append(
                     HybridTopicEvolutionItem(
                         topic_id=int(r["topic_id"]),
                         topic_name=str(r["topic_name"]),
@@ -511,13 +526,15 @@ class HybridRetriever:
                         is_emerging=bool(r["is_emerging"]),
                     )
                 )
+            return items
 
-        # Step 3: Query Researcher Expertise if intent is EXPERT_RANKING or COMBINED_ANALYTICS
-        experts_list: list[HybridExpertItem] = []
-        if intent in ("EXPERT_RANKING", "COMBINED_ANALYTICS"):
+        async def _load_experts(
+            read_conn: asyncpg.Connection,
+        ) -> list[HybridExpertItem]:
+            items: list[HybridExpertItem] = []
             try:
                 rows_exp = await asyncio.wait_for(
-                    conn.fetch(
+                    read_conn.fetch(
                         SQL_RESEARCHER_EXPERTISE,
                         resolved_topic_id,
                         None,
@@ -530,7 +547,7 @@ class HybridRetriever:
                 raise DBTimeoutError("HybridRetriever statement timed out (10s)") from exc
 
             for r in rows_exp:
-                experts_list.append(
+                items.append(
                     HybridExpertItem(
                         author_id=str(r["author_id"]),
                         author_name=str(r["author_name"]),
@@ -547,6 +564,25 @@ class HybridRetriever:
                         coauthor_network_size=int(r["coauthor_network_size"]),
                     )
                 )
+            return items
+
+        # Step 2: Query Topic Trends if intent is TOPIC_TRENDS or COMBINED_ANALYTICS
+        topics_list: list[HybridTopicEvolutionItem] = []
+        # Step 3: Query Researcher Expertise if intent is EXPERT_RANKING or COMBINED_ANALYTICS
+        experts_list: list[HybridExpertItem] = []
+        need_trends = intent in ("TOPIC_TRENDS", "COMBINED_ANALYTICS")
+        need_experts = intent in ("EXPERT_RANKING", "COMBINED_ANALYTICS")
+        if need_trends and need_experts and pool is not None:
+            async with pool.acquire() as conn2:
+                topics_list, experts_list = await asyncio.gather(
+                    _load_trends(conn),
+                    _load_experts(conn2),
+                )
+        else:
+            if need_trends:
+                topics_list = await _load_trends(conn)
+            if need_experts:
+                experts_list = await _load_experts(conn)
 
         # Step 4: Fetch supporting publication metadata for citations
         author_ids_to_fetch = list(dict.fromkeys(e.author_id for e in experts_list))

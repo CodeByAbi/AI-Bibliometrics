@@ -10,7 +10,7 @@ import { ZERO } from "../fixture";
  */
 const ROWS: Array<[string, string]> = [
   ["route", ZERO.route],
-  ["cosine gate", "≥ 0.65"],
+  ["cosine gate", "≥ 0.48"],
   ["chunks scanned", "1,284"],
   ["evidence admitted", "0"],
   ["LLM calls", "0"],

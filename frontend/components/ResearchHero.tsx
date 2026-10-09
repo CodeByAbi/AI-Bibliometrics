@@ -115,7 +115,7 @@ export function ResearchHero({
               title="VectorRoute admission gate — chunks below this cosine never reach synthesis"
             >
               <Gauge size={13} aria-hidden />
-              <span className="mono">Cosine gate ≥ 0.65</span>
+              <span className="mono">Cosine gate ≥ 0.48</span>
             </span>
             {entityFilterLabel && (
               <span className="hero-chip hero-chip-entity">
