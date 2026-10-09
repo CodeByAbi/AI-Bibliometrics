@@ -44,7 +44,7 @@ export const EVIDENCE: ProtoEvidence[] = [
     value: "0.68",
     period: "2020–2025",
     confidence: 0.91,
-    claim: "VectorRoute admitted only chunks above the 0.65 cosine gate into synthesis.",
+    claim: "VectorRoute admitted only chunks above the 0.48 cosine gate into synthesis.",
     provenance: "Vector retriever · BAAI/bge-m3, HNSW <=> search",
     sources: [{ publication_id: "SCP-0156", title: "Dense retrieval thresholds for grounded synthesis" }],
   },

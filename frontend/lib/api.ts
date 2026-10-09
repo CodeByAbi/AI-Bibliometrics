@@ -432,7 +432,7 @@ export const fixtureVector: AskResponse = {
   debug: {
     sql_executed: null,
     route_reasoning:
-      "VectorRoute: semantic/concept intent ('papers on ...') with no aggregation — pgvector HNSW cosine search, DISTINCT ON (publication_id) LIMIT 8, gate ≥ 0.65.",
+      "VectorRoute: semantic/concept intent ('papers on ...') with no aggregation — pgvector HNSW cosine search, DISTINCT ON (publication_id) LIMIT 8, gate ≥ 0.48.",
     latency_breakdown_ms: {
       routing_ms: 12.7,
       entity_resolution_ms: 8.3,
@@ -476,7 +476,7 @@ export const fixtureNotFound: AskResponse = {
   status: "not_found",
   route: "VectorRoute",
   answer:
-    "No supporting evidence was found in the database for this question. The vector gate (cosine ≥ 0.65) admitted zero chunks and the structured filters matched zero publications, so synthesis was skipped deterministically.",
+    "No supporting evidence was found in the database for this question. The vector gate (cosine ≥ 0.48) admitted zero chunks and the structured filters matched zero publications, so synthesis was skipped deterministically.",
   evidence_objects: [],
   sources: [],
   filters_ignored: [],
@@ -485,7 +485,7 @@ export const fixtureNotFound: AskResponse = {
   debug: {
     sql_executed: null,
     route_reasoning:
-      "VectorRoute short-circuit: max cosine 0.41 < 0.65 threshold — 0 evidence, 0 LLM calls, 142ms.",
+      "VectorRoute short-circuit: max cosine 0.41 < 0.48 threshold — 0 evidence, 0 LLM calls, 142ms.",
     latency_breakdown_ms: { routing_ms: 11.9, vector_retrieval_ms: 130.4, total_ms: 142.3 },
   },
 };
